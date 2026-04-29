@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>LanShare</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="version-badge">
+      <span id="nicknameDisplay" class="nickname" title="点击修改昵称">设置昵称</span>
+      <span class="sep">·</span>
+      v1.5.2
+    </div>
+
+    <div id="floatControl" class="float-control is-hidden">
+      <div class="float-side left">
+        <input type="range" id="floatSizeSlider" min="20" max="200" value="200" />
+        <span class="float-label">Aa</span>
+      </div>
+      <div class="float-side right">
+        <input type="range" id="floatSpeedSlider" min="0.5" max="10" step="0.5" value="10" />
+        <span class="float-label">速度</span>
+      </div>
+    </div>
+
+    <main class="page">
+      <section class="hero">
+        <div>
+          <p class="eyebrow">Local LAN File Server</p>
+          <h1>局域网文件服务器</h1>
+          <p class="subtitle">支持目录浏览、上传、预览、批量下载、移动、回收站恢复。</p>
+        </div>
+        <div class="actions">
+          <label class="button primary">
+            上传文件
+            <input id="fileInput" type="file" multiple hidden />
+          </label>
+          <label class="button secondary">
+            上传文件夹
+            <input id="folderInput" type="file" webkitdirectory directory multiple hidden />
+          </label>
+          <button id="mkdirBtn" class="button warm" type="button">新建文件夹</button>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="toolbar">
+          <div class="toolbar-main">
+            <div>
+              <div class="label">当前位置</div>
+              <div id="breadcrumb" class="breadcrumb"></div>
+            </div>
+            <input id="mainSearchInput" class="field toolbar-search" type="search" placeholder="搜索文件..." />
+          </div>
+          <div class="toolbar-actions">
+            <div class="view-switch" aria-label="视图切换">
+              <button id="listViewBtn" class="button ghost is-active" type="button">列表</button>
+              <button id="gridViewBtn" class="button ghost" type="button">宫格</button>
+            </div>
+            <button id="refreshBtn" class="button ghost" type="button">刷新</button>
+          </div>
+        </div>
+        <div id="message" class="message"></div>
+        <div id="uploadProgress" class="upload-progress is-hidden">
+          <div class="upload-progress-head">
+            <span id="uploadProgressText">准备上传...</span>
+            <span id="uploadProgressPercent">0%</span>
+          </div>
+          <div class="upload-progress-bar">
+            <div id="uploadProgressFill" class="upload-progress-fill"></div>
+          </div>
+        </div>
+        <div id="uploadQueue" class="upload-queue is-hidden"></div>
+        <div id="tableView" class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>名称</th>
+                <th>类型</th>
+                <th>大小</th>
+                <th>修改时间</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="fileTableBody"></tbody>
+          </table>
+        </div>
+        <div id="gridView" class="grid-view is-hidden"></div>
+      </section>
+    </main>
+
+    <button id="logToggleBtn" class="log-toggle" type="button" title="日志"><span class="icon-log"></span></button>
+    <button id="hideUiBtn" class="recycle-toggle" type="button" title="隐藏界面，纯享背景">🙈</button>
+    <button id="bgUploadBtn" class="recycle-toggle" type="button" title="左键上传背景 / 右键清除背景">🖼</button>
+    <input id="bgFileInput" type="file" accept="image/*,video/*" hidden />
+    <div id="bgOverlay" class="bg-overlay"></div>
+    <div id="themeSliderWrap" class="theme-slider-wrap">
+      <span class="theme-icon">☀</span>
+      <input type="range" id="themeSlider" min="0" max="100" value="0" />
+      <span class="theme-icon">☽</span>
+    </div>
+    <button id="recycleToggleBtn" class="recycle-toggle" type="button" title="回收站"><span class="icon-recycle"></span><span id="recycleCountBadge">0</span></button>
+
+    <aside id="logPanel" class="log-panel is-hidden">
+      <div class="log-header">
+        <span class="log-title">操作记录</span>
+        <button id="closeLogBtn" class="button ghost" type="button">关闭</button>
+      </div>
+      <div id="logList" class="log-list">
+        <div class="log-empty">暂无记录</div>
+      </div>
+    </aside>
+
+    <aside id="recycleDrawer" class="recycle-drawer is-hidden">
+      <div class="recycle-header">
+        <div>
+          <div class="label">回收站</div>
+          <div class="recycle-title">已删除项目</div>
+        </div>
+        <button id="closeRecycleBtn" class="button ghost" type="button">关闭</button>
+      </div>
+      <div class="recycle-tools">
+        <input id="recycleSearchInput" class="field" type="search" placeholder="搜索回收站" />
+        <div class="recycle-select-actions">
+          <button id="recycleSelectAllBtn" class="button ghost" type="button">全选</button>
+          <button id="recycleInvertSelectionBtn" class="button ghost" type="button">反选</button>
+        </div>
+        <div class="recycle-batch-actions">
+          <span id="recycleSelectedCount" class="selection-count">已选 0 项</span>
+          <button id="recycleRestoreSelectedBtn" class="button ghost" type="button" disabled>批量恢复</button>
+          <button id="recycleDeleteSelectedBtn" class="button ghost danger-button" type="button" disabled>批量彻底删除</button>
+        </div>
+      </div>
+      <div id="recycleMessage" class="message"></div>
+      <div id="recycleList" class="recycle-list"></div>
+    </aside>
+
+    <dialog id="previewDialog" class="preview-dialog">
+      <div class="preview-header">
+        <div>
+          <div class="label">预览文件</div>
+          <div id="previewTitle" class="preview-title"></div>
+        </div>
+        <button id="closePreviewBtn" class="button ghost" type="button">关闭</button>
+      </div>
+      <div id="previewBody" class="preview-body"></div>
+    </dialog>
+
+    <template id="rowTemplate">
+      <tr>
+        <td class="name-cell"></td>
+        <td class="type-cell"></td>
+        <td class="size-cell"></td>
+        <td class="time-cell"></td>
+        <td class="op-cell"></td>
+      </tr>
+    </template>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

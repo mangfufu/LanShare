@@ -1,0 +1,6 @@
+node_modules/
+shared/
+backup/
+recycle_bin/
+logs/
+thumb_cache/

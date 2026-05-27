@@ -1290,6 +1290,10 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && (url.pathname === "/" || url.pathname === "/index.html")) return void await serveStaticFile(res, path.join(STATIC_DIR, "index.html"));
     if (req.method === "GET" && url.pathname === "/app.js") return void await serveStaticFile(res, path.join(STATIC_DIR, "app.js"));
     if (req.method === "GET" && url.pathname === "/styles.css") return void await serveStaticFile(res, path.join(STATIC_DIR, "styles.css"));
+    if (req.method === "GET") {
+      const p = path.join(STATIC_DIR, url.pathname.replace(/^\//, ""));
+      try { await fsp.access(p); return void await serveStaticFile(res, p); } catch {}
+    }
     sendText(res, 404, "Not Found");
   } catch (error) {
     sendJson(res, 500, { error: error.message || "服务器错误" });

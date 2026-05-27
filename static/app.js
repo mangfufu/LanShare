@@ -418,6 +418,9 @@ function getSelectionCount() {
 }
 
 function updateToolbarButtons() {
+  const batchContainer = document.querySelector(".toolbar-actions-right");
+  if (!batchContainer) return;
+
   let moveBtn = document.querySelector("#batchMoveBtn");
   if (!moveBtn) {
     moveBtn = document.createElement("button");
@@ -425,7 +428,7 @@ function updateToolbarButtons() {
     moveBtn.type = "button";
     moveBtn.className = "button ghost";
     moveBtn.addEventListener("click", moveSelectedItems);
-    document.querySelector(".toolbar-actions").insertBefore(moveBtn, refreshBtn);
+    batchContainer.appendChild(moveBtn);
   }
 
   let deleteBtn = document.querySelector("#batchDeleteBtn");
@@ -435,7 +438,7 @@ function updateToolbarButtons() {
     deleteBtn.type = "button";
     deleteBtn.className = "button ghost danger-button";
     deleteBtn.addEventListener("click", deleteSelectedItems);
-    document.querySelector(".toolbar-actions").insertBefore(deleteBtn, refreshBtn);
+    batchContainer.appendChild(deleteBtn);
   }
 
   let downloadBtn = document.querySelector("#batchDownloadBtn");
@@ -445,7 +448,7 @@ function updateToolbarButtons() {
     downloadBtn.type = "button";
     downloadBtn.className = "button ghost";
     downloadBtn.addEventListener("click", downloadSelectedItems);
-    document.querySelector(".toolbar-actions").insertBefore(downloadBtn, deleteBtn);
+    batchContainer.appendChild(downloadBtn);
   }
 
   const count = getSelectionCount();
@@ -612,17 +615,17 @@ function setViewMode(mode) {
 
 // Theme color pairs for interpolation [light, dark]
 const THEME_COLORS = {
-  "--bg":           ["#f3efe5", "#13171d"],
-  "--panel":        ["#fffcf5", "#171c23"],
-  "--panel-strong": ["#ffffff", "#1e252e"],
-  "--panel-hover":  ["#fff8eb", "#28343c"],
-  "--panel-soft":   ["#fff7e7", "#222a34"],
-  "--line":         ["#d3c6ac", "#33404c"],
-  "--text":         ["#1f1d1a", "#e9edf2"],
-  "--muted":        ["#6e6657", "#9aa7b4"],
-  "--accent":       ["#1f6f5f", "#7bd1bf"],
-  "--floating-bg":  ["#1f1d1a", "#f2f5f8"],
-  "--floating-text":["#ffffff", "#16202b"]
+  "--bg":           ["#f5f5f5", "#141210"],
+  "--panel":        ["#ffffff", "#201e1a"],
+  "--panel-strong": ["#ffffff", "#26231e"],
+  "--panel-hover":  ["#f3f4f6", "#302c26"],
+  "--panel-soft":   ["#f9fafb", "#221f1b"],
+  "--line":         ["#e5e5e5", "#35312c"],
+  "--text":         ["#1a1a1a", "#e2dcd4"],
+  "--muted":        ["#6b7280", "#948c82"],
+  "--accent":       ["#0d9488", "#d65a3a"],
+  "--floating-bg":  ["#1f2937", "#e2dcd4"],
+  "--floating-text":["#ffffff", "#141210"]
 };
 
 function hexToRgb(hex) {
@@ -1599,6 +1602,11 @@ async function createFolder() {
 }
 
 function setDropActive(active) {
+  // 工具标签页下不显示拖拽覆盖层，由工具自身处理
+  if (active) {
+    var t = document.querySelector(".tab.active");
+    if (t && (t.dataset.tab === "audio" || t.dataset.tab === "video")) return;
+  }
   document.body.classList.toggle("drag-active", active);
 }
 
@@ -1620,17 +1628,30 @@ folderInput.addEventListener("change", async (event) => {
 
 document.addEventListener("dragover", (event) => {
   if (_draggingChar) return;
+  // 工具 iframe 区域仍需 preventDefault 以允许拖放，
+  // 但不显示覆盖层
+  if (event.target.closest && event.target.closest("#tab-audio, #tab-video")) {
+    event.preventDefault();
+    setDropActive(false);
+    return;
+  }
   event.preventDefault();
   setDropActive(true);
 });
 
 document.addEventListener("dragleave", (event) => {
   if (_draggingChar) return;
+  if (event.target.closest && event.target.closest("#tab-audio, #tab-video")) return;
   if (event.clientX === 0 && event.clientY === 0) setDropActive(false);
 });
 
 document.addEventListener("drop", async (event) => {
   if (_draggingChar) return;
+  // 工具 iframe 区域由工具自身处理
+  if (event.target.closest && event.target.closest("#tab-audio, #tab-video")) {
+    setDropActive(false);
+    return;
+  }
   event.preventDefault();
   setDropActive(false);
   try {
@@ -1999,6 +2020,8 @@ if (hideBtn) {
       document.querySelector("#logPanel"),
       document.querySelector("#recycleDrawer"),
       document.querySelector("#floatControl"),
+      document.querySelector("#tab-audio"),
+      document.querySelector("#tab-video"),
     ];
     for (const el of els) {
       if (!el) continue;
@@ -2128,6 +2151,22 @@ moveHereBtn.addEventListener("click", async () => {
 
 
 updateToolbarButtons();
+
+// Tab switching
+document.querySelectorAll(".tab").forEach(function(t) {
+  t.addEventListener("click", function() {
+    var tab = t.dataset.tab;
+    document.querySelectorAll(".tab").forEach(function(x) { x.classList.remove("active"); });
+    t.classList.add("active");
+    document.querySelectorAll(".tab-content").forEach(function(x) { x.classList.remove("active"); });
+    var target = document.getElementById("tab-" + tab);
+    if (target) target.classList.add("active");
+    // Show/hide file-specific UI when switching tabs
+    var isFiles = tab === "files";
+    document.querySelector("#logPanel").classList.toggle("is-hidden", !isFiles);
+  });
+});
+
 // Theme slider init
 const themeSlider = document.querySelector("#themeSlider");
 if (themeSlider) {

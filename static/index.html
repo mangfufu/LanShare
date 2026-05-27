@@ -10,7 +10,7 @@
     <div class="version-badge">
       <span id="nicknameDisplay" class="nickname" title="点击修改昵称">设置昵称</span>
       <span class="sep">·</span>
-      v1.5.3
+      v2.0.0
     </div>
 
     <div id="floatControl" class="float-control is-hidden">
@@ -25,35 +25,30 @@
     </div>
 
     <main class="page">
-      <section class="hero">
-        <div>
-          <p class="eyebrow">Local LAN File Server</p>
-          <h1>局域网文件服务器</h1>
-          <p class="subtitle">支持目录浏览、上传、预览、批量下载、移动、回收站恢复。</p>
-        </div>
-        <div class="actions">
-          <label class="button primary">
-            上传文件
-            <input id="fileInput" type="file" multiple hidden />
-          </label>
-          <label class="button secondary">
-            上传文件夹
-            <input id="folderInput" type="file" webkitdirectory directory multiple hidden />
-          </label>
-          <button id="mkdirBtn" class="button warm" type="button">新建文件夹</button>
-        </div>
-      </section>
+      <div class="tab-bar">
+        <button class="tab active" data-tab="files">文件管理</button>
+        <button class="tab" data-tab="audio">音频处理</button>
+        <button class="tab" data-tab="video">视频截帧</button>
+      </div>
 
+      <!-- 文件管理 -->
+      <div class="tab-content active" id="tab-files">
       <section class="panel">
+        <div id="breadcrumb" class="breadcrumb"></div>
+        <input id="mainSearchInput" class="field toolbar-search" type="search" placeholder="搜索文件..." />
         <div class="toolbar">
-          <div class="toolbar-main">
-            <div>
-              <div class="label">当前位置</div>
-              <div id="breadcrumb" class="breadcrumb"></div>
-            </div>
-            <input id="mainSearchInput" class="field toolbar-search" type="search" placeholder="搜索文件..." />
+          <div class="toolbar-actions-left">
+            <label class="button primary">
+              上传文件
+              <input id="fileInput" type="file" multiple hidden />
+            </label>
+            <label class="button secondary">
+              上传文件夹
+              <input id="folderInput" type="file" webkitdirectory directory multiple hidden />
+            </label>
+            <button id="mkdirBtn" class="button warm" type="button">新建文件夹</button>
           </div>
-          <div class="toolbar-actions">
+          <div class="toolbar-actions-right">
             <div class="view-switch" aria-label="视图切换">
               <button id="listViewBtn" class="button ghost is-active" type="button">列表</button>
               <button id="gridViewBtn" class="button ghost" type="button">宫格</button>
@@ -88,6 +83,22 @@
         </div>
         <div id="gridView" class="grid-view is-hidden"></div>
       </section>
+      </div>
+
+      <!-- 音频处理 -->
+      <div class="tab-content" id="tab-audio">
+        <section class="panel tool-panel">
+          <iframe src="/tools/audio/index.html" class="tool-iframe" allow="microphone"></iframe>
+        </section>
+      </div>
+
+      <!-- 视频截帧 -->
+      <div class="tab-content" id="tab-video">
+        <section class="panel tool-panel">
+          <iframe src="/tools/video/index.html" class="tool-iframe"></iframe>
+        </section>
+      </div>
+
     </main>
 
     <button id="logToggleBtn" class="log-toggle" type="button" title="日志"><span class="icon-log"></span></button>

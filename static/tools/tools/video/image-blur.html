@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+  <title>图片局部模糊工具</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <main class="app-shell">
+    <header class="hero">
+      <div>
+        <p class="eyebrow">Local Image Mask Blur</p>
+        <h1>图片局部模糊工具</h1>
+        <p class="hero-copy">上传图片后在画布上涂抹蒙版，局部区域按参数模糊处理。</p>
+      </div>
+      <div class="page-tabs">
+        <a class="page-tab" href="./index.html">视频截帧</a>
+        <a class="page-tab active" href="./image-blur.html">图片模糊</a>
+      </div>
+    </header>
+
+    <section id="imageDropZone" class="drop-zone" tabindex="0">
+      <input id="imageInput" type="file" accept="image/*" hidden>
+      <p class="drop-title">拖拽图片到此处</p>
+      <p class="drop-subtitle">或点击选择文件导入</p>
+    </section>
+
+    <section id="imageNotice" class="notice hidden" aria-live="polite"></section>
+
+    <div class="workspace">
+      <div class="workspace-left">
+        <div class="panel">
+          <div class="panel-head">
+            <h2>处理设置</h2>
+            <span id="imageMeta" class="meta-text">未加载图片</span>
+          </div>
+
+          <div class="form-grid">
+            <label>笔刷大小
+              <input id="brushSizeInput" type="range" min="8" max="220" step="1" value="72">
+              <span id="brushSizeValue" class="meta-text">72 px</span>
+            </label>
+            <label>模糊强度
+              <input id="blurInput" type="range" min="8" max="40" step="1" value="22">
+              <span id="blurValue" class="meta-text">22 px</span>
+            </label>
+            <label>透明度
+              <input id="opacityInput" type="range" min="0.35" max="1" step="0.05" value="1">
+              <span id="opacityValue" class="meta-text">100%</span>
+            </label>
+          </div>
+
+          <div class="toggle-row">
+            <button id="drawModeButton" class="secondary-button active-tool" type="button">绘制蒙版</button>
+            <button id="eraseModeButton" class="secondary-button" type="button">橡皮擦</button>
+          </div>
+
+          <div class="button-row" style="margin-top:14px">
+            <button id="clearMaskButton" type="button" class="secondary-button" disabled>清空蒙版</button>
+            <button id="exportImageButton" type="button" class="primary-button" disabled>导出图片</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="workspace-right">
+        <div class="panel preview-panel">
+          <div class="panel-head">
+            <h2>实时预览</h2>
+            <div class="panel-head-actions">
+              <button id="undoButton" class="mini-tool-button" type="button" disabled>撤销</button>
+              <button id="redoButton" class="mini-tool-button" type="button" disabled>重做</button>
+              <span id="canvasMeta" class="meta-text">等待图片</span>
+            </div>
+          </div>
+          <div id="blurCanvasWrap" class="canvas-wrap">
+            <canvas id="previewCanvas" width="1200" height="800" aria-label="图片预览画布"></canvas>
+            <canvas id="maskCanvas" class="hidden-mask-canvas" width="1200" height="800" aria-hidden="true"></canvas>
+            <canvas id="guideCanvas" class="overlay-canvas" width="1200" height="800" aria-label="蒙版绘制画布"></canvas>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script src="./media-store.js"></script>
+  <script src="./image-blur.js"></script>
+</body>
+</html>

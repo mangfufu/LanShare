@@ -53,6 +53,8 @@ const breadcrumb = document.querySelector("#breadcrumb");
 const messageBox = document.querySelector("#message");
 const fileInput = document.querySelector("#fileInput");
 const folderInput = document.querySelector("#folderInput");
+const uploadBtn = document.querySelector("#uploadBtn");
+const uploadMenu = document.querySelector("#uploadMenu");
 const mkdirBtn = document.querySelector("#mkdirBtn");
 const refreshBtn = document.querySelector("#refreshBtn");
 const mainSearchInput = document.querySelector("#mainSearchInput");
@@ -451,10 +453,33 @@ function updateToolbarButtons() {
     batchContainer.appendChild(downloadBtn);
   }
 
+  let selectAllBtn = document.querySelector("#selectAllBtn");
+  if (!selectAllBtn) {
+    selectAllBtn = document.createElement("button");
+    selectAllBtn.id = "selectAllBtn";
+    selectAllBtn.type = "button";
+    selectAllBtn.className = "button ghost";
+    selectAllBtn.addEventListener("click", selectAll);
+    batchContainer.appendChild(selectAllBtn);
+  }
+
+  let invertBtn = document.querySelector("#invertSelectBtn");
+  if (!invertBtn) {
+    invertBtn = document.createElement("button");
+    invertBtn.id = "invertSelectBtn";
+    invertBtn.type = "button";
+    invertBtn.className = "button ghost";
+    invertBtn.addEventListener("click", invertSelection);
+    batchContainer.appendChild(invertBtn);
+  }
+
   const count = getSelectionCount();
+  const total = state.currentItems.length;
   moveBtn.textContent = count > 0 ? `批量移动 (${count})` : "批量移动";
   deleteBtn.textContent = count > 0 ? `批量删除 (${count})` : "批量删除";
   downloadBtn.textContent = count > 0 ? `批量下载 (${count})` : "批量下载";
+  selectAllBtn.textContent = count > 0 && count >= total ? "取消全选" : "全选";
+  invertBtn.textContent = "反选";
   moveBtn.disabled = count === 0;
   deleteBtn.disabled = count === 0;
   downloadBtn.disabled = count === 0;
@@ -611,6 +636,7 @@ function setViewMode(mode) {
   gridView.classList.toggle("is-hidden", isList);
   listViewBtn.classList.toggle("is-active", isList);
   gridViewBtn.classList.toggle("is-active", !isList);
+  renderCurrentDirectory();
 }
 
 // Theme color pairs for interpolation [light, dark]
@@ -691,6 +717,28 @@ function toggleSelected(path, checked) {
 function clearSelections() {
   state.selectedPaths.clear();
   updateToolbarButtons();
+}
+
+function selectAll() {
+  const total = state.currentItems.length;
+  const count = state.selectedPaths.size;
+  if (count < total) {
+    for (const item of state.currentItems) state.selectedPaths.add(item.path);
+  } else {
+    state.selectedPaths.clear();
+  }
+  updateToolbarButtons();
+  renderCurrentDirectory();
+}
+
+function invertSelection() {
+  const newSet = new Set();
+  for (const item of state.currentItems) {
+    if (!state.selectedPaths.has(item.path)) newSet.add(item.path);
+  }
+  state.selectedPaths = newSet;
+  updateToolbarButtons();
+  renderCurrentDirectory();
 }
 
 function getFilteredCurrentItems() {
@@ -1611,6 +1659,7 @@ function setDropActive(active) {
 }
 
 fileInput.addEventListener("change", async (event) => {
+  uploadMenu.classList.remove("open");
   try {
     await uploadFiles(event.target.files, { keepRelativePath: false, label: "文件" });
   } finally {
@@ -1619,11 +1668,21 @@ fileInput.addEventListener("change", async (event) => {
 });
 
 folderInput.addEventListener("change", async (event) => {
+  uploadMenu.classList.remove("open");
   try {
     await uploadFiles(event.target.files, { keepRelativePath: true, label: "文件夹" });
   } finally {
     folderInput.value = "";
   }
+});
+
+uploadBtn.addEventListener("click", (event) => {
+  event.stopPropagation();
+  uploadMenu.classList.toggle("open");
+});
+
+document.addEventListener("click", (event) => {
+  if (!event.target.closest(".upload-group")) uploadMenu.classList.remove("open");
 });
 
 document.addEventListener("dragover", (event) => {

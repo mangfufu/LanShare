@@ -12,7 +12,7 @@ try { sharp = require("sharp"); } catch { const { execSync } = require("child_pr
 const TMP_DIR = path.join(__dirname, "thumb_cache");
 
 const HOST = process.env.HOST || "0.0.0.0";
-const PORT = Number(process.env.PORT || 8080);
+const PORT = Number(process.env.PORT || 8082);
 const ROOT_DIR = path.resolve(process.env.SHARED_DIR || path.join(process.cwd(), "shared"));
 const BACKUP_DIR = path.resolve(process.env.BACKUP_DIR || path.join(process.cwd(), "backup"));
 const RECYCLE_DIR = path.resolve(process.env.RECYCLE_DIR || path.join(process.cwd(), "recycle_bin"));
@@ -869,6 +869,27 @@ async function collectBatchDownloadEntries(paths) {
     throw new Error("没有可下载的有效目标");
   }
 
+  // 计算公共父目录前缀，压缩时去掉，避免解压后路径过深
+  const parts = entries.map((e) => e.relativePath.split("/"));
+  let prefixLen = 0;
+  const first = parts[0];
+  outer:
+  for (let i = 0; i < first.length - 1; i++) {
+    for (let j = 1; j < parts.length; j++) {
+      if (i >= parts[j].length - 1 || parts[j][i] !== first[i]) break outer;
+    }
+    prefixLen = i + 1;
+  }
+
+  if (prefixLen > 0) {
+    for (const entry of entries) {
+      entry.archivePath = entry.relativePath.split("/").slice(prefixLen).join("/");
+    }
+    for (let i = 0; i < skipped.length; i++) {
+      skipped[i] = skipped[i].split("/").slice(prefixLen).join("/") || skipped[i];
+    }
+  }
+
   return { entries, skipped };
 }
 
@@ -1201,10 +1222,11 @@ function appendBatchDownloadEntries(archive, entry) {
   }
 
   for (const item of entry.entries) {
+    const name = item.archivePath || item.relativePath;
     if (item.type === "directory") {
-      archive.directory(item.fullPath, item.relativePath);
+      archive.directory(item.fullPath, name);
     } else {
-      archive.file(item.fullPath, { name: item.relativePath });
+      archive.file(item.fullPath, { name });
     }
   }
 }

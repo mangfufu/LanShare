@@ -10,7 +10,7 @@
     <div class="version-badge">
       <span id="nicknameDisplay" class="nickname" title="点击修改昵称">设置昵称</span>
       <span class="sep">·</span>
-      v2.0.0
+      test_version 2.0.0
     </div>
 
     <div id="floatControl" class="float-control is-hidden">
@@ -38,14 +38,13 @@
         <input id="mainSearchInput" class="field toolbar-search" type="search" placeholder="搜索文件..." />
         <div class="toolbar">
           <div class="toolbar-actions-left">
-            <label class="button primary">
-              上传文件
-              <input id="fileInput" type="file" multiple hidden />
-            </label>
-            <label class="button secondary">
-              上传文件夹
-              <input id="folderInput" type="file" webkitdirectory directory multiple hidden />
-            </label>
+            <div class="upload-group">
+              <button id="uploadBtn" class="button primary" type="button">上传</button>
+              <div id="uploadMenu" class="upload-menu">
+                <label class="upload-menu-item">上传文件<input id="fileInput" type="file" multiple hidden /></label>
+                <label class="upload-menu-item">上传文件夹<input id="folderInput" type="file" webkitdirectory directory multiple hidden /></label>
+              </div>
+            </div>
             <button id="mkdirBtn" class="button warm" type="button">新建文件夹</button>
           </div>
           <div class="toolbar-actions-right">

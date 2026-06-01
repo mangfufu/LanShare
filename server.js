@@ -12,7 +12,7 @@ try { sharp = require("sharp"); } catch { const { execSync } = require("child_pr
 const TMP_DIR = path.join(__dirname, "thumb_cache");
 
 const HOST = process.env.HOST || "0.0.0.0";
-const PORT = Number(process.env.PORT || 8080);
+const PORT = Number(process.env.PORT || 8082);
 const ROOT_DIR = path.resolve(process.env.SHARED_DIR || path.join(process.cwd(), "shared"));
 const BACKUP_DIR = path.resolve(process.env.BACKUP_DIR || path.join(process.cwd(), "backup"));
 const RECYCLE_DIR = path.resolve(process.env.RECYCLE_DIR || path.join(process.cwd(), "recycle_bin"));

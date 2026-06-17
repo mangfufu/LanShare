@@ -12,7 +12,7 @@ try { sharp = require("sharp"); } catch { console.error("错误: sharp 未安装
 const TMP_DIR = path.join(__dirname, "thumb_cache");
 
 const HOST = process.env.HOST || "0.0.0.0";
-const PORT = Number(process.env.PORT || 8080);
+const PORT = Number(process.env.PORT || 8082);
 const ROOT_DIR = path.resolve(process.env.SHARED_DIR || path.join(__dirname, "shared"));
 const BACKUP_DIR = path.resolve(process.env.BACKUP_DIR || path.join(__dirname, "backup"));
 const RECYCLE_DIR = path.resolve(process.env.RECYCLE_DIR || path.join(__dirname, "recycle_bin"));
@@ -1023,7 +1023,7 @@ async function handleApi(req, res, url) {
 
       // 中文数字映射
       // 资产子文件夹
-      const assetSubs = ["人物", "道具", "场景", "特效", "群演"];
+      const assetSubs = ["人物", "道具", "场景", "特效", "群演", "音频"];
       const dirs = [projectFull];
 
       // 资产

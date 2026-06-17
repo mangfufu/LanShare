@@ -50,6 +50,10 @@ html, body {
   border-color: var(--accent);
   background: color-mix(in srgb, var(--accent) 10%, transparent);
 }
+.drop-zone.active .drop-title,
+.drop-zone.active .drop-subtitle {
+  pointer-events: none;
+}
 
 .drop-title { margin: 0; font-size: 15px; font-weight: 700; }
 .drop-subtitle { margin: 4px 0 0; color: var(--muted); font-size: 13px; }

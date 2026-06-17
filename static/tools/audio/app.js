@@ -1,6 +1,7 @@
 const state = {
   audioFiles: [],
   result: null,
+  previewUrl: null,
 };
 
 // 生成唯一 ID 的降级方案（兼容 iframe 和非 HTTPS 环境）
@@ -78,10 +79,6 @@ const elements = {
 };
 
 elements.audioInput.addEventListener("change", handleFileImport);
-// 拖拽进入上传区时同步初始化 AudioContext（需用户手势）
-elements.uploadBox.addEventListener("dragenter", function() {
-  if (!audioContext) initAudioContext();
-}, { once: true });
 // Document-level drag handlers: essential for iframe to accept drops from outside
 document.addEventListener("dragover", (e) => { e.preventDefault(); });
 document.addEventListener("drop", (e) => { e.preventDefault(); });
@@ -247,14 +244,8 @@ async function importFiles(files) {
         if (!arrayBuffer || arrayBuffer.byteLength === 0) {
           throw new Error("文件内容为空");
         }
-        // 尝试 decodeAudioData，若 AudioContext 被挂起则尝试恢复后再试
-        try {
-          audioBuffer = await getAudioContext().decodeAudioData(arrayBuffer.slice(0));
-        } catch (firstError) {
-          console.warn("decodeAudioData failed, trying fallback:", firstError);
-          // 降级方案：通过 <audio> 元素解码（绕过 iframe 限制）
-          audioBuffer = await decodeViaAudioElement(arrayBuffer, file.type);
-        }
+        // decodeAudioData（AudioContext 已在 importFiles 入口处确保 resume）
+        audioBuffer = await getAudioContext().decodeAudioData(arrayBuffer.slice(0));
       }
       state.audioFiles.push({
         id: generateId(),
@@ -291,9 +282,15 @@ async function audioFromVideo(file) {
   // Modern browsers (Chrome, Firefox, Edge, Safari) can demux audio
   // from common video containers (MP4/AAC, WebM/Vorbis, WebM/Opus, MOV)
   // via decodeAudioData itself.
+  var ctx = getAudioContext();
+  if (!ctx) throw new Error("浏览器不支持音频解码");
+  if (ctx.state === "suspended") {
+    try { await ctx.resume(); } catch (e) { console.warn("resume failed:", e); }
+  }
   try {
-    return await getAudioContext().decodeAudioData(arrayBuffer.slice(0));
-  } catch {
+    return await ctx.decodeAudioData(arrayBuffer.slice(0));
+  } catch (e) {
+    console.warn("decodeAudioData for video failed:", e);
     // Fallback: render short video segments via <video> element
     return extractAudioFromVideoElement(file);
   }
@@ -373,68 +370,6 @@ async function extractAudioFromVideoElement(file) {
   }
 }
 
-// 降级方案：通过 <audio> 元素解码（绕过 iframe 中 decodeAudioData 的限制）
-async function decodeViaAudioElement(arrayBuffer, mimeType) {
-  var blob = new Blob([arrayBuffer], { type: mimeType || "audio/mpeg" });
-  var url = URL.createObjectURL(blob);
-  var audio = document.createElement("audio");
-  audio.preload = "auto";
-  audio.muted = true;
-  audio.crossOrigin = "anonymous";
-
-  try {
-    await new Promise(function(resolve, reject) {
-      audio.addEventListener("loadedmetadata", resolve, { once: true });
-      audio.addEventListener("error", function(e) {
-        var errorMsg = "音频加载失败";
-        if (audio.error) {
-          switch (audio.error.code) {
-            case MediaError.MEDIA_ERR_ABORTED: errorMsg = "加载被中止"; break;
-            case MediaError.MEDIA_ERR_NETWORK: errorMsg = "网络错误"; break;
-            case MediaError.MEDIA_ERR_DECODE: errorMsg = "解码错误"; break;
-            case MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED: errorMsg = "格式不支持"; break;
-          }
-        }
-        reject(new Error(errorMsg));
-      }, { once: true });
-      audio.src = url;
-      audio.load();
-    });
-
-    var duration = audio.duration;
-    if (!isFinite(duration) || duration <= 0) throw new Error("无效的音频时长");
-
-    // 尝试使用 OfflineAudioContext 解码
-    try {
-      var ctx = getAudioContext();
-      var sampleRate = ctx.sampleRate || 44100;
-      var channels = Math.min(ctx.destination.maxChannelCount || 2, 2);
-      var length = Math.ceil(duration * sampleRate);
-
-      var offlineCtx = new OfflineAudioContext(channels, length, sampleRate);
-      var source = offlineCtx.createMediaElementSource(audio);
-      source.connect(offlineCtx.destination);
-
-      await audio.play();
-      var rendered = await offlineCtx.startRendering();
-      audio.pause();
-      return rendered;
-    } catch (offlineError) {
-      console.warn("OfflineAudioContext failed, trying direct playback:", offlineError);
-      // 如果 OfflineAudioContext 失败，尝试直接使用 AudioContext
-      var ctx2 = getAudioContext();
-      var sampleRate2 = ctx2.sampleRate || 44100;
-      var channels2 = Math.min(ctx2.destination.maxChannelCount || 2, 2);
-      var length2 = Math.ceil(duration * sampleRate2);
-
-      var buffer = ctx2.createBuffer(channels2, length2, sampleRate2);
-      // 注意：这种方法无法获取实际音频数据，需要用户手动播放
-      throw new Error("请尝试在主页面直接上传音频文件，或使用 Chrome 浏览器");
-    }
-  } finally {
-    URL.revokeObjectURL(url);
-  }
-}
 
 function renderFileList() {
   if (!state.audioFiles.length) {
@@ -646,9 +581,10 @@ function previewSelectedSource() {
     return;
   }
 
+  if (state.previewUrl) URL.revokeObjectURL(state.previewUrl);
   const blob = audioBufferToWavBlob(selected.audioBuffer);
-  const previewUrl = URL.createObjectURL(blob);
-  elements.resultPlayer.src = previewUrl;
+  state.previewUrl = URL.createObjectURL(blob);
+  elements.resultPlayer.src = state.previewUrl;
   elements.resultPlayer.play().catch(() => {});
   setStatus(`正在预览：${selected.name}`);
 }

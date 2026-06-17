@@ -86,6 +86,18 @@ html, body {
   font-size: 13px;
 }
 
+/* ── Panel head ────────────────────────── */
+
+.panel-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  flex-shrink: 0;
+}
+.panel-head h2 { margin: 0; font-size: 14px; font-weight: 700; }
+
 /* ── List panels ───────────────────────── */
 
 .list-panel {
@@ -104,6 +116,12 @@ html, body {
   overflow-y: auto;
   min-height: 0;
   align-content: start;
+}
+
+.file-list.empty-state, .merge-list.empty-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .file-item, .merge-item {
@@ -136,7 +154,12 @@ html, body {
   text-overflow: ellipsis;
 }
 
-.file-meta span, .merge-meta span, .empty-state {
+.file-meta span, .merge-meta span {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.empty-state {
   color: var(--muted);
   font-size: 13px;
 }

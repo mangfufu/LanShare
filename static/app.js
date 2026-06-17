@@ -412,7 +412,8 @@ function escapeHtml(text) {
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;");
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
 }
 
 function getSelectionCount() {
@@ -944,7 +945,7 @@ async function loadMoveDialogDir(dir) {
   renderMoveBreadcrumb();
   showMoveDialogMessage("", "info");
 
-  const res = await fetch(`/api/list?dir=${encodeURIComponent(dir)}`);
+  const res = await apiFetch(`/api/list?dir=${encodeURIComponent(dir)}`);
   const data = await res.json();
   if (!res.ok) {
     showMoveDialogMessage(data.error || "读取文件夹失败", "error");
@@ -1243,14 +1244,26 @@ function renderRows(items) {
   }
 }
 
+let _loadDirController = null;
+
 async function loadDir(dir) {
+  if (_loadDirController) _loadDirController.abort();
+  _loadDirController = new AbortController();
+  const signal = _loadDirController.signal;
   clearMessage();
   clearSelections();
   state.fileOffset = 0;
   state.fileTotal = 0;
   state.loadingMore = false;
-  const res = await fetch(`/api/list?dir=${encodeURIComponent(dir)}&offset=0&limit=50`);
-  const data = await res.json();
+  let res, data;
+  try {
+    res = await fetch(`/api/list?dir=${encodeURIComponent(dir)}&offset=0&limit=50`, { signal });
+    data = await res.json();
+  } catch (e) {
+    if (e.name === "AbortError") return;
+    showMessage("读取目录失败", "error");
+    return;
+  }
   if (!res.ok) {
     showMessage(data.error || "读取目录失败", "error");
     return;
@@ -2044,6 +2057,7 @@ function setBgDisplay(src, isVideo) {
 
 function initBackground() {}
 
+let _bgBlobUrl = null;
 const bgBtn = document.querySelector("#bgUploadBtn");
 const bgInput = document.querySelector("#bgFileInput");
 if (bgBtn && bgInput) {
@@ -2052,12 +2066,15 @@ if (bgBtn && bgInput) {
     const file = bgInput.files?.[0];
     if (!file) return;
     const isVideo = file.type.startsWith("video/");
+    if (_bgBlobUrl) { URL.revokeObjectURL(_bgBlobUrl); _bgBlobUrl = null; }
     const url = URL.createObjectURL(file);
+    _bgBlobUrl = url;
     setBgDisplay(url, isVideo);
     bgInput.value = "";
   });
   bgBtn.addEventListener("contextmenu", (e) => {
     e.preventDefault();
+    if (_bgBlobUrl) { URL.revokeObjectURL(_bgBlobUrl); _bgBlobUrl = null; }
     const el = document.querySelector("#bgOverlay");
     if (el) el.innerHTML = "";
   });
@@ -2247,7 +2264,10 @@ let cursorParticleCanvas = null;
 let cursorCtx = null;
 let cursorParticles = [];
 let cursorAnimId = null;
+let _cursorResize = null, _cursorMouseMove = null, _cursorClick = null;
 let collisionParticles = [];
+let dragChar = null;
+let _floatMouseDown = null, _floatMouseUp = null, _floatDragStart = null, _floatSelectStart = null;
 
 function startFloatingChars() {
   stopFloatingChars();
@@ -2286,7 +2306,7 @@ function startFloatingChars() {
   // Mouse interaction for floating chars
   const floatMouse = { x: -9999, y: -9999, lastMove: 0, idle: false };
   const floatAttractDist = 200;
-  let dragChar = null;
+  dragChar = null;
   let dragOffsetX = 0, dragOffsetY = 0;
   let dragLastX = 0, dragLastY = 0;
   let dragReleaseVx = 0, dragReleaseVy = 0;
@@ -2316,7 +2336,7 @@ function startFloatingChars() {
   document.addEventListener("mouseleave", _floatMouseLeave);
 
   // Drag start (mousedown near a char)
-  document.addEventListener("mousedown", (e) => {
+  _floatMouseDown = (e) => {
     if (!state.glowColor) return;
     let closest = null, minDist = 40;
     for (const c of floatChars) {
@@ -2337,8 +2357,9 @@ function startFloatingChars() {
       closest.el.style.opacity = "0.35";
       closest.el.style.transition = "opacity 0.2s";
     }
-  });
-  document.addEventListener("mouseup", (e) => {
+  };
+  document.addEventListener("mousedown", _floatMouseDown);
+  _floatMouseUp = (e) => {
     if (dragChar) {
       dragChar.vx = dragChar.vx || 0;
       dragChar.vy = dragChar.vy || 0;
@@ -2346,7 +2367,8 @@ function startFloatingChars() {
       dragChar = null;
     }
     _draggingChar = false;
-  });
+  };
+  document.addEventListener("mouseup", _floatMouseUp);
 
   // Click ripple
   const floatRipples = [];
@@ -2365,8 +2387,10 @@ function startFloatingChars() {
   };
   document.addEventListener("click", _floatClick);
   // Prevent text selection during drag
-  document.addEventListener("dragstart", (e) => { if (dragChar) e.preventDefault(); });
-  document.addEventListener("selectstart", (e) => { if (dragChar) e.preventDefault(); });
+  _floatDragStart = (e) => { if (dragChar) e.preventDefault(); };
+  document.addEventListener("dragstart", _floatDragStart);
+  _floatSelectStart = (e) => { if (dragChar) e.preventDefault(); };
+  document.addEventListener("selectstart", _floatSelectStart);
 
   function animate() {
     const mw = window.innerWidth, mh = window.innerHeight;
@@ -2535,6 +2559,10 @@ function stopFloatingChars() {
   if (_floatMouseMove) { document.removeEventListener("mousemove", _floatMouseMove); _floatMouseMove = null; }
   if (_floatMouseLeave) { document.removeEventListener("mouseleave", _floatMouseLeave); _floatMouseLeave = null; }
   if (_floatClick) { document.removeEventListener("click", _floatClick); _floatClick = null; }
+  if (_floatMouseDown) { document.removeEventListener("mousedown", _floatMouseDown); _floatMouseDown = null; }
+  if (_floatMouseUp) { document.removeEventListener("mouseup", _floatMouseUp); _floatMouseUp = null; }
+  if (_floatDragStart) { document.removeEventListener("dragstart", _floatDragStart); _floatDragStart = null; }
+  if (_floatSelectStart) { document.removeEventListener("selectstart", _floatSelectStart); _floatSelectStart = null; }
   for (const c of floatChars) c.el.remove();
   floatChars = [];
   for (const cp of collisionParticles) cp.el.remove();
@@ -2600,12 +2628,13 @@ function startCursorParticles() {
   let lastX = 0, lastY = 0, lastDX = 0, lastDY = 0, hasPointer = false;
   const trailNodes = [];
   const mode = state.cursorEffect || "";
-  window.addEventListener("resize", () => {
+  _cursorResize = () => {
     w = cursorParticleCanvas.width = window.innerWidth;
     h = cursorParticleCanvas.height = window.innerHeight;
-  });
+  };
+  window.addEventListener("resize", _cursorResize);
 
-  document.addEventListener("mousemove", (e) => {
+  _cursorMouseMove = (e) => {
     if (!state.glowColor) return;
     const color = state.glowColor;
     const dx = hasPointer ? e.clientX - lastX : 0;
@@ -2694,9 +2723,10 @@ function startCursorParticles() {
       cursorParticles.push(node);
       trailNodes.push(node);
     }
-  });
+  };
+  document.addEventListener("mousemove", _cursorMouseMove);
 
-  document.addEventListener("click", (e) => {
+  _cursorClick = (e) => {
     if (!state.glowColor) return;
     const color = state.glowColor;
 
@@ -2753,7 +2783,8 @@ function startCursorParticles() {
       const sp = 0.5 + Math.random() * 1.2;
       cursorParticles.push({ x: e.clientX, y: e.clientY, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 0.6, r: 4 + Math.random() * 3.5, life: 1, decay: 0.022 + Math.random() * 0.006, mode, color });
     }
-  });
+  };
+  document.addEventListener("click", _cursorClick);
 
   function animate() {
     cursorCtx.clearRect(0, 0, w, h);
@@ -3006,6 +3037,9 @@ function stopCursorParticles() {
     cancelAnimationFrame(cursorAnimId);
     cursorAnimId = null;
   }
+  if (_cursorResize) { window.removeEventListener("resize", _cursorResize); _cursorResize = null; }
+  if (_cursorMouseMove) { document.removeEventListener("mousemove", _cursorMouseMove); _cursorMouseMove = null; }
+  if (_cursorClick) { document.removeEventListener("click", _cursorClick); _cursorClick = null; }
   if (cursorParticleCanvas) {
     cursorParticleCanvas.remove();
     cursorParticleCanvas = null;

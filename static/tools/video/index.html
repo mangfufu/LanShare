@@ -8,8 +8,10 @@
   <link rel="stylesheet" href="./styles.css">
 </head>
 <body>
+  <!-- .app-shell: height:100% overflow:hidden -->
   <main class="app-shell">
-    <!-- Drop zone -->
+
+    <!-- .drop-zone: 拖拽上传区 -->
     <section id="dropZone" class="drop-zone" tabindex="0">
       <input id="videoInput" type="file" accept="video/*" multiple hidden>
       <p class="drop-title">拖拽视频到此处</p>
@@ -18,8 +20,11 @@
 
     <section id="notice" class="notice hidden" aria-live="polite"></section>
 
+    <!-- .workspace: grid minmax(220px,300px) 1fr overflow:hidden -->
     <div class="workspace">
+      <!-- .workspace-left: flex列 overflow-y:auto -->
       <div class="workspace-left">
+        <!-- .list-panel: flex:1 overflow:hidden -->
         <section class="panel list-panel">
           <div class="panel-head">
             <h2>视频列表</h2>
@@ -35,6 +40,7 @@
           </div>
         </section>
 
+        <!-- .list-panel: flex:1 overflow:hidden -->
         <section class="panel list-panel">
           <div class="panel-head">
             <h2>帧标记</h2>
@@ -50,7 +56,9 @@
         </section>
       </div>
 
+      <!-- .workspace-right: flex列 overflow:hidden -->
       <div class="workspace-right">
+        <!-- .player-section: flex:1 min-height:0 overflow:hidden -->
         <section class="panel player-section">
           <div class="panel-head">
             <h2>视频预览</h2>
@@ -61,6 +69,7 @@
           </div>
         </section>
 
+        <!-- .preview-section: flex:1 min-height:0 overflow:hidden -->
         <section class="panel preview-section">
           <div class="panel-head">
             <h2>当前帧预览</h2>
@@ -71,6 +80,7 @@
           </div>
         </section>
 
+        <!-- .ops-section: flex-shrink:0 固定高度不压缩 -->
         <section class="panel ops-section">
           <div class="panel-head">
             <h2>帧操作</h2>

@@ -48,6 +48,7 @@
             <button id="mkdirBtn" class="button warm" type="button">新建文件夹</button>
           </div>
           <div class="toolbar-actions-right">
+            <button id="upDirBtn" class="button ghost is-hidden" type="button">返回上级</button>
             <div class="view-switch" aria-label="视图切换">
               <button id="listViewBtn" class="button ghost is-active" type="button">列表</button>
               <button id="gridViewBtn" class="button ghost" type="button">宫格</button>
@@ -59,6 +60,7 @@
         <div id="uploadProgress" class="upload-progress is-hidden">
           <div class="upload-progress-head">
             <span id="uploadProgressText">准备上传...</span>
+            <span id="uploadSpeed" class="upload-speed"></span>
             <span id="uploadProgressPercent">0%</span>
           </div>
           <div class="upload-progress-bar">
@@ -70,10 +72,10 @@
           <table>
             <thead>
               <tr>
-                <th>名称</th>
+                <th class="sort-th" data-sort="name">名称</th>
+                <th class="sort-th" data-sort="size">大小</th>
+                <th class="sort-th" data-sort="date">修改时间</th>
                 <th>类型</th>
-                <th>大小</th>
-                <th>修改时间</th>
                 <th>操作</th>
               </tr>
             </thead>
@@ -155,14 +157,19 @@
         <button id="closePreviewBtn" class="button ghost" type="button">关闭</button>
       </div>
       <div id="previewBody" class="preview-body"></div>
+      <div class="preview-footer">
+        <button id="previewPrevBtn" class="button ghost" type="button" disabled>◀ 上一张</button>
+        <span id="previewCounter" class="preview-counter"></span>
+        <button id="previewNextBtn" class="button ghost" type="button" disabled>下一张 ▶</button>
+      </div>
     </dialog>
 
     <template id="rowTemplate">
       <tr>
         <td class="name-cell"></td>
-        <td class="type-cell"></td>
         <td class="size-cell"></td>
         <td class="time-cell"></td>
+        <td class="type-cell"></td>
         <td class="op-cell"></td>
       </tr>
     </template>

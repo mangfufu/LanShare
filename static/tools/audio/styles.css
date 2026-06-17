@@ -10,23 +10,21 @@
 html, body {
   height: 100%;
   margin: 0;
-  overflow-y: auto;
-  overflow-x: hidden;
   font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
   color: var(--text);
   background: transparent;
+  overflow: hidden;
 }
 
 .app-shell {
   width: min(1024px, calc(100% - 32px));
+  height: 100%;
   margin: 0 auto;
   padding: 4px 0 12px;
   display: flex;
   flex-direction: column;
   gap: 10px;
-  min-height: 100%;
-  overflow-y: auto;
-  overflow-x: hidden;
+  overflow: hidden;
 }
 
 .workspace {
@@ -36,8 +34,7 @@ html, body {
   gap: 10px;
   flex: 1;
   min-height: 0;
-  overflow-y: auto;
-  overflow-x: hidden;
+  overflow: hidden;
 }
 
 .col-left, .col-right {

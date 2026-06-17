@@ -7,9 +7,13 @@ const MediaStore = (() => {
 
   let dbPromise;
 
-  function openDb() {
+  async function openDb() {
     if (dbPromise) {
-      return dbPromise;
+      try {
+        return await dbPromise;
+      } catch (_) {
+        dbPromise = null;
+      }
     }
 
     dbPromise = new Promise((resolve, reject) => {
@@ -32,7 +36,12 @@ const MediaStore = (() => {
       request.onerror = () => reject(request.error || new Error("IndexedDB 打开失败"));
     });
 
-    return dbPromise;
+    try {
+      return await dbPromise;
+    } catch (error) {
+      dbPromise = null;
+      throw error;
+    }
   }
 
   async function withStore(storeName, mode, callback) {
@@ -61,6 +70,21 @@ const MediaStore = (() => {
     },
     async putVideo(record) {
       return withStore(VIDEO_STORE, "readwrite", (store) => requestToPromise(store.put(record)));
+    },
+    async putVideos(records) {
+      if (!records.length) return;
+      const db = await openDb();
+      return new Promise((resolve, reject) => {
+        const transaction = db.transaction(VIDEO_STORE, "readwrite");
+        const store = transaction.objectStore(VIDEO_STORE);
+        for (const record of records) {
+          const req = store.put(record);
+          req.onerror = () => reject(req.error || new Error("数据库写入失败"));
+        }
+        transaction.oncomplete = () => resolve();
+        transaction.onerror = () => reject(transaction.error || new Error("数据库事务失败"));
+        transaction.onabort = () => reject(transaction.error || new Error("数据库事务中止"));
+      });
     },
     async clearVideos() {
       return withStore(VIDEO_STORE, "readwrite", (store) => requestToPromise(store.clear()));

@@ -83,9 +83,9 @@ async function persistVideoState() {
   });
 
   await MediaStore.clearVideos();
-  for (const entry of state.videos) {
+  const records = state.videos.map((entry) => {
     ensureMarkerSelection(entry);
-    await MediaStore.putVideo({
+    return {
       id: entry.id,
       fileName: entry.file.name,
       fileType: entry.file.type,
@@ -95,8 +95,9 @@ async function persistVideoState() {
       markers: entry.markers,
       selectedMarkerIds: entry.selectedMarkerIds,
       selected: currentEntry ? currentEntry.id === entry.id : false,
-    });
-  }
+    };
+  });
+  await MediaStore.putVideos(records);
 }
 
 function formatBytes(bytes) {
@@ -641,6 +642,13 @@ async function exportMarkedFrames() {
   const entry = getCurrentEntry();
   if (!entry || !entry.markers.length) return;
 
+  const selectedIds = ensureMarkerSelection(entry);
+  const markersToExport = selectedIds.length
+    ? entry.markers.filter((marker) => selectedIds.includes(marker.id))
+    : entry.markers;
+
+  if (!markersToExport.length) return;
+
   state.isBusy = true;
   toggleActions(true);
   elements.video.pause();
@@ -650,8 +658,8 @@ async function exportMarkedFrames() {
   const originalTime = elements.video.currentTime;
 
   try {
-    for (let index = 0; index < entry.markers.length; index += 1) {
-      const marker = entry.markers[index];
+    for (let index = 0; index < markersToExport.length; index += 1) {
+      const marker = markersToExport[index];
       await seekVideo(marker.time);
       elements.timeline.value = String(elements.video.currentTime);
       elements.currentTimeLabel.textContent = formatTime(elements.video.currentTime);
@@ -660,7 +668,7 @@ async function exportMarkedFrames() {
       const timestamp = marker.time.toFixed(2).replace(".", "_");
       const filename = `${prefix}-${String(index + 1).padStart(3, "0")}-${timestamp}.${extension}`;
       downloadBlob(blob, filename);
-      showNotice(`正在导出第 ${index + 1}/${entry.markers.length} 张。`);
+      showNotice(`正在导出第 ${index + 1}/${markersToExport.length} 张。`);
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
 
@@ -668,7 +676,7 @@ async function exportMarkedFrames() {
     elements.timeline.value = String(elements.video.currentTime);
     elements.currentTimeLabel.textContent = formatTime(elements.video.currentTime);
     drawCurrentFrame();
-    showNotice(`导出完成，共 ${entry.markers.length} 张图片。`);
+    showNotice(`导出完成，共 ${markersToExport.length} 张图片。`);
   } catch (error) {
     showNotice(error.message || "导出中断。", "warn");
   } finally {
@@ -682,18 +690,31 @@ function bindDragAndDrop() {
   document.addEventListener("dragover", (e) => { e.preventDefault(); });
   document.addEventListener("drop", (e) => { e.preventDefault(); });
 
-  ["dragenter", "dragover"].forEach((eventName) => {
-    elements.dropZone.addEventListener(eventName, (event) => {
-      event.preventDefault();
-      elements.dropZone.classList.add("active");
-    });
+  let dragCounter = 0;
+
+  elements.dropZone.addEventListener("dragenter", (event) => {
+    event.preventDefault();
+    dragCounter += 1;
+    elements.dropZone.classList.add("active");
   });
 
-  ["dragleave", "drop"].forEach((eventName) => {
-    elements.dropZone.addEventListener(eventName, (event) => {
-      event.preventDefault();
+  elements.dropZone.addEventListener("dragover", (event) => {
+    event.preventDefault();
+  });
+
+  elements.dropZone.addEventListener("dragleave", (event) => {
+    event.preventDefault();
+    dragCounter -= 1;
+    if (dragCounter <= 0) {
+      dragCounter = 0;
       elements.dropZone.classList.remove("active");
-    });
+    }
+  });
+
+  elements.dropZone.addEventListener("drop", (event) => {
+    event.preventDefault();
+    dragCounter = 0;
+    elements.dropZone.classList.remove("active");
   });
 
   elements.dropZone.addEventListener("drop", (event) => {
@@ -750,6 +771,15 @@ function bindEvents() {
     drawCurrentFrame();
     renderMarkerList();
     showNotice(`视频已加载：${entry.file.name}`);
+  });
+
+  elements.video.addEventListener("error", () => {
+    const mediaError = elements.video.error;
+    const message = mediaError
+      ? `视频加载失败（错误码 ${mediaError.code}）。`
+      : "视频加载失败。";
+    showNotice(message, "warn");
+    toggleActions(false);
   });
 
   elements.video.addEventListener("timeupdate", () => {

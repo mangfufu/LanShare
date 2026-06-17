@@ -8,7 +8,7 @@ const Busboy = require("busboy");
 const archiver = require("archiver");
 const { URL } = require("url");
 let sharp;
-try { sharp = require("sharp"); } catch { const { execSync } = require("child_process"); console.log("正在安装 sharp..."); execSync("npm install sharp", { stdio: "inherit", cwd: __dirname }); sharp = require("sharp"); console.log("sharp 安装完成"); }
+try { sharp = require("sharp"); } catch { console.error("错误: sharp 未安装，请手动运行 npm install sharp"); process.exit(1); }
 const TMP_DIR = path.join(__dirname, "thumb_cache");
 
 const HOST = process.env.HOST || "0.0.0.0";
@@ -303,11 +303,7 @@ async function appendLogFileEntry(logLine, items) {
   await fsp.appendFile(logFile, fileContent, "utf8");
   const stat = await fsp.stat(logFile).catch(() => null);
   if (stat && stat.size > MAX_LOG_SIZE) {
-    for (let i = 2; i >= 1; i--) {
-      const old = `${logFile}.${i}`;
-      const src = i === 1 ? logFile : `${logFile}.${i - 1}`;
-      try { await fsp.rename(src, old); } catch {}
-    }
+    try { await fsp.rename(`${logFile}.1`, `${logFile}.2`); } catch {}
     try { await fsp.rename(logFile, `${logFile}.1`); } catch {}
   }
 }
@@ -368,6 +364,9 @@ async function serveStaticFile(res, filePath) {
     } else {
       res.destroy();
     }
+  });
+  res.on("close", () => {
+    stream.destroy();
   });
 }
 
@@ -725,12 +724,14 @@ async function moveItems(paths, targetDir) {
       throw new Error(`不能把文件夹移动到它自己的子目录中：${sourceName}`);
     }
 
-    const destinationExists = await fsp.access(destinationPath).then(() => true).catch(() => false);
-    if (destinationExists) {
-      throw new Error(`目标位置已存在同名项目：${sourceName}`);
+    try {
+      await fsp.rename(sourcePath, destinationPath);
+    } catch (err) {
+      if (err.code === "EEXIST") {
+        throw new Error(`目标位置已存在同名项目：${sourceName}`);
+      }
+      throw err;
     }
-
-    await fsp.rename(sourcePath, destinationPath);
     moved.push({ from: sourceRelative, to: destinationRelative });
   }
 
@@ -916,7 +917,7 @@ async function handleApi(req, res, url) {
       const offset = Math.max(0, Number(url.searchParams.get("offset")) || 0);
       const limit = Math.min(200, Math.max(1, Number(url.searchParams.get("limit")) || 50));
       const result = await listDirectory(dir, offset, limit);
-      sendJson(res, 200, { currentDir: dir, rootDir: ROOT_DIR, ...result });
+      sendJson(res, 200, { currentDir: dir, ...result });
     } catch (error) {
       sendJson(res, 400, { error: error.message });
     }
@@ -1287,20 +1288,19 @@ async function streamBatchDownload(res, url) {
 }
 
 const server = http.createServer(async (req, res) => {
+  res.on("error", () => {});
   const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
   try {
     if (await handleApi(req, res, url)) return;
     if (req.method === "GET" && url.pathname === "/download") return void await streamFile(req, res, url, true);
         if (req.method === "GET" && url.pathname === "/api/thumb") {
       try {
-        const q = url.searchParams.get("path") || "";
-        const full = path.resolve(ROOT_DIR, q.replaceAll("\\", "/").trim());
-        if (full.indexOf(ROOT_DIR) !== 0) { sendText(res, 400, "bad"); return; }
+        const q = safeRelative(url.searchParams.get("path") || "");
+        const full = resolveInsideRoot(q);
         await fsp.mkdir(TMP_DIR, { recursive: true });
         const cache = path.join(TMP_DIR, crypto.createHash("md5").update(full).digest("hex") + ".webp");
         try { const c = await fsp.readFile(cache); res.writeHead(200,{"Content-Type":"image/webp","Content-Length":c.length,"Cache-Control":"public,max-age=86400"}); res.end(c); return; } catch {}
-        const raw = await fsp.readFile(full);
-        const thumb = await sharp(raw).resize(200).webp({quality:70}).toBuffer();
+        const thumb = await sharp(fs.createReadStream(full)).resize(200).webp({quality:70}).toBuffer();
         fsp.writeFile(cache, thumb).catch(function(){});
         res.writeHead(200,{"Content-Type":"image/webp","Content-Length":thumb.length,"Cache-Control":"public,max-age=86400"});
         res.end(thumb);
@@ -1313,12 +1313,18 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && url.pathname === "/app.js") return void await serveStaticFile(res, path.join(STATIC_DIR, "app.js"));
     if (req.method === "GET" && url.pathname === "/styles.css") return void await serveStaticFile(res, path.join(STATIC_DIR, "styles.css"));
     if (req.method === "GET") {
-      const p = path.join(STATIC_DIR, url.pathname.replace(/^\//, ""));
-      try { await fsp.access(p); return void await serveStaticFile(res, p); } catch {}
+      const p = path.resolve(STATIC_DIR, url.pathname.replace(/^\//, ""));
+      if (p.startsWith(STATIC_DIR + path.sep) || p === STATIC_DIR) {
+        try { await fsp.access(p); return void await serveStaticFile(res, p); } catch {}
+      }
     }
     sendText(res, 404, "Not Found");
   } catch (error) {
-    sendJson(res, 500, { error: error.message || "服务器错误" });
+    if (!res.headersSent) {
+      sendJson(res, 500, { error: error.message || "服务器错误" });
+    } else {
+      res.destroy();
+    }
   }
 });
 

@@ -1,4 +1,4 @@
-﻿const VIEW_MODE_KEY = "lan_file_server_view_mode";
+const VIEW_MODE_KEY = "lan_file_server_view_mode";
 const THEME_KEY = "lan_file_server_theme";
 const THEME_POS_KEY = "lan_file_server_theme_pos";
 const NICKNAME_KEY = "lan_file_server_nickname";
@@ -14,6 +14,7 @@ const state = {
   theme: localStorage.getItem(THEME_KEY) === "dark" ? "dark" : "light",
   themePos: Number(localStorage.getItem(THEME_POS_KEY)) || 0,
   currentItems: [],
+  previewIndex: -1,
   moveTargetDir: "",
   movePaths: [],
   moveDirectories: [],
@@ -43,7 +44,9 @@ const state = {
   logEntries: [],
   fileOffset: 0,
   fileTotal: 0,
-  loadingMore: false
+  loadingMore: false,
+  sortKey: "name",
+  sortAsc: true
 };
 
 const tableBody = document.querySelector("#fileTableBody");
@@ -79,6 +82,7 @@ const recycleRestoreSelectedBtn = document.querySelector("#recycleRestoreSelecte
 const recycleDeleteSelectedBtn = document.querySelector("#recycleDeleteSelectedBtn");
 const uploadProgress = document.querySelector("#uploadProgress");
 const uploadProgressText = document.querySelector("#uploadProgressText");
+const uploadSpeedEl = document.querySelector("#uploadSpeed");
 const uploadProgressPercent = document.querySelector("#uploadProgressPercent");
 const uploadProgressFill = document.querySelector("#uploadProgressFill");
 const uploadQueue = document.querySelector("#uploadQueue");
@@ -319,12 +323,35 @@ function setUploadProgress(percent, text, options = {}) {
   uploadProgressText.textContent = text;
   uploadProgressPercent.textContent = `${Math.max(0, Math.min(100, Math.round(percent)))}%`;
   uploadProgressFill.style.width = `${Math.max(0, Math.min(100, percent))}%`;
+  if (options.speed !== undefined && uploadSpeedEl) {
+    uploadSpeedEl.textContent = options.speed;
+  }
+}
+
+function formatSpeed(bytesPerSec) {
+  if (bytesPerSec >= 1024 * 1024) {
+    return `${(bytesPerSec / 1024 / 1024).toFixed(1)} MB/s`;
+  }
+  return `${(bytesPerSec / 1024).toFixed(1)} KB/s`;
+}
+
+function calculateUploadSpeed(samples) {
+  if (samples.length < 2) return null;
+  const recent = samples.slice(-5);
+  const first = recent[0];
+  const last = recent[recent.length - 1];
+  const dt = (last.time - first.time) / 1000;
+  if (dt <= 0) return null;
+  const bytes = last.loaded - first.loaded;
+  if (bytes <= 0) return null;
+  return bytes / dt;
 }
 
 function resetUploadProgress() {
   uploadProgress.classList.add("is-hidden");
   uploadProgress.classList.remove("is-indeterminate");
   uploadProgressText.textContent = "准备上传...";
+  if (uploadSpeedEl) uploadSpeedEl.textContent = "";
   uploadProgressPercent.textContent = "0%";
   uploadProgressFill.style.width = "0%";
 }
@@ -405,6 +432,17 @@ function formatSize(size) {
     unitIndex += 1;
   }
   return `${value.toFixed(value >= 10 || unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
+}
+
+function getFileType(item) {
+  if (item.type === "directory") return "文件夹";
+  const name = item.name || "";
+  const ext = name.lastIndexOf(".") > 0 ? name.slice(name.lastIndexOf(".") + 1).toUpperCase() : "";
+  if (ext) return ext;
+  if (item.previewType === "image") return "图片";
+  if (item.previewType === "video") return "视频";
+  if (item.previewType === "audio") return "音频";
+  return "文件";
 }
 
 function escapeHtml(text) {
@@ -518,6 +556,10 @@ function renderBreadcrumb() {
     btn.onclick = () => loadDir(targetDir);
     breadcrumb.appendChild(btn);
   }
+  // 显示/隐藏返回上级按钮
+  if (upDirBtn) {
+    upDirBtn.classList.toggle("is-hidden", !state.currentDir);
+  }
 }
 
 function buildThumbnail(item, searchDir) {
@@ -575,6 +617,12 @@ function buildThumbnail(item, searchDir) {
   return wrapper;
 }
 
+function getPreviewableItems() {
+  return state.currentItems.filter((item) =>
+    item.previewType === "image" || item.previewType === "video" || item.previewType === "audio"
+  );
+}
+
 function openPreview(item) {
   if (item.type === "directory") {
     loadDir(item.path);
@@ -585,33 +633,62 @@ function openPreview(item) {
     return;
   }
 
-  previewTitle.textContent = item.name;
-  previewBody.innerHTML = "";
-  const src = `/file?path=${encodeURIComponent(item.path)}`;
+  // 记录当前预览项在可预览列表中的索引
+  var previewable = getPreviewableItems();
+  state.previewIndex = previewable.findIndex((p) => p.path === item.path);
 
-  if (item.previewType === "image") {
-    const img = document.createElement("img");
-    img.className = "preview-image";
-    img.src = src;
-    img.alt = item.name;
-    previewBody.appendChild(img);
-  } else if (item.previewType === "video") {
-    const video = document.createElement("video");
-    video.className = "preview-video";
-    video.src = src;
-    video.controls = true;
-    video.autoplay = true;
-    video.playsInline = true;
-    previewBody.appendChild(video);
-  } else if (item.previewType === "audio") {
-    previewBody.innerHTML = `
-      <div class="audio-preview">
-        <div class="audio-art">♪</div>
-        <div class="audio-name">${escapeHtml(item.name)}</div>
-        <audio class="preview-audio" src="${src}" controls autoplay></audio>
-      </div>
-    `;
+  showPreviewItem(item);
+}
+
+function showPreviewItem(item) {
+  previewTitle.textContent = item.name;
+  const src = `/file?path=${encodeURIComponent(item.path)}`;
+  const currentType = previewBody.dataset.previewType;
+
+  if (currentType === item.previewType) {
+    // 类型相同，直接更新 src，不重建 DOM
+    if (item.previewType === "image") {
+      var img = previewBody.querySelector("img");
+      if (img) { img.src = src; img.alt = item.name; }
+    } else if (item.previewType === "video") {
+      var video = previewBody.querySelector("video");
+      if (video) { video.src = src; video.play().catch(() => {}); }
+    } else if (item.previewType === "audio") {
+      var audio = previewBody.querySelector("audio");
+      if (audio) { audio.src = src; audio.play().catch(() => {}); }
+    }
+  } else {
+    // 类型不同，重建 DOM
+    previewBody.dataset.previewType = item.previewType;
+    previewBody.innerHTML = "";
+
+    if (item.previewType === "image") {
+      const img = document.createElement("img");
+      img.className = "preview-image";
+      img.src = src;
+      img.alt = item.name;
+      previewBody.appendChild(img);
+    } else if (item.previewType === "video") {
+      const video = document.createElement("video");
+      video.className = "preview-video";
+      video.src = src;
+      video.controls = true;
+      video.autoplay = true;
+      video.playsInline = true;
+      previewBody.appendChild(video);
+    } else if (item.previewType === "audio") {
+      previewBody.innerHTML = `
+        <div class="audio-preview">
+          <div class="audio-art">♪</div>
+          <div class="audio-name">${escapeHtml(item.name)}</div>
+          <audio class="preview-audio" src="${src}" controls autoplay></audio>
+        </div>
+      `;
+    }
   }
+
+  // 更新导航按钮状态
+  updatePreviewNav();
 
   if (typeof previewDialog.showModal === "function") {
     previewDialog.showModal();
@@ -620,8 +697,31 @@ function openPreview(item) {
   }
 }
 
+function updatePreviewNav() {
+  var prevBtn = document.querySelector("#previewPrevBtn");
+  var nextBtn = document.querySelector("#previewNextBtn");
+  var counter = document.querySelector("#previewCounter");
+  var previewable = getPreviewableItems();
+  var total = previewable.length;
+  if (prevBtn) prevBtn.disabled = total <= 1;
+  if (nextBtn) nextBtn.disabled = total <= 1;
+  if (counter) counter.textContent = total > 0 ? (state.previewIndex + 1) + " / " + total : "";
+}
+
+function navigatePreview(direction) {
+  var previewable = getPreviewableItems();
+  if (previewable.length === 0) return;
+  var newIndex = state.previewIndex + direction;
+  if (newIndex < 0) newIndex = previewable.length - 1;
+  if (newIndex >= previewable.length) newIndex = 0;
+  state.previewIndex = newIndex;
+  showPreviewItem(previewable[newIndex]);
+}
+
 function closePreview() {
   previewBody.innerHTML = "";
+  previewBody.dataset.previewType = "";
+  state.previewIndex = -1;
   if (previewDialog.open && typeof previewDialog.close === "function") {
     previewDialog.close();
   } else {
@@ -748,16 +848,60 @@ function getFilteredCurrentItems() {
   return state.currentItems.filter((item) => item.name.toLowerCase().includes(keyword) || item.path.toLowerCase().includes(keyword));
 }
 
+function sortItems(items) {
+  const sorted = [...items];
+  if (items._stoppedEarly) sorted._stoppedEarly = items._stoppedEarly;
+  const { sortKey, sortAsc } = state;
+  sorted.sort((a, b) => {
+    if (a.type === "directory" && b.type !== "directory") return -1;
+    if (a.type !== "directory" && b.type === "directory") return 1;
+    let cmp = 0;
+    if (sortKey === "name") {
+      cmp = a.name.localeCompare(b.name, "zh-CN", { numeric: true, sensitivity: "base" });
+    } else if (sortKey === "size") {
+      const sa = a.folderSize != null ? a.folderSize : (a.size || 0);
+      const sb = b.folderSize != null ? b.folderSize : (b.size || 0);
+      cmp = sa - sb;
+    } else if (sortKey === "date") {
+      cmp = String(a.updatedAt || "").localeCompare(String(b.updatedAt || ""));
+    }
+    return sortAsc ? cmp : -cmp;
+  });
+  return sorted;
+}
+
+function toggleSort(key) {
+  if (state.sortKey === key) {
+    state.sortAsc = !state.sortAsc;
+  } else {
+    state.sortKey = key;
+    state.sortAsc = true;
+  }
+  updateSortButtons();
+  renderCurrentDirectory();
+}
+
+function updateSortButtons() {
+  document.querySelectorAll(".sort-th").forEach((th) => {
+    const k = th.dataset.sort;
+    const active = state.sortKey === k;
+    th.classList.toggle("sort-active", active);
+    th.classList.toggle("sort-desc", active && !state.sortAsc);
+    const labels = { name: "名称", size: "大小", date: "修改时间" };
+    th.textContent = labels[k];
+  });
+}
+
 function renderCurrentDirectory() {
   renderBreadcrumb();
   if (state.searchQuery) {
-    const items = state.searchResults;
+    const items = sortItems(state.searchResults);
     const count = items.length;
     const suffix = items._stoppedEarly ? `（仅前 ${count} 项，请缩小搜索范围）` : count > 0 ? `（共 ${count} 项）` : "";
-    showMessage(`搜索“${state.searchQuery}”${suffix}`, "info");
+    showMessage(`搜索"${state.searchQuery}"${suffix}`, "info");
     renderRows(items, true);
   } else {
-    renderRows(getFilteredCurrentItems(), false);
+    renderRows(sortItems(getFilteredCurrentItems()), false);
   }
 }
 
@@ -1139,8 +1283,8 @@ function createGridCard(item) {
   const meta = document.createElement("div");
   meta.className = "grid-meta";
   meta.innerHTML = `
-    <div class="grid-type">${item.type === "directory" ? "文件夹" : "文件"}</div>
-    <div class="grid-size">${formatSize(item.size)}</div>
+    <div class="grid-type">${getFileType(item)}</div>
+    <div class="grid-size">${item.type === "directory" ? formatSize(item.folderSize) : formatSize(item.size)}</div>
     <div class="grid-time">${new Date(item.updatedAt).toLocaleString("zh-CN")}</div>
   `;
   card.appendChild(meta);
@@ -1150,19 +1294,6 @@ function createGridCard(item) {
 
 function renderGrid(items) {
   gridView.innerHTML = "";
-  if (state.searchQuery) {
-    // search mode — no up button
-  } else if (state.currentDir) {
-    const upCard = document.createElement("article");
-    upCard.className = "grid-card up-card";
-    upCard.innerHTML = '<div class="up-icon">..</div><div class="up-label">返回上级</div>';
-    upCard.onclick = () => {
-      const parts = state.currentDir.split("/");
-      parts.pop();
-      loadDir(parts.join("/"));
-    };
-    gridView.appendChild(upCard);
-  }
   for (const item of items) {
     gridView.appendChild(createGridCard(item));
   }
@@ -1188,29 +1319,6 @@ function renderRows(items) {
   tableBody.innerHTML = "";
   if (state.viewMode === "grid") { renderGrid(items); return; }
 
-  if (!state.searchQuery && state.currentDir) {
-    const tr = rowTemplate.content.firstElementChild.cloneNode(true);
-    tr.className = "interactive-row";
-    tr.querySelector(".name-cell").textContent = "..";
-    tr.querySelector(".type-cell").textContent = "返回上级";
-    tr.querySelector(".size-cell").textContent = "-";
-    tr.querySelector(".time-cell").textContent = "-";
-    tr.ondblclick = () => {
-      const parts = state.currentDir.split("/");
-      parts.pop();
-      loadDir(parts.join("/"));
-    };
-    const upButton = document.createElement("button");
-    upButton.className = "link-button";
-    upButton.textContent = "打开";
-    upButton.onclick = () => {
-      const parts = state.currentDir.split("/");
-      parts.pop();
-      loadDir(parts.join("/"));
-    };
-    tr.querySelector(".op-cell").appendChild(upButton);
-    tableBody.appendChild(tr);
-  }
 
   for (const item of items) {
     const searchDir = state.searchQuery ? parentDir(item.path) : "";
@@ -1221,8 +1329,8 @@ function renderRows(items) {
     wrap.appendChild(makeSelectCheckbox(item));
     wrap.appendChild(buildThumbnail(item, searchDir));
     tr.querySelector(".name-cell").appendChild(wrap);
-    tr.querySelector(".type-cell").textContent = item.type === "directory" ? "文件夹" : "文件";
-    tr.querySelector(".size-cell").textContent = formatSize(item.size);
+    tr.querySelector(".type-cell").textContent = getFileType(item);
+    tr.querySelector(".size-cell").textContent = item.type === "directory" ? formatSize(item.folderSize) : formatSize(item.size);
     tr.querySelector(".time-cell").textContent = new Date(item.updatedAt).toLocaleString("zh-CN");
     tr.ondblclick = () => openPreview(item);
     tr.querySelector(".op-cell").appendChild(createActions(item));
@@ -1584,10 +1692,16 @@ async function uploadEntries(fileEntries, label = "文件") {
     xhr.setRequestHeader("X-CSRF-Token", state.csrfToken);
     if (state.nickname) xhr.setRequestHeader("X-Device-Name", encodeURIComponent(state.nickname));
 
+    const speedSamples = [];
+
     xhr.upload.onprogress = (event) => {
       if (!event.lengthComputable) return;
       const percent = (event.loaded / event.total) * 100;
-      setUploadProgress(percent, `正在上传${label}...`);
+      speedSamples.push({ loaded: event.loaded, time: performance.now() });
+      if (speedSamples.length > 20) speedSamples.splice(0, speedSamples.length - 20);
+      const speed = calculateUploadSpeed(speedSamples);
+      const speedText = speed != null ? formatSpeed(speed) : "";
+      setUploadProgress(percent, `正在上传${label}...`, { speed: speedText });
       updateUploadTask(task, { progress: percent, message: `正在上传 ${Math.round(percent)}%` });
     };
 
@@ -2150,6 +2264,14 @@ setInterval(pollLogs, 3000);
 
 mkdirBtn.addEventListener("click", createFolder);
 refreshBtn.addEventListener("click", () => loadDir(state.currentDir));
+var upDirBtn = document.querySelector("#upDirBtn");
+if (upDirBtn) {
+  upDirBtn.addEventListener("click", () => {
+    var parts = state.currentDir.split("/");
+    parts.pop();
+    loadDir(parts.join("/"));
+  });
+}
 async function performSearch(query) {
   if (state.searchTimeout) {
     clearTimeout(state.searchTimeout);
@@ -2185,10 +2307,23 @@ mainSearchInput.addEventListener("input", (event) => {
 });
 listViewBtn.addEventListener("click", () => setViewMode("list"));
 gridViewBtn.addEventListener("click", () => setViewMode("grid"));
+document.querySelectorAll(".sort-th").forEach((th) => {
+  th.addEventListener("click", () => toggleSort(th.dataset.sort));
+});
 closePreviewBtn.addEventListener("click", closePreview);
 previewDialog.addEventListener("click", (event) => {
   if (event.target === previewDialog) closePreview();
 });
+document.addEventListener("keydown", (event) => {
+  if (!previewDialog.open) return;
+  if (event.key === "ArrowLeft") { event.preventDefault(); navigatePreview(-1); }
+  if (event.key === "ArrowRight") { event.preventDefault(); navigatePreview(1); }
+  if (event.key === "Escape") { closePreview(); }
+});
+var previewPrevBtn = document.querySelector("#previewPrevBtn");
+var previewNextBtn = document.querySelector("#previewNextBtn");
+if (previewPrevBtn) previewPrevBtn.addEventListener("click", () => navigatePreview(-1));
+if (previewNextBtn) previewNextBtn.addEventListener("click", () => navigatePreview(1));
 recycleToggleBtn.addEventListener("click", () => {
   recycleDrawer.classList.toggle("is-hidden");
   loadRecycleItems();
@@ -2227,6 +2362,7 @@ moveHereBtn.addEventListener("click", async () => {
 
 
 updateToolbarButtons();
+updateSortButtons();
 
 // Tab switching
 document.querySelectorAll(".tab").forEach(function(t) {

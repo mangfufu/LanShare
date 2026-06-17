@@ -13,9 +13,9 @@ const TMP_DIR = path.join(__dirname, "thumb_cache");
 
 const HOST = process.env.HOST || "0.0.0.0";
 const PORT = Number(process.env.PORT || 8080);
-const ROOT_DIR = path.resolve(process.env.SHARED_DIR || path.join(process.cwd(), "shared"));
-const BACKUP_DIR = path.resolve(process.env.BACKUP_DIR || path.join(process.cwd(), "backup"));
-const RECYCLE_DIR = path.resolve(process.env.RECYCLE_DIR || path.join(process.cwd(), "recycle_bin"));
+const ROOT_DIR = path.resolve(process.env.SHARED_DIR || path.join(__dirname, "shared"));
+const BACKUP_DIR = path.resolve(process.env.BACKUP_DIR || path.join(__dirname, "backup"));
+const RECYCLE_DIR = path.resolve(process.env.RECYCLE_DIR || path.join(__dirname, "recycle_bin"));
 const LOG_DIR = path.join(__dirname, "logs");
 const STATIC_DIR = path.join(__dirname, "static");
 const MAX_BODY_SIZE = 1024 * 1024 * 1024;
@@ -166,12 +166,32 @@ function getPreviewType(fileName) {
   return "none";
 }
 
+async function getDirSize(dirPath, depth) {
+  if (depth > 3) return 0;
+  let total = 0;
+  try {
+    const entries = await fsp.readdir(dirPath, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(dirPath, entry.name);
+      try {
+        if (entry.isDirectory()) {
+          total += await getDirSize(fullPath, depth + 1);
+        } else {
+          const stat = await fsp.stat(fullPath);
+          total += stat.size;
+        }
+      } catch {}
+    }
+  } catch {}
+  return total;
+}
+
 async function buildListItem(item, normalizedDir) {
   const childRelative = safeRelative(path.posix.join(normalizedDir, item.name));
   const childPath = resolveInsideRoot(childRelative);
   const stat = await fsp.stat(childPath);
   const previewType = item.isDirectory() ? "none" : getPreviewType(item.name);
-  return {
+  const result = {
     name: item.name,
     path: childRelative,
     type: item.isDirectory() ? "directory" : "file",
@@ -179,6 +199,10 @@ async function buildListItem(item, normalizedDir) {
     size: item.isDirectory() ? null : stat.size,
     updatedAt: stat.mtime.toISOString()
   };
+  if (item.isDirectory()) {
+    result.folderSize = await getDirSize(childPath, 1);
+  }
+  return result;
 }
 
 function parseChineseNumeral(text) {

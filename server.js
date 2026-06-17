@@ -33,6 +33,7 @@ const pendingFileStreamSlots = [];
 const CSRF_TOKEN = crypto.randomBytes(32).toString("hex");
 const PROTECTED_POST_PATHS = new Set([
   "/api/mkdir",
+  "/api/create-project",
   "/api/delete",
   "/api/rename",
   "/api/move",
@@ -1003,6 +1004,65 @@ async function handleApi(req, res, url) {
       await ensureDir(resolveInsideRoot(targetRelative));
       logAction(getDeviceName(req), getClientIp(req), "创建文件夹", path.posix.join(parentDir, name));
       sendJson(res, 200, { ok: true, path: targetRelative });
+    } catch (error) {
+      sendJson(res, error.statusCode || 400, { error: error.message });
+    }
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/create-project") {
+    try {
+      const body = parseJson(await readRequestBody(req));
+      const name = String(body.name || "").trim();
+      const episodes = Math.max(1, Math.floor(Number(body.episodes) || 1));
+      const parentDir = safeRelative(body.parentDir);
+      if (!name) throw new Error("项目名称不能为空");
+      if (isInvalidFileName(name)) throw new Error("项目名称包含非法字符");
+      const projectPath = safeRelative(path.posix.join(parentDir, `《${name}》`));
+      const projectFull = resolveInsideRoot(projectPath);
+
+      // 中文数字映射
+      // 资产子文件夹
+      const assetSubs = ["人物", "道具", "场景", "特效", "群演"];
+      const dirs = [projectFull];
+
+      // 资产
+      for (const sub of assetSubs) {
+        dirs.push(path.join(projectFull, "资产", sub));
+      }
+
+      // 视频
+      const txtFiles = [];
+      for (let i = 0; i < episodes; i++) {
+        const epNum = String(i + 1).padStart(2, "0");
+        const epName = `第${i + 1}集`;
+        const epDir = path.join(projectFull, "视频", epName);
+        dirs.push(epDir);
+        // 补镜头目录
+        const buDir = path.join(epDir, `${epName}补`);
+        dirs.push(buDir);
+        txtFiles.push(path.join(buDir, `${epNum}-001-01-b1.txt`));
+        // 粗剪素材目录
+        const roughDir = path.join(epDir, `${epName}粗剪素材`);
+        dirs.push(roughDir);
+        txtFiles.push(path.join(roughDir, `${epNum}-001-01.txt`));
+        // 未使用素材目录
+        dirs.push(path.join(epDir, `${epName}未使用素材`));
+      }
+
+      // 剧本
+      dirs.push(path.join(projectFull, "剧本"));
+
+      // 先创建所有目录
+      for (const dir of dirs) {
+        await fsp.mkdir(dir, { recursive: true });
+      }
+      // 再创建txt模板文件
+      for (const f of txtFiles) {
+        await fsp.writeFile(f, "").catch(() => {});
+      }
+      logAction(getDeviceName(req), getClientIp(req), "创建项目文件夹", projectPath);
+      sendJson(res, 200, { ok: true, path: projectPath });
     } catch (error) {
       sendJson(res, error.statusCode || 400, { error: error.message });
     }

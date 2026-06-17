@@ -852,12 +852,22 @@ function sortItems(items) {
   const sorted = [...items];
   if (items._stoppedEarly) sorted._stoppedEarly = items._stoppedEarly;
   const { sortKey, sortAsc } = state;
+
+  // 提取数字：第1集→1，第12集→12
+  function extractNum(s) {
+    const m = s.match(/第(\d+)集/);
+    return m ? parseInt(m[1], 10) : null;
+  }
+
   sorted.sort((a, b) => {
     if (a.type === "directory" && b.type !== "directory") return -1;
     if (a.type !== "directory" && b.type === "directory") return 1;
     let cmp = 0;
     if (sortKey === "name") {
-      cmp = a.name.localeCompare(b.name, "zh-CN", { numeric: true, sensitivity: "base" });
+      const na = extractNum(a.name);
+      const nb = extractNum(b.name);
+      if (na !== null && nb !== null) { cmp = na - nb; }
+      else { cmp = a.name.localeCompare(b.name, "zh-CN", { numeric: true, sensitivity: "base" }); }
     } else if (sortKey === "size") {
       const sa = a.folderSize != null ? a.folderSize : (a.size || 0);
       const sb = b.folderSize != null ? b.folderSize : (b.size || 0);
@@ -1776,6 +1786,93 @@ async function createFolder() {
   await loadDir(state.currentDir);
 }
 
+async function createProject() {
+  const dialog = document.createElement("dialog");
+  dialog.className = "preview-dialog form-dialog";
+  dialog.innerHTML = `
+    <div class="preview-header">
+      <div>
+        <div class="label">创建位置：shared${state.currentDir ? `/${state.currentDir}` : ""}</div>
+        <div class="preview-title">新建项目</div>
+      </div>
+      <button class="button ghost" data-action="cancel" type="button">关闭</button>
+    </div>
+    <form class="form-dialog-body" method="dialog">
+      <div class="input-row">
+        <label style="min-width:6em;text-align:right">项目名称</label>
+        <input class="field" name="projectName" autocomplete="off" placeholder="请输入项目名称" />
+      </div>
+      <div class="input-row" style="margin-top:.5em">
+        <label style="min-width:6em;text-align:right">集数</label>
+        <input class="field" name="episodes" type="number" min="1" value="1" autocomplete="off" style="width:6em" />
+      </div>
+      <div class="message"></div>
+      <div class="dialog-actions">
+        <button class="button ghost" data-action="cancel" type="button">取消</button>
+        <button class="button primary" type="submit">创建</button>
+      </div>
+    </form>
+  `;
+  document.body.appendChild(dialog);
+
+  const form = dialog.querySelector("form");
+  const nameInput = dialog.querySelector("input[name='projectName']");
+  const epsInput = dialog.querySelector("input[name='episodes']");
+  const message = dialog.querySelector(".message");
+  let resolved = false;
+  let resolve;
+
+  const finish = (result) => {
+    if (resolved) return;
+    resolved = true;
+    closeDialog(dialog);
+    dialog.remove();
+    resolve(result);
+  };
+
+  dialog.addEventListener("click", (event) => {
+    if (event.target === dialog || event.target.dataset.action === "cancel") finish(null);
+  });
+  dialog.addEventListener("cancel", (event) => {
+    event.preventDefault();
+    finish(null);
+  });
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const name = nameInput.value.trim();
+    const episodes = parseInt(epsInput.value, 10) || 1;
+    if (!name) {
+      message.textContent = "项目名称不能为空";
+      message.className = "message error";
+      return;
+    }
+    if (/[<>:"/\\|?*]/.test(name)) {
+      message.textContent = "项目名称不能包含这些字符：<>:\"/\\|?*";
+      message.className = "message error";
+      return;
+    }
+    finish({ name, episodes: Math.max(1, episodes) });
+  });
+
+  nameInput.focus();
+  showDialog(dialog);
+  const result = await new Promise((r) => { resolve = r; });
+
+  if (result == null) return;
+  const res = await apiFetch("/api/create-project", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: result.name, episodes: result.episodes, parentDir: state.currentDir })
+  });
+  const data = await parseJsonResponse(res);
+  if (!res.ok) {
+    showMessage(data.error || "创建项目失败", "error");
+    return;
+  }
+  showMessage(`已创建项目：《${result.name}》`, "success");
+  await loadDir(state.currentDir);
+}
+
 function setDropActive(active) {
   // 工具标签页下不显示拖拽覆盖层，由工具自身处理
   if (active) {
@@ -2263,6 +2360,7 @@ promptNickname();
 setInterval(pollLogs, 3000);
 
 mkdirBtn.addEventListener("click", createFolder);
+document.querySelector("#createProjectBtn").addEventListener("click", createProject);
 refreshBtn.addEventListener("click", () => loadDir(state.currentDir));
 var upDirBtn = document.querySelector("#upDirBtn");
 if (upDirBtn) {
@@ -2529,8 +2627,8 @@ function startFloatingChars() {
   document.addEventListener("selectstart", _floatSelectStart);
 
   function animate() {
-    const mw = window.innerWidth, mh = window.innerHeight;
     const now = performance.now();
+    const mw = window.innerWidth, mh = window.innerHeight;
 
     // Idle detection
     if (now - floatMouse.lastMove > 600 && floatMouse.x > -5000) {

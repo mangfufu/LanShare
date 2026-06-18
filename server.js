@@ -557,6 +557,9 @@ async function handleStreamingUpload(req) {
 
       const task = (async () => {
         await ensureDir(path.dirname(filePath));
+        // 删除旧的缩略图缓存（同名文件上传时更新预览图）
+        const oldCache = path.join(TMP_DIR, crypto.createHash("md5").update(filePath).digest("hex") + ".webp");
+        fsp.unlink(oldCache).catch(() => {});
         // 只写 shared 文件，不等待备份
         await new Promise((resolveFile, rejectFile) => {
           const sharedStream = fs.createWriteStream(filePath);
@@ -1084,6 +1087,9 @@ async function handleApi(req, res, url) {
             deletedNames.push(...await collectDirFileNames(fullPath));
           } else {
             deletedNames.push(path.basename(fullPath));
+            // 删除对应的缩略图缓存
+            const cache = path.join(TMP_DIR, crypto.createHash("md5").update(fullPath).digest("hex") + ".webp");
+            fsp.unlink(cache).catch(() => {});
           }
         } catch {}
       }
@@ -1121,6 +1127,9 @@ async function handleApi(req, res, url) {
       } catch (error) {
         if (error.message === "目标名称已存在") throw error;
       }
+      // 删除旧的缩略图缓存
+      const oldCache = path.join(TMP_DIR, crypto.createHash("md5").update(sourcePath).digest("hex") + ".webp");
+      fsp.unlink(oldCache).catch(() => {});
       await fsp.rename(sourcePath, targetPath);
       logAction(getDeviceName(req), getClientIp(req), "重命名", `${sourceRelative} → ${newName}`);
       sendJson(res, 200, { ok: true, oldPath: sourceRelative, newPath: targetRelative });

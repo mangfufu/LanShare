@@ -27,6 +27,7 @@ const state = {
   recycleSelectedIds: new Set(),
   recycleFilter: "",
   recycleItems: [],
+  undoStack: [], // 操作撤销栈：{ type, items, targetDir, sourceDir, user, timestamp }
   uploadTasks: [],
   nextUploadTaskId: 1,
   csrfToken: "",
@@ -46,7 +47,8 @@ const state = {
   fileTotal: 0,
   loadingMore: false,
   sortKey: "name",
-  sortAsc: true
+  sortAsc: true,
+  clipboard: { items: [], mode: null }
 };
 
 const tableBody = document.querySelector("#fileTableBody");
@@ -454,6 +456,61 @@ function escapeHtml(text) {
     .replaceAll("'", "&#39;");
 }
 
+// 撤销功能
+function pushUndo(entry) {
+  state.undoStack.push(entry);
+  // 保留最近 20 条操作
+  if (state.undoStack.length > 20) state.undoStack.shift();
+}
+
+async function undoLastAction() {
+  // 找到当前用户最近的操作
+  const user = state.nickname || "anonymous";
+  const idx = state.undoStack.findLastIndex(e => e.user === user);
+  if (idx === -1) {
+    showMessage("没有可撤销的操作", "info");
+    return;
+  }
+  const entry = state.undoStack[idx];
+  state.undoStack.splice(idx, 1);
+
+  if (entry.type === "delete") {
+    // 删除操作：恢复回收站中的文件
+    const recycleItems = await fetchRecycleItems();
+    for (const itemPath of entry.items) {
+      const fileName = itemPath.split("/").pop();
+      const recycleEntry = recycleItems.find(r => r.name === fileName || r.items?.some(i => i.name === fileName));
+      if (recycleEntry) {
+        await apiFetch("/api/recycle/restore", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: recycleEntry.id })
+        });
+      }
+    }
+    showMessage("已撤销删除", "success");
+    await loadDir(entry.sourceDir);
+    await loadRecycleItems();
+  } else if (entry.type === "move") {
+    // 移动操作：移回原目录
+    const movedPaths = entry.items.map(p => {
+      const fileName = p.split("/").pop();
+      return entry.targetDir ? `${entry.targetDir}/${fileName}` : fileName;
+    });
+    const ok = await moveItems(movedPaths, entry.sourceDir);
+    if (ok) {
+      showMessage("已撤销移动", "success");
+      await loadDir(state.currentDir);
+    }
+  }
+}
+
+async function fetchRecycleItems() {
+  const res = await apiFetch("/api/recycle/list");
+  const data = await parseJsonResponse(res);
+  return data.items || [];
+}
+
 function getSelectionCount() {
   return state.selectedPaths.size;
 }
@@ -538,6 +595,22 @@ function renderBreadcrumb() {
   rootButton.className = "crumb";
   rootButton.textContent = "shared";
   rootButton.onclick = () => loadDir("");
+  // 面包屑拖拽支持
+  rootButton.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    rootButton.classList.add("drag-over");
+  });
+  rootButton.addEventListener("dragleave", () => rootButton.classList.remove("drag-over"));
+  rootButton.addEventListener("drop", async (e) => {
+    e.preventDefault();
+    rootButton.classList.remove("drag-over");
+    const paths = JSON.parse(e.dataTransfer.getData("application/json") || "[]");
+    if (paths.length) {
+      const ok = await moveItems(paths, "");
+      if (ok) { showMessage(`已移动 ${paths.length} 个项目`, "success"); loadDir(state.currentDir); }
+    }
+  });
   breadcrumb.appendChild(rootButton);
 
   const parts = state.currentDir ? state.currentDir.split("/") : [];
@@ -554,6 +627,33 @@ function renderBreadcrumb() {
     btn.className = "crumb";
     btn.textContent = part;
     btn.onclick = () => loadDir(targetDir);
+    // 面包屑拖拽支持
+    let navigateTimer = null;
+    btn.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      btn.classList.add("drag-over");
+      if (!navigateTimer) {
+        navigateTimer = setTimeout(() => {
+          loadDir(targetDir);
+          navigateTimer = null;
+        }, 800);
+      }
+    });
+    btn.addEventListener("dragleave", () => {
+      btn.classList.remove("drag-over");
+      if (navigateTimer) { clearTimeout(navigateTimer); navigateTimer = null; }
+    });
+    btn.addEventListener("drop", async (e) => {
+      e.preventDefault();
+      btn.classList.remove("drag-over");
+      if (navigateTimer) { clearTimeout(navigateTimer); navigateTimer = null; }
+      const paths = JSON.parse(e.dataTransfer.getData("application/json") || "[]");
+      if (paths.length) {
+        const ok = await moveItems(paths, targetDir);
+        if (ok) { showMessage(`已移动 ${paths.length} 个项目`, "success"); loadDir(state.currentDir); }
+      }
+    });
     breadcrumb.appendChild(btn);
   }
   // 显示/隐藏返回上级按钮
@@ -921,7 +1021,10 @@ function makeSelectCheckbox(item) {
   input.className = "select-checkbox";
   input.checked = isSelected(item.path);
   input.addEventListener("click", (event) => event.stopPropagation());
-  input.addEventListener("change", (event) => toggleSelected(item.path, event.target.checked));
+  input.addEventListener("change", (event) => {
+    toggleSelected(item.path, event.target.checked);
+    input.blur(); // 移除焦点，使快捷键立即可用
+  });
   return input;
 }
 
@@ -980,6 +1083,8 @@ async function deleteItems(paths, labelText) {
     showMessage(data.error || "删除失败", "error");
     return false;
   }
+  // 记录撤销信息
+  pushUndo({ type: "delete", items: paths, sourceDir: state.currentDir, user: state.nickname || "anonymous", timestamp: Date.now() });
   showMessage(`已移入回收站${labelText}`, "success");
   await loadRecycleItems();
   return true;
@@ -1012,6 +1117,8 @@ async function moveItems(paths, targetDir) {
     showMessage(data.error || "移动失败", "error");
     return false;
   }
+  // 记录撤销信息
+  pushUndo({ type: "move", items: paths, targetDir, sourceDir: state.currentDir, user: state.nickname || "anonymous", timestamp: Date.now() });
   return true;
 }
 
@@ -1279,7 +1386,50 @@ function createGridCard(item) {
   const searchDir = state.searchQuery ? parentDir(item.path) : "";
   const card = document.createElement("article");
   card.className = "grid-card";
+  if (state.clipboard.mode === "cut" && state.clipboard.items.includes(item.path)) card.classList.add("cut-clip");
+  else if (state.clipboard.mode === "copy" && state.clipboard.items.includes(item.path)) card.classList.add("copy-clip");
   card.ondblclick = () => openPreview(item);
+
+  // 拖拽支持 - 所有项目都可拖拽
+  card.draggable = true;
+  card.addEventListener("dragstart", (e) => {
+    const paths = state.selectedPaths.size > 0 && state.selectedPaths.has(item.path)
+      ? [...state.selectedPaths]
+      : [item.path];
+    e.dataTransfer.setData("application/json", JSON.stringify(paths));
+    e.dataTransfer.effectAllowed = "move";
+  });
+
+  // 文件夹：拖拽悬浮时跳转
+  if (item.type === "directory") {
+    let navigateTimer = null;
+    card.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      card.classList.add("drag-over");
+      // 悬浮 800ms 后跳转到该目录
+      if (!navigateTimer) {
+        navigateTimer = setTimeout(() => {
+          loadDir(item.path);
+          navigateTimer = null;
+        }, 800);
+      }
+    });
+    card.addEventListener("dragleave", () => {
+      card.classList.remove("drag-over");
+      if (navigateTimer) { clearTimeout(navigateTimer); navigateTimer = null; }
+    });
+    card.addEventListener("drop", async (e) => {
+      e.preventDefault();
+      card.classList.remove("drag-over");
+      if (navigateTimer) { clearTimeout(navigateTimer); navigateTimer = null; }
+      const paths = JSON.parse(e.dataTransfer.getData("application/json") || "[]");
+      if (paths.length && item.type === "directory") {
+        const ok = await moveItems(paths, item.path);
+        if (ok) { showMessage(`已移动 ${paths.length} 个项目`, "success"); loadDir(state.currentDir); }
+      }
+    });
+  }
 
   const header = document.createElement("div");
   header.className = "grid-card-header";
@@ -1334,6 +1484,8 @@ function renderRows(items) {
     const searchDir = state.searchQuery ? parentDir(item.path) : "";
     const tr = rowTemplate.content.firstElementChild.cloneNode(true);
     tr.className = item.previewType !== "none" || item.type === "directory" ? "interactive-row" : "";
+    if (state.clipboard.mode === "cut" && state.clipboard.items.includes(item.path)) tr.classList.add("cut-clip");
+    else if (state.clipboard.mode === "copy" && state.clipboard.items.includes(item.path)) tr.classList.add("copy-clip");
     const wrap = document.createElement("div");
     wrap.className = "row-name-wrap";
     wrap.appendChild(makeSelectCheckbox(item));
@@ -1344,6 +1496,47 @@ function renderRows(items) {
     tr.querySelector(".time-cell").textContent = new Date(item.updatedAt).toLocaleString("zh-CN");
     tr.ondblclick = () => openPreview(item);
     tr.querySelector(".op-cell").appendChild(createActions(item));
+
+    // 拖拽支持 - 所有项目都可拖拽
+    tr.draggable = true;
+    tr.addEventListener("dragstart", (e) => {
+      const paths = state.selectedPaths.size > 0 && state.selectedPaths.has(item.path)
+        ? [...state.selectedPaths]
+        : [item.path];
+      e.dataTransfer.setData("application/json", JSON.stringify(paths));
+      e.dataTransfer.effectAllowed = "move";
+    });
+
+    // 文件夹：拖拽悬浮时跳转
+    if (item.type === "directory") {
+      let navigateTimer = null;
+      tr.addEventListener("dragover", (e) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "move";
+        tr.classList.add("drag-over");
+        if (!navigateTimer) {
+          navigateTimer = setTimeout(() => {
+            loadDir(item.path);
+            navigateTimer = null;
+          }, 800);
+        }
+      });
+      tr.addEventListener("dragleave", () => {
+        tr.classList.remove("drag-over");
+        if (navigateTimer) { clearTimeout(navigateTimer); navigateTimer = null; }
+      });
+      tr.addEventListener("drop", async (e) => {
+        e.preventDefault();
+        tr.classList.remove("drag-over");
+        if (navigateTimer) { clearTimeout(navigateTimer); navigateTimer = null; }
+        const paths = JSON.parse(e.dataTransfer.getData("application/json") || "[]");
+        if (paths.length && item.type === "directory") {
+          const ok = await moveItems(paths, item.path);
+          if (ok) { showMessage(`已移动 ${paths.length} 个项目`, "success"); loadDir(state.currentDir); }
+        }
+      });
+    }
+
     tableBody.appendChild(tr);
   }
 
@@ -1918,6 +2111,13 @@ document.addEventListener("dragover", (event) => {
     setDropActive(false);
     return;
   }
+  // 内部拖拽（文件/文件夹/面包屑）显示取消区域
+  if (event.dataTransfer && event.dataTransfer.types.includes("application/json")) {
+    event.preventDefault();
+    var cancelZone = document.querySelector("#dragCancelZone");
+    if (cancelZone) cancelZone.classList.remove("is-hidden");
+    return;
+  }
   event.preventDefault();
   setDropActive(true);
 });
@@ -1925,7 +2125,11 @@ document.addEventListener("dragover", (event) => {
 document.addEventListener("dragleave", (event) => {
   if (_draggingChar) return;
   if (event.target.closest && event.target.closest("#tab-audio, #tab-video")) return;
-  if (event.clientX === 0 && event.clientY === 0) setDropActive(false);
+  if (event.clientX === 0 && event.clientY === 0) {
+    setDropActive(false);
+    var cancelZone = document.querySelector("#dragCancelZone");
+    if (cancelZone) cancelZone.classList.add("is-hidden");
+  }
 });
 
 document.addEventListener("drop", async (event) => {
@@ -1937,6 +2141,9 @@ document.addEventListener("drop", async (event) => {
   }
   event.preventDefault();
   setDropActive(false);
+  // 隐藏取消区域
+  var cancelZone = document.querySelector("#dragCancelZone");
+  if (cancelZone) cancelZone.classList.add("is-hidden");
   try {
     const entries = await entriesFromDataTransfer(event.dataTransfer);
     await uploadEntries(entries, "拖拽内容");
@@ -1944,6 +2151,23 @@ document.addEventListener("drop", async (event) => {
     showMessage(error.message || "拖拽上传失败", "error");
   }
 });
+
+// 取消区域拖拽支持
+var dragCancelZone = document.querySelector("#dragCancelZone");
+if (dragCancelZone) {
+  dragCancelZone.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "none";
+    dragCancelZone.classList.add("drag-over");
+  });
+  dragCancelZone.addEventListener("dragleave", () => dragCancelZone.classList.remove("drag-over"));
+  dragCancelZone.addEventListener("drop", (e) => {
+    e.preventDefault();
+    dragCancelZone.classList.remove("drag-over");
+    dragCancelZone.classList.add("is-hidden");
+    showMessage("已取消拖拽操作", "info");
+  });
+}
 
 // --- Nickname ---
 
@@ -3309,3 +3533,100 @@ if (state.glowColor) {
   const fc = document.querySelector("#floatControl");
   if (fc) fc.classList.remove("is-hidden");
 }
+
+// --- 键盘快捷键：Ctrl+C / Ctrl+X / Ctrl+V / Ctrl+A / Delete / Escape ---
+
+document.addEventListener("keydown", async (e) => {
+  // 忽略输入框内的按键
+  const tag = (e.target.tagName || "").toLowerCase()
+  if (tag === "input" || tag === "textarea" || tag === "select" || e.target.isContentEditable) return
+
+  // Ctrl+A 全选
+  if (e.ctrlKey && e.key === "a") {
+    e.preventDefault()
+    selectAll()
+    return
+  }
+
+  // Delete 删除选中
+  if (e.key === "Delete") {
+    if (state.selectedPaths.size > 0) {
+      e.preventDefault()
+      deleteSelectedItems()
+    }
+    return
+  }
+
+  // Escape 取消选中
+  if (e.key === "Escape") {
+    if (state.selectedPaths.size > 0) {
+      e.preventDefault()
+      clearSelections()
+      renderCurrentDirectory()
+      showMessage("已取消选中", "info")
+    }
+    return
+  }
+
+  // Ctrl+C 复制
+  if (e.ctrlKey && e.key === "c") {
+    const paths = [...state.selectedPaths]
+    if (paths.length === 0) return
+    e.preventDefault()
+    state.clipboard = { items: paths, mode: "copy" }
+    showMessage(`已复制 ${paths.length} 个项目到剪贴板`, "success")
+    renderCurrentDirectory()
+    return
+  }
+
+  // Ctrl+X 剪切
+  if (e.ctrlKey && e.key === "x") {
+    const paths = [...state.selectedPaths]
+    if (paths.length === 0) return
+    e.preventDefault()
+    state.clipboard = { items: paths, mode: "cut" }
+    showMessage(`已剪切 ${paths.length} 个项目到剪贴板`, "success")
+    renderCurrentDirectory()
+    return
+  }
+
+  // Ctrl+V 粘贴
+  if (e.ctrlKey && e.key === "v") {
+    if (!state.clipboard.items.length) return
+    e.preventDefault()
+    const { items, mode } = state.clipboard
+    const targetDir = state.currentDir
+    try {
+      if (mode === "copy") {
+        const res = await apiFetch("/api/copy", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ paths: items, targetDir })
+        })
+        const data = await parseJsonResponse(res)
+        if (!res.ok) {
+          showMessage(data.error || "粘贴失败", "error")
+          return
+        }
+        showMessage(`已粘贴 ${data.copied} 个项目`, "success")
+      } else if (mode === "cut") {
+        const ok = await moveItems(items, targetDir)
+        if (ok) {
+          showMessage(`已粘贴 ${items.length} 个项目`, "success")
+        }
+      }
+    } catch (err) {
+      showMessage(err.message || "粘贴失败", "error")
+    }
+    state.clipboard = { items: [], mode: null }
+    await loadDir(state.currentDir)
+    return
+  }
+
+  // Ctrl+Z 撤销
+  if (e.ctrlKey && e.key === "z") {
+    e.preventDefault()
+    await undoLastAction()
+    return
+  }
+})

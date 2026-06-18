@@ -563,6 +563,46 @@ tr:last-child td { border-bottom: none; }
   flex: 0 0 auto;
 }
 
+.cut-clip {
+  opacity: 0.45;
+}
+
+.copy-clip {
+  outline: 2px dashed var(--accent-2);
+  outline-offset: -2px;
+  background: color-mix(in srgb, var(--accent-2) 8%, transparent);
+}
+
+.drag-over {
+  outline: 2px dashed var(--accent);
+  outline-offset: -2px;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.drag-cancel-zone {
+  position: fixed;
+  right: 18px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 1200;
+  padding: 20px 16px;
+  background: color-mix(in srgb, var(--danger) 15%, transparent);
+  border: 2px dashed var(--danger);
+  border-radius: 16px;
+  color: var(--danger);
+  font-size: 13px;
+  font-weight: 600;
+  text-align: center;
+  pointer-events: auto;
+  backdrop-filter: blur(10px);
+  transition: opacity 200ms ease;
+}
+
+.drag-cancel-zone.drag-over {
+  background: color-mix(in srgb, var(--danger) 30%, transparent);
+  outline: none;
+}
+
 .thumb {
   position: relative;
   width: 72px;

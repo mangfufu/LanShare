@@ -12,7 +12,7 @@ try { sharp = require("sharp"); } catch { console.error("错误: sharp 未安装
 const TMP_DIR = path.join(__dirname, "thumb_cache");
 
 const HOST = process.env.HOST || "0.0.0.0";
-const PORT = Number(process.env.PORT || 8082);
+const PORT = Number(process.env.PORT || 8080);
 const ROOT_DIR = path.resolve(process.env.SHARED_DIR || path.join(__dirname, "shared"));
 const BACKUP_DIR = path.resolve(process.env.BACKUP_DIR || path.join(__dirname, "backup"));
 const RECYCLE_DIR = path.resolve(process.env.RECYCLE_DIR || path.join(__dirname, "recycle_bin"));
@@ -37,6 +37,7 @@ const PROTECTED_POST_PATHS = new Set([
   "/api/delete",
   "/api/rename",
   "/api/move",
+  "/api/copy",
   "/api/upload",
   "/api/download-batch",
   "/api/recycle/restore",
@@ -766,6 +767,45 @@ async function moveItems(paths, targetDir) {
   return moved;
 }
 
+async function copyItems(paths, targetDir) {
+  const safeTargetDir = safeRelative(targetDir);
+  const targetDirPath = resolveInsideRoot(safeTargetDir);
+  const targetStat = await fsp.stat(targetDirPath).catch(() => null);
+  if (!targetStat || !targetStat.isDirectory()) {
+    throw new Error("目标文件夹不存在");
+  }
+
+  const copied = [];
+  for (const item of paths) {
+    const sourceRelative = safeRelative(item);
+    if (!sourceRelative) {
+      throw new Error("不能复制 shared 根目录");
+    }
+
+    const sourcePath = resolveInsideRoot(sourceRelative);
+    const sourceName = path.posix.basename(sourceRelative);
+    let destName = sourceName;
+    let destRelative = safeRelative(path.posix.join(safeTargetDir, destName));
+    let destPath = resolveInsideRoot(destRelative);
+
+    // 如果目标已存在，添加 _副本 后缀
+    let counter = 1;
+    while (await fsp.stat(destPath).catch(() => null)) {
+      const ext = path.posix.extname(sourceName);
+      const base = path.posix.basename(sourceName, ext);
+      destName = `${base}_副本${counter > 1 ? counter : ""}${ext}`;
+      destRelative = safeRelative(path.posix.join(safeTargetDir, destName));
+      destPath = resolveInsideRoot(destRelative);
+      counter++;
+    }
+
+    await fsp.cp(sourcePath, destPath, { recursive: true });
+    copied.push({ from: sourceRelative, to: destRelative });
+  }
+
+  return copied;
+}
+
 async function readRecycleEntries() {
   await ensureDir(RECYCLE_DIR);
   const entries = await fsp.readdir(RECYCLE_DIR, { withFileTypes: true });
@@ -1148,6 +1188,21 @@ async function handleApi(req, res, url) {
       const movedNames = moved.map(m => m.from.split("/").pop());
       logAction(getDeviceName(req), getClientIp(req), "移动", `${paths.length} 项 → /${body.targetDir || ""}`, movedNames);
       sendJson(res, 200, { ok: true, moved });
+    } catch (error) {
+      sendJson(res, error.statusCode || 400, { error: error.message });
+    }
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/copy") {
+    try {
+      const body = parseJson(await readRequestBody(req));
+      const paths = (Array.isArray(body.paths) ? body.paths : [body.path]).map((item) => safeRelative(item)).filter(Boolean);
+      if (paths.length === 0) throw new Error("没有可复制的项目");
+      const copied = await copyItems(paths, body.targetDir);
+      const copiedNames = copied.map(m => m.from.split("/").pop());
+      logAction(getDeviceName(req), getClientIp(req), "复制", `${paths.length} 项 → /${body.targetDir || ""}`, copiedNames);
+      sendJson(res, 200, { ok: true, copied: copied.length });
     } catch (error) {
       sendJson(res, error.statusCode || 400, { error: error.message });
     }

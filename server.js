@@ -1394,7 +1394,8 @@ const server = http.createServer(async (req, res) => {
         await fsp.mkdir(TMP_DIR, { recursive: true });
         const cache = path.join(TMP_DIR, crypto.createHash("md5").update(full).digest("hex") + ".webp");
         try { const c = await fsp.readFile(cache); res.writeHead(200,{"Content-Type":"image/webp","Content-Length":c.length,"Cache-Control":"public,max-age=86400"}); res.end(c); return; } catch {}
-        const thumb = await sharp(fs.createReadStream(full)).resize(200).webp({quality:70}).toBuffer();
+        const fileBuf = await fsp.readFile(full);
+        const thumb = await sharp(fileBuf).resize(200).webp({quality:70}).toBuffer();
         fsp.writeFile(cache, thumb).catch(function(){});
         res.writeHead(200,{"Content-Type":"image/webp","Content-Length":thumb.length,"Cache-Control":"public,max-age=86400"});
         res.end(thumb);

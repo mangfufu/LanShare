@@ -1381,6 +1381,7 @@ const server = http.createServer(async (req, res) => {
       try {
         const q = safeRelative(url.searchParams.get("path") || "");
         const full = resolveInsideRoot(q);
+        await fsp.access(full); // 检查文件是否存在
         await fsp.mkdir(TMP_DIR, { recursive: true });
         const cache = path.join(TMP_DIR, crypto.createHash("md5").update(full).digest("hex") + ".webp");
         try { const c = await fsp.readFile(cache); res.writeHead(200,{"Content-Type":"image/webp","Content-Length":c.length,"Cache-Control":"public,max-age=86400"}); res.end(c); return; } catch {}

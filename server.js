@@ -4,6 +4,7 @@ const fsp = require("fs/promises");
 const path = require("path");
 const crypto = require("crypto");
 const os = require("os");
+const { spawn } = require("child_process");
 const Busboy = require("busboy");
 const archiver = require("archiver");
 const { URL } = require("url");
@@ -24,12 +25,17 @@ const BATCH_DOWNLOAD_TTL_MS = 30 * 60 * 1000;
 const RECYCLE_RETENTION_DAYS = Number(process.env.RECYCLE_RETENTION_DAYS || 7);
 const RECYCLE_CLEANUP_INTERVAL_MS = Number(process.env.RECYCLE_CLEANUP_INTERVAL_MS || 60 * 60 * 1000);
 const MAX_PARALLEL_FILE_STREAMS = Number(process.env.MAX_PARALLEL_FILE_STREAMS || 48);
+const MAX_THUMB_SOURCE_SIZE = Number(process.env.MAX_THUMB_SOURCE_SIZE || 128 * 1024 * 1024);
+const MAX_VIDEO_THUMB_JOBS = Number(process.env.MAX_VIDEO_THUMB_JOBS || 1);
 const batchDownloads = new Map();
 const logBuffer = [];
 const MAX_LOG_BUFFER = 200;
 const MAX_LOG_SIZE = 10 * 1024 * 1024; // 10MB per file
 let activeFileStreams = 0;
 const pendingFileStreamSlots = [];
+const videoThumbQueue = [];
+const videoThumbJobs = new Map();
+let activeVideoThumbJobs = 0;
 const CSRF_TOKEN = crypto.randomBytes(32).toString("hex");
 const PROTECTED_POST_PATHS = new Set([
   "/api/mkdir",
@@ -71,6 +77,9 @@ const MIME_TYPES = {
   ".pdf": "application/pdf",
   ".zip": "application/zip"
 };
+
+const IMAGE_THUMB_EXTS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"]);
+const VIDEO_THUMB_EXTS = new Set([".mp4", ".webm", ".mov", ".mkv", ".avi"]);
 
 function getMimeType(filePath) {
   return MIME_TYPES[path.extname(filePath).toLowerCase()] || "application/octet-stream";
@@ -160,6 +169,31 @@ function resolveInsideRoot(relativePath) {
   return fullPath;
 }
 
+function resolveInsideDirectory(rootDir, relativePath, message = "路径越界") {
+  const rootPath = path.resolve(rootDir);
+  const fullPath = path.resolve(rootPath, String(relativePath || ""));
+  if (fullPath !== rootPath && fullPath.startsWith(`${rootPath}${path.sep}`)) {
+    return fullPath;
+  }
+  throw new Error(message);
+}
+
+function resolveRecycleEntryDir(id) {
+  const entryId = String(id || "").trim();
+  if (!entryId || entryId.includes("/") || entryId.includes("\\") || entryId === "." || entryId === "..") {
+    throw new Error("回收站条目ID非法");
+  }
+  return resolveInsideDirectory(RECYCLE_DIR, entryId, "回收站路径越界");
+}
+
+function resolveRecycleStoredPath(entryDir, storedName) {
+  const name = String(storedName || "");
+  if (!name) {
+    throw new Error("回收站条目数据不完整");
+  }
+  return resolveInsideDirectory(entryDir, name, "回收站条目路径越界");
+}
+
 function getPreviewType(fileName) {
   const ext = path.extname(fileName).toLowerCase();
   if ([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"].includes(ext)) return "image";
@@ -208,7 +242,7 @@ async function buildListItem(item, normalizedDir) {
 }
 
 function parseChineseNumeral(text) {
-  const digits = { "零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9 };
+  const digits = { "零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9 };
   const units = { "十": 10, "百": 100, "千": 1000 };
   let total = 0;
   let current = 0;
@@ -230,9 +264,9 @@ function parseChineseNumeral(text) {
 function extractOrdinalValue(name) {
   const text = String(name);
   const patterns = [
-    /第([零一二两三四五六七八九十百千\d]+)(?=集|话|章|回|卷|部|季|期|篇|$)/,
+    /第\s*([零〇一二两三四五六七八九十百千\d]+)\s*(?=集|话|章|回|卷|部|季|期|篇|$)/,
     /\b(?:ep|e)(\d+)\b/i,
-    /(^|[^\d])(\d+)(?=集|话|章|回|卷|部|季|期|篇|$)/
+    /(^|[^\d])(\d+)\s*(?=集|话|章|回|卷|部|季|期|篇|$)/
   ];
   for (const pattern of patterns) {
     const match = text.match(pattern);
@@ -262,9 +296,9 @@ function isInvalidFileName(name) {
 async function getRecycleEntryFileNames(entryId) {
   const names = [];
   try {
-    const entryDir = path.join(RECYCLE_DIR, entryId);
+    const entryDir = resolveRecycleEntryDir(entryId);
     const meta = JSON.parse(await fsp.readFile(path.join(entryDir, "meta.json"), "utf8"));
-    const storedPath = path.join(entryDir, meta.storedName);
+    const storedPath = resolveRecycleStoredPath(entryDir, meta.storedName);
     const stat = await fsp.stat(storedPath);
     if (stat.isDirectory()) {
       names.push(...await collectDirFileNames(storedPath));
@@ -438,6 +472,191 @@ async function pipeFileToResponse(res, filePath, options = {}) {
   stream.pipe(res);
 }
 
+function getThumbCachePath(fullPath, stat, type, ext = "webp") {
+  const key = crypto
+    .createHash("md5")
+    .update(`${type}:${fullPath}:${stat.size}:${stat.mtimeMs}`)
+    .digest("hex");
+  return path.join(TMP_DIR, `${key}.${ext}`);
+}
+
+async function sendThumbCache(res, cachePath, mimeType = "image/webp") {
+  const content = await fsp.readFile(cachePath);
+  res.writeHead(200, {
+    "Content-Type": mimeType,
+    "Content-Length": content.length,
+    "Cache-Control": "public,max-age=86400",
+    "X-Thumb-Status": "ready"
+  });
+  res.end(content);
+}
+
+function sendThumbPlaceholder(res, label = "VIDEO", status = "pending") {
+  const svg = Buffer.from(`
+<svg xmlns="http://www.w3.org/2000/svg" width="200" height="120" viewBox="0 0 200 120">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#2d536c"/>
+      <stop offset="100%" stop-color="#263a53"/>
+    </linearGradient>
+  </defs>
+  <rect width="200" height="120" rx="18" fill="url(#g)"/>
+  <path d="M86 39v42l36-21z" fill="rgba(255,255,255,.88)"/>
+  <text x="100" y="102" text-anchor="middle" fill="rgba(255,255,255,.82)" font-family="Arial,sans-serif" font-size="16" font-weight="700">${label}</text>
+</svg>`.trim());
+  res.writeHead(200, {
+    "Content-Type": "image/svg+xml; charset=utf-8",
+    "Content-Length": svg.length,
+    "Cache-Control": "no-store",
+    "X-Thumb-Status": status
+  });
+  res.end(svg);
+}
+
+async function generateImageThumb(fullPath, cachePath) {
+  const tempPath = `${cachePath}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    await sharp(fullPath, { limitInputPixels: 12000 * 12000 })
+      .rotate()
+      .resize({
+        width: 200,
+        height: 200,
+        fit: "inside",
+        withoutEnlargement: true
+      })
+      .webp({ quality: 70 })
+      .toFile(tempPath);
+    await fsp.rename(tempPath, cachePath);
+  } catch (error) {
+    await fsp.unlink(tempPath).catch(() => {});
+    throw error;
+  }
+}
+
+function enqueueVideoThumb(fullPath, cachePath) {
+  if (videoThumbJobs.has(cachePath)) return;
+  const job = {
+    fullPath,
+    cachePath,
+    tempPath: `${cachePath}.${process.pid}.${Date.now()}.tmp.jpg`
+  };
+  videoThumbJobs.set(cachePath, job);
+  videoThumbQueue.push(job);
+  processVideoThumbQueue();
+}
+
+function processVideoThumbQueue() {
+  while (activeVideoThumbJobs < MAX_VIDEO_THUMB_JOBS && videoThumbQueue.length > 0) {
+    const job = videoThumbQueue.shift();
+    activeVideoThumbJobs += 1;
+    generateVideoThumb(job)
+      .catch((error) => {
+        console.error(`视频缩略图生成失败 ${job.fullPath}: ${error.message}`);
+      })
+      .finally(() => {
+        activeVideoThumbJobs = Math.max(0, activeVideoThumbJobs - 1);
+        videoThumbJobs.delete(job.cachePath);
+        processVideoThumbQueue();
+      });
+  }
+}
+
+function generateVideoThumb(job) {
+  return new Promise((resolve, reject) => {
+    const args = [
+      "-y",
+      "-hide_banner",
+      "-loglevel", "error",
+      "-ss", "00:00:01",
+      "-i", job.fullPath,
+      "-map", "0:v:0",
+      "-frames:v", "1",
+      "-vf", "scale=200:-1",
+      "-q:v", "4",
+      "-an",
+      job.tempPath
+    ];
+    const child = spawn("ffmpeg", args, { windowsHide: true });
+    let settled = false;
+    let stderr = "";
+    const done = async (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (error) {
+        await fsp.unlink(job.tempPath).catch(() => {});
+        reject(error);
+        return;
+      }
+      try {
+        await fsp.rename(job.tempPath, job.cachePath);
+        resolve();
+      } catch (renameError) {
+        await fsp.unlink(job.tempPath).catch(() => {});
+        reject(renameError);
+      }
+    };
+    const timer = setTimeout(() => {
+      child.kill();
+      void done(new Error("ffmpeg 超时"));
+    }, 30000);
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString("utf8");
+      if (stderr.length > 2000) stderr = stderr.slice(-2000);
+    });
+    child.on("error", (error) => {
+      void done(error);
+    });
+    child.on("close", (code) => {
+      if (settled) return;
+      if (code === 0) {
+        void done();
+        return;
+      }
+      void done(new Error(stderr.trim() || `ffmpeg 退出码 ${code}`));
+    });
+  });
+}
+
+async function handleThumbnail(res, url) {
+  const q = safeRelative(url.searchParams.get("path") || "");
+  const fullPath = resolveInsideRoot(q);
+  const stat = await fsp.stat(fullPath);
+  if (!stat.isFile()) {
+    throw new Error("仅支持文件缩略图");
+  }
+
+  const ext = path.extname(fullPath).toLowerCase();
+  await ensureDir(TMP_DIR);
+
+  if (IMAGE_THUMB_EXTS.has(ext)) {
+    if (stat.size > MAX_THUMB_SOURCE_SIZE) {
+      throw new Error("图片过大，已跳过缩略图生成");
+    }
+    const cachePath = getThumbCachePath(fullPath, stat, "image");
+    try {
+      await sendThumbCache(res, cachePath);
+      return;
+    } catch {}
+    await generateImageThumb(fullPath, cachePath);
+    await sendThumbCache(res, cachePath);
+    return;
+  }
+
+  if (VIDEO_THUMB_EXTS.has(ext)) {
+    const cachePath = getThumbCachePath(fullPath, stat, "video", "jpg");
+    try {
+      await sendThumbCache(res, cachePath, "image/jpeg");
+      return;
+    } catch {}
+    enqueueVideoThumb(fullPath, cachePath);
+    sendThumbPlaceholder(res, "VIDEO", "pending");
+    return;
+  }
+
+  throw new Error("不支持的缩略图类型");
+}
+
 function getLanUrls() {
   const nets = os.networkInterfaces();
   const urls = [];
@@ -562,31 +781,48 @@ async function handleStreamingUpload(req) {
         const oldCache = path.join(TMP_DIR, crypto.createHash("md5").update(filePath).digest("hex") + ".webp");
         fsp.unlink(oldCache).catch(() => {});
         // 只写 shared 文件，不等待备份
-        await new Promise((resolveFile, rejectFile) => {
-          const sharedStream = fs.createWriteStream(filePath);
+        let writeCompleted = false;
+        try {
+          await new Promise((resolveFile, rejectFile) => {
+            const sharedStream = fs.createWriteStream(filePath);
+            let writeFailed = false;
 
-          const onError = (error) => {
-            sharedStream.destroy();
-            rejectFile(error);
-          };
+            const onError = (error) => {
+              writeFailed = true;
+              sharedStream.destroy();
+              rejectFile(error);
+            };
 
-          fileStream.on("limit", () => {
-            const error = new Error(`单个文件体积过大，超过 ${Math.floor(MAX_FILE_SIZE / 1024 / 1024)}MB`);
-            error.statusCode = 413;
-            onError(error);
+            fileStream.on("limit", () => {
+              const error = new Error(`单个文件体积过大，超过 ${Math.floor(MAX_FILE_SIZE / 1024 / 1024)}MB`);
+              error.statusCode = 413;
+              onError(error);
+            });
+            fileStream.on("error", onError);
+            sharedStream.on("error", onError);
+
+            sharedStream.on("finish", () => {
+              if (writeFailed || fileStream.truncated) {
+                const error = new Error(`单个文件体积过大，超过 ${Math.floor(MAX_FILE_SIZE / 1024 / 1024)}MB`);
+                error.statusCode = 413;
+                rejectFile(error);
+                return;
+              }
+              writeCompleted = true;
+              uploadedCount += 1;
+              const segments = relativeNameRaw.split("/");
+              uploadedNames.push(segments[segments.length - 1]);
+              resolveFile();
+            });
+
+            fileStream.pipe(sharedStream);
           });
-          fileStream.on("error", onError);
-          sharedStream.on("error", onError);
-
-          sharedStream.on("finish", () => {
-            uploadedCount += 1;
-            const segments = relativeNameRaw.split("/");
-            uploadedNames.push(segments[segments.length - 1]);
-            resolveFile();
-          });
-
-          fileStream.pipe(sharedStream);
-        });
+        } catch (error) {
+          if (!writeCompleted) {
+            await fsp.unlink(filePath).catch(() => {});
+          }
+          throw error;
+        }
 
         // 后台异步备份，不阻塞上传响应
         (async () => {
@@ -733,14 +969,31 @@ async function moveItems(paths, targetDir) {
     throw new Error("目标文件夹不存在");
   }
 
-  const moved = [];
-  for (const item of paths) {
-    const sourceRelative = safeRelative(item);
+  const sourceRelatives = [...new Set(paths.map((item) => safeRelative(item)).filter(Boolean))];
+  if (sourceRelatives.length === 0) {
+    throw new Error("没有可移动的项目");
+  }
+
+  for (const sourceRelative of sourceRelatives) {
     if (!sourceRelative) {
       throw new Error("不能移动 shared 根目录");
     }
+    for (const otherRelative of sourceRelatives) {
+      if (sourceRelative !== otherRelative && otherRelative.startsWith(`${sourceRelative}/`)) {
+        throw new Error(`不能同时移动父目录和它的子项：${sourceRelative}`);
+      }
+    }
+  }
+
+  const planned = [];
+  const destinationSet = new Set();
+  for (const sourceRelative of sourceRelatives) {
 
     const sourcePath = resolveInsideRoot(sourceRelative);
+    const sourceStat = await fsp.stat(sourcePath).catch(() => null);
+    if (!sourceStat) {
+      throw new Error(`源项目不存在：${sourceRelative}`);
+    }
     const sourceName = path.posix.basename(sourceRelative);
     const destinationRelative = safeRelative(path.posix.join(safeTargetDir, sourceName));
     const destinationPath = resolveInsideRoot(destinationRelative);
@@ -753,15 +1006,30 @@ async function moveItems(paths, targetDir) {
       throw new Error(`不能把文件夹移动到它自己的子目录中：${sourceName}`);
     }
 
+    if (destinationSet.has(destinationRelative)) {
+      throw new Error(`移动目标发生重名冲突：${sourceName}`);
+    }
+    destinationSet.add(destinationRelative);
+
+    const existingDestination = await fsp.stat(destinationPath).catch(() => null);
+    if (existingDestination) {
+      throw new Error(`目标位置已存在同名项目：${sourceName}`);
+    }
+
+    planned.push({ sourceRelative, sourcePath, destinationRelative, destinationPath });
+  }
+
+  const moved = [];
+  for (const item of planned) {
     try {
-      await fsp.rename(sourcePath, destinationPath);
+      await fsp.rename(item.sourcePath, item.destinationPath);
     } catch (err) {
       if (err.code === "EEXIST") {
-        throw new Error(`目标位置已存在同名项目：${sourceName}`);
+        throw new Error(`目标位置已存在同名项目：${path.posix.basename(item.sourceRelative)}`);
       }
       throw err;
     }
-    moved.push({ from: sourceRelative, to: destinationRelative });
+    moved.push({ from: item.sourceRelative, to: item.destinationRelative });
   }
 
   return moved;
@@ -812,12 +1080,13 @@ async function readRecycleEntries() {
   const result = [];
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
-    const metaPath = path.join(RECYCLE_DIR, entry.name, "meta.json");
+    const entryDir = resolveRecycleEntryDir(entry.name);
+    const metaPath = path.join(entryDir, "meta.json");
     try {
       const metaRaw = await fsp.readFile(metaPath, "utf8");
       const meta = JSON.parse(metaRaw);
       if (!meta.storedName || !meta.id) throw new Error("meta 不完整");
-      const storedPath = path.join(RECYCLE_DIR, entry.name, meta.storedName);
+      const storedPath = resolveRecycleStoredPath(entryDir, meta.storedName);
       const stat = await fsp.stat(storedPath);
       result.push({
         ...meta,
@@ -826,10 +1095,10 @@ async function readRecycleEntries() {
     } catch {
       // meta.json 损坏或不完整时，尝试基于目录内容有损恢复
       try {
-        const files = await fsp.readdir(path.join(RECYCLE_DIR, entry.name));
+        const files = await fsp.readdir(entryDir);
         const realFiles = files.filter((f) => f !== "meta.json");
         if (realFiles.length > 0) {
-          const storedPath = path.join(RECYCLE_DIR, entry.name, realFiles[0]);
+          const storedPath = resolveRecycleStoredPath(entryDir, realFiles[0]);
           const stat = await fsp.stat(storedPath);
           result.push({
             id: entry.name,
@@ -850,9 +1119,9 @@ async function readRecycleEntries() {
 }
 
 async function restoreRecycleEntry(id) {
-  const entryDir = path.join(RECYCLE_DIR, id);
+  const entryDir = resolveRecycleEntryDir(id);
   const meta = JSON.parse(await fsp.readFile(path.join(entryDir, "meta.json"), "utf8"));
-  const sourcePath = path.join(entryDir, meta.storedName);
+  const sourcePath = resolveRecycleStoredPath(entryDir, meta.storedName);
   const targetRelative = safeRelative(meta.originalPath);
   const targetPath = resolveInsideRoot(targetRelative);
   try {
@@ -867,7 +1136,7 @@ async function restoreRecycleEntry(id) {
 }
 
 async function permanentlyDeleteRecycleEntry(id) {
-  const entryDir = path.join(RECYCLE_DIR, id);
+  const entryDir = resolveRecycleEntryDir(id);
   await fsp.rm(entryDir, { recursive: true, force: true });
 }
 
@@ -1253,7 +1522,7 @@ async function handleApi(req, res, url) {
       let restoreName = "回收站项目";
       let restoreItems = [];
       try {
-        const metaPath = path.join(RECYCLE_DIR, restoreId, "meta.json");
+        const metaPath = path.join(resolveRecycleEntryDir(restoreId), "meta.json");
         const meta = JSON.parse(await fsp.readFile(metaPath, "utf8"));
         if (meta.name) restoreName = meta.name;
         restoreItems = await getRecycleEntryFileNames(restoreId);
@@ -1274,7 +1543,7 @@ async function handleApi(req, res, url) {
       let deleteName = "回收站项目";
       let deleteItems = [];
       try {
-        const metaPath = path.join(RECYCLE_DIR, deleteId, "meta.json");
+        const metaPath = path.join(resolveRecycleEntryDir(deleteId), "meta.json");
         const meta = JSON.parse(await fsp.readFile(metaPath, "utf8"));
         if (meta.name) deleteName = meta.name;
         deleteItems = await getRecycleEntryFileNames(deleteId);
@@ -1441,20 +1710,12 @@ const server = http.createServer(async (req, res) => {
   try {
     if (await handleApi(req, res, url)) return;
     if (req.method === "GET" && url.pathname === "/download") return void await streamFile(req, res, url, true);
-        if (req.method === "GET" && url.pathname === "/api/thumb") {
+    if (req.method === "GET" && url.pathname === "/api/thumb") {
       try {
-        const q = safeRelative(url.searchParams.get("path") || "");
-        const full = resolveInsideRoot(q);
-        await fsp.access(full); // 检查文件是否存在
-        await fsp.mkdir(TMP_DIR, { recursive: true });
-        const cache = path.join(TMP_DIR, crypto.createHash("md5").update(full).digest("hex") + ".webp");
-        try { const c = await fsp.readFile(cache); res.writeHead(200,{"Content-Type":"image/webp","Content-Length":c.length,"Cache-Control":"public,max-age=86400"}); res.end(c); return; } catch {}
-        const fileBuf = await fsp.readFile(full);
-        const thumb = await sharp(fileBuf).resize(200).webp({quality:70}).toBuffer();
-        fsp.writeFile(cache, thumb).catch(function(){});
-        res.writeHead(200,{"Content-Type":"image/webp","Content-Length":thumb.length,"Cache-Control":"public,max-age=86400"});
-        res.end(thumb);
-      } catch (e) { sendText(res, 400, "thumb error"); }
+        await handleThumbnail(res, url);
+      } catch (e) {
+        sendText(res, 400, e.message || "thumb error");
+      }
       return;
     }
     if (req.method === "GET" && url.pathname === "/file") return void await streamFile(req, res, url, false);

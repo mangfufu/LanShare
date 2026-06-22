@@ -477,9 +477,13 @@ async function undoLastAction() {
   if (entry.type === "delete") {
     // 删除操作：恢复回收站中的文件
     const recycleItems = await fetchRecycleItems();
-    for (const itemPath of entry.items) {
-      const fileName = itemPath.split("/").pop();
-      const recycleEntry = recycleItems.find(r => r.name === fileName || r.items?.some(i => i.name === fileName));
+    for (const undoItem of entry.items) {
+      const itemPath = typeof undoItem === "string" ? undoItem : undoItem.originalPath;
+      const itemId = typeof undoItem === "string" ? "" : undoItem.id;
+      const fileName = typeof undoItem === "string" ? itemPath.split("/").pop() : undoItem.name || itemPath.split("/").pop();
+      const recycleEntry = recycleItems.find((r) => itemId && r.id === itemId)
+        || recycleItems.find((r) => r.originalPath === itemPath)
+        || recycleItems.find(r => r.name === fileName || r.items?.some(i => i.name === fileName));
       if (recycleEntry) {
         await apiFetch("/api/recycle/restore", {
           method: "POST",
@@ -662,6 +666,46 @@ function renderBreadcrumb() {
   }
 }
 
+function loadLazyThumbnail(img) {
+  const src = img.dataset.src;
+  if (!src || img.dataset.loaded === "1") return;
+  img.dataset.loaded = "1";
+  img.src = src;
+  if (img.dataset.thumbType === "video") {
+    scheduleVideoThumbnailRetry(img, src);
+  }
+}
+
+function scheduleVideoThumbnailRetry(img, baseSrc) {
+  const retry = Number(img.dataset.retry || 0);
+  if (retry >= 4) return;
+  window.setTimeout(() => {
+    if (!document.body.contains(img)) return;
+    const nextRetry = retry + 1;
+    img.dataset.retry = String(nextRetry);
+    img.src = `${baseSrc}&retry=${nextRetry}&t=${Date.now()}`;
+    scheduleVideoThumbnailRetry(img, baseSrc);
+  }, 3500 + retry * 1500);
+}
+
+const thumbnailObserver = "IntersectionObserver" in window
+  ? new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      if (!entry.isIntersecting) continue;
+      loadLazyThumbnail(entry.target);
+      thumbnailObserver.unobserve(entry.target);
+    }
+  }, { rootMargin: "300px" })
+  : null;
+
+function observeLazyThumbnail(img) {
+  if (thumbnailObserver) {
+    thumbnailObserver.observe(img);
+  } else {
+    loadLazyThumbnail(img);
+  }
+}
+
 function buildThumbnail(item, searchDir) {
   const wrapper = document.createElement("div");
   wrapper.className = "name-wrap";
@@ -673,16 +717,21 @@ function buildThumbnail(item, searchDir) {
     thumb.textContent = "DIR";
   } else if (item.previewType === "image") {
     const img = document.createElement("img");
-    img.src = `/api/thumb?path=${encodeURIComponent(item.path)}&w=200`;
+    img.dataset.src = `/api/thumb?path=${encodeURIComponent(item.path)}&w=200`;
     img.alt = item.name;
     img.loading = "lazy";
     img.decoding = "async";
     thumb.appendChild(img);
+    observeLazyThumbnail(img);
   } else if (item.previewType === "video") {
-    const poster = document.createElement("div");
-    poster.className = "video-thumb-placeholder";
-    poster.textContent = "VIDEO";
-    thumb.appendChild(poster);
+    const img = document.createElement("img");
+    img.dataset.src = `/api/thumb?path=${encodeURIComponent(item.path)}&w=200`;
+    img.dataset.thumbType = "video";
+    img.alt = item.name;
+    img.loading = "lazy";
+    img.decoding = "async";
+    thumb.appendChild(img);
+    observeLazyThumbnail(img);
     const badge = document.createElement("span");
     badge.className = "thumb-badge";
     badge.textContent = "VIDEO";
@@ -953,26 +1002,41 @@ function sortItems(items) {
   if (items._stoppedEarly) sorted._stoppedEarly = items._stoppedEarly;
   const { sortKey, sortAsc } = state;
 
-  // 提取数字：第1集→1，第12集→12
+  // 提取集数：第一集→1，第二集→2，第十集→10，第二十一集→21
   function extractNum(s) {
-    // 匹配 第1集 或 第一集
-    var m = s.match(/第(\d+)集/);
-    if (m) return parseInt(m[1], 10);
-    // 中文数字映射
-    var cnMap = {"零":0,"一":1,"二":2,"三":3,"四":4,"五":5,"六":6,"七":7,"八":8,"九":9,"十":10};
-    var m2 = s.match(/第([一-龥]+)集/);
-    if (m2) {
-      var cn = m2[1];
-      if (cnMap[cn] !== undefined) return cnMap[cn];
-      if (cn.startsWith("十")) {
-        var tail = cnMap[cn.slice(1)];
-        if (tail !== undefined) return 10 + tail;
+    const text = String(s || "");
+    const patterns = [
+      /第\s*([零〇一二两三四五六七八九十百千\d]+)\s*(?=集|话|章|回|卷|部|季|期|篇|$)/,
+      /\b(?:ep|e)(\d+)\b/i,
+      /(^|[^\d])(\d+)\s*(?=集|话|章|回|卷|部|季|期|篇|$)/
+    ];
+    const digits = { "零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9 };
+    const units = { "十": 10, "百": 100, "千": 1000 };
+    function parseChineseNumber(value) {
+      let total = 0;
+      let current = 0;
+      for (const char of value) {
+        if (digits[char] !== undefined) {
+          current = digits[char];
+          continue;
+        }
+        if (units[char] !== undefined) {
+          total += (current || 1) * units[char];
+          current = 0;
+          continue;
+        }
+        return null;
       }
-      var tens = cnMap[cn[0]];
-      if (tens !== undefined && cn.length > 2 && cn[1] === "十") {
-        var ones = cnMap[cn[2]];
-        if (ones !== undefined) return tens * 10 + ones;
-      }
+      return total + current;
+    }
+    for (const pattern of patterns) {
+      const match = text.match(pattern);
+      if (!match) continue;
+      const raw = match[1] && /^\d+$/.test(match[1]) ? match[1] : match[2] || match[1];
+      if (!raw) continue;
+      if (/^\d+$/.test(raw)) return Number(raw);
+      const parsed = parseChineseNumber(raw);
+      if (parsed != null) return parsed;
     }
     return null;
   }
@@ -1102,7 +1166,18 @@ async function deleteItems(paths, labelText) {
     return false;
   }
   // 记录撤销信息
-  pushUndo({ type: "delete", items: paths, sourceDir: state.currentDir, user: state.nickname || "anonymous", timestamp: Date.now() });
+  const deletedItems = Array.isArray(data.deleted) && data.deleted.length > 0
+    ? data.deleted.map((item) => ({
+      id: item.id,
+      name: item.name,
+      originalPath: item.originalPath || item.path || ""
+    }))
+    : paths.map((itemPath) => ({
+      id: "",
+      name: itemPath.split("/").pop(),
+      originalPath: itemPath
+    }));
+  pushUndo({ type: "delete", items: deletedItems, sourceDir: state.currentDir, user: state.nickname || "anonymous", timestamp: Date.now() });
   showMessage(`已移入回收站${labelText}`, "success");
   await loadRecycleItems();
   return true;

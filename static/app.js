@@ -955,8 +955,26 @@ function sortItems(items) {
 
   // 提取数字：第1集→1，第12集→12
   function extractNum(s) {
-    const m = s.match(/第(\d+)集/);
-    return m ? parseInt(m[1], 10) : null;
+    // 匹配 第1集 或 第一集
+    var m = s.match(/第(\d+)集/);
+    if (m) return parseInt(m[1], 10);
+    // 中文数字映射
+    var cnMap = {"零":0,"一":1,"二":2,"三":3,"四":4,"五":5,"六":6,"七":7,"八":8,"九":9,"十":10};
+    var m2 = s.match(/第([一-龥]+)集/);
+    if (m2) {
+      var cn = m2[1];
+      if (cnMap[cn] !== undefined) return cnMap[cn];
+      if (cn.startsWith("十")) {
+        var tail = cnMap[cn.slice(1)];
+        if (tail !== undefined) return 10 + tail;
+      }
+      var tens = cnMap[cn[0]];
+      if (tens !== undefined && cn.length > 2 && cn[1] === "十") {
+        var ones = cnMap[cn[2]];
+        if (ones !== undefined) return tens * 10 + ones;
+      }
+    }
+    return null;
   }
 
   sorted.sort((a, b) => {
@@ -3630,3 +3648,47 @@ document.addEventListener("keydown", async (e) => {
     return
   }
 })
+
+
+// ── 操作提示系统 ────────────────────────────────
+;(function initTips() {
+  var tips = [
+    "Ctrl+A 一键全选，强迫症福音~",
+    "Delete 删文件？别怕，回收站兜底呢",
+    "Ctrl+C/V 复制粘贴，老快捷键了",
+    "Ctrl+X 剪切 + Ctrl+V = 移动文件",
+    "Ctrl+Z 撤销，手滑了也不怕",
+    "拖文件到文件夹 = 移动，拖到面包屑 = 跳目录",
+    "点表头排序，找文件快人一步",
+    "双击图片/视频全屏看，左右键切换下一张",
+    "新建项目一键生成影视目录，省时省力",
+    "上传时有速度显示，网速一目了然",
+    "右上角滑块切主题，日间夜间随心换",
+    "右下角 🖼 换背景，🙈 躲起来摸鱼"
+  ]
+
+  var tipBar = document.createElement("div")
+  tipBar.style.cssText = "position:fixed;bottom:0;left:0;right:0;z-index:1100;padding:8px 16px;text-align:center;font-size:13px;color:var(--muted);background:color-mix(in srgb,var(--panel) 80%,transparent);border-top:1px solid var(--line);backdrop-filter:blur(10px);pointer-events:auto;cursor:pointer;transition:transform 300ms ease;"
+  document.body.appendChild(tipBar)
+
+  var tipIndex = 0
+  var tipTimer = null
+
+  function showTip() {
+    tipBar.textContent = tips[tipIndex]
+    tipIndex = (tipIndex + 1) % tips.length
+  }
+
+  function startRotation() {
+    clearInterval(tipTimer)
+    tipTimer = setInterval(showTip, 6000)
+    showTip()
+  }
+
+  // 点击切换下一条
+  tipBar.addEventListener("click", function() {
+    showTip()
+  })
+
+  setTimeout(startRotation, 3000)
+})()

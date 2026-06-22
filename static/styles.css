@@ -67,7 +67,7 @@ body {
 .page {
   width: min(1180px, calc(100% - 32px));
   margin: 8px auto;
-  height: calc(100vh - 16px);
+  height: calc(100vh - 56px);
   display: flex;
   flex-direction: column;
 }
@@ -98,8 +98,8 @@ body {
   object-fit: cover;
   opacity: 0.5;
 }
-#hideUiBtn { right: 18px; bottom: 122px; }
-#bgUploadBtn { right: 18px; bottom: 70px; }
+#hideUiBtn { right: 18px; bottom: 162px; }
+#bgUploadBtn { right: 18px; bottom: 110px; }
 
 /* --- Icon buttons --- */
 .icon-log, .icon-log::before, .icon-log::after {
@@ -965,7 +965,7 @@ body.drag-active::before {
 }
 
 .theme-toggle { top: 18px; right: 18px; }
-.recycle-toggle { right: 18px; bottom: 18px; }
+.recycle-toggle { right: 18px; bottom: 58px; }
 
 #recycleCountBadge {
   position: absolute;
@@ -986,7 +986,7 @@ body.drag-active::before {
 .recycle-drawer {
   position: fixed;
   right: 18px;
-  bottom: 72px;
+  bottom: 112px;
   width: min(480px, calc(100vw - 36px));
   max-height: 76vh;
   overflow: auto;
@@ -1099,7 +1099,7 @@ body.drag-active::before {
 .log-toggle {
   position: fixed;
   left: 18px;
-  bottom: 18px;
+  bottom: 58px;
   z-index: 1200;
   border: none;
   border-radius: 999px;
@@ -1114,7 +1114,7 @@ body.drag-active::before {
 .log-panel {
   position: fixed;
   left: 18px;
-  bottom: 72px;
+  bottom: 112px;
   width: min(380px, calc(100vw - 36px));
   max-height: 50vh;
   z-index: 1190;

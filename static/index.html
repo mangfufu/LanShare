@@ -10,7 +10,7 @@
     <div class="version-badge">
       <span id="nicknameDisplay" class="nickname" title="点击修改昵称">设置昵称</span>
       <span class="sep">·</span>
-      v2.2.0
+      v2.2.1
     </div>
 
     <div id="floatControl" class="float-control is-hidden">
@@ -103,9 +103,15 @@
 
     </main>
 
-    <button id="logToggleBtn" class="log-toggle" type="button" title="日志"><span class="icon-log"></span></button>
-    <button id="hideUiBtn" class="recycle-toggle" type="button" title="隐藏界面，纯享背景">🙈</button>
-    <button id="bgUploadBtn" class="recycle-toggle" type="button" title="左键上传背景 / 右键清除背景">🖼</button>
+    <button id="logToggleBtn" class="log-toggle" type="button" title="日志">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+    </button>
+    <button id="hideUiBtn" class="recycle-toggle" type="button" title="隐藏界面，纯享背景">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+    </button>
+    <button id="bgUploadBtn" class="recycle-toggle" type="button" title="左键上传背景 / 右键清除背景">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+    </button>
     <input id="bgFileInput" type="file" accept="image/*,video/*" hidden />
     <div id="bgOverlay" class="bg-overlay"></div>
     <div id="themeSliderWrap" class="theme-slider-wrap">
@@ -113,7 +119,10 @@
       <input type="range" id="themeSlider" min="0" max="100" value="0" />
       <span class="theme-icon">☽</span>
     </div>
-    <button id="recycleToggleBtn" class="recycle-toggle" type="button" title="回收站"><span class="icon-recycle"></span><span id="recycleCountBadge">0</span></button>
+    <button id="recycleToggleBtn" class="recycle-toggle" type="button" title="回收站">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
+      <span id="recycleCountBadge">0</span>
+    </button>
 
     <!-- 拖拽取消区域 -->
     <div id="dragCancelZone" class="drag-cancel-zone is-hidden">

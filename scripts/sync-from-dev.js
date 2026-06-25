@@ -101,6 +101,17 @@ function withProductionPort(serverSource) {
   return replaced;
 }
 
+function withProductionIndexHtml(indexSource) {
+  const replaced = indexSource
+    .replace("<title>局域网文件服务器（测试版）</title>", "<title>局域网文件服务器</title>")
+    .replace(/(>\s*v\d+\.\d+\.\d+)\s+test_version(\s*<)/, "$1$2");
+
+  if (replaced === indexSource) {
+    throw new Error("没有找到 index.html 的测试版标识，已停止同步");
+  }
+  return replaced;
+}
+
 async function writeFile(targetPath, content, label) {
   copied.push(`${label} -> ${path.relative(workspaceRoot, targetPath)}`);
   if (dryRun) return;
@@ -119,9 +130,15 @@ async function syncServerFiles() {
 
 async function syncStaticFiles() {
   const devStaticDir = path.join(devDir, "static");
+  const productionIndex = withProductionIndexHtml(
+    await fs.readFile(path.join(devStaticDir, "index.html"), "utf8")
+  );
   await mirrorDir(devStaticDir, path.join(prodDir, "static"));
+  await writeFile(path.join(prodDir, "static", "index.html"), productionIndex, "dev/static/index.html(正式版)");
   await mirrorDir(devStaticDir, path.join(lanShareDir, "static"));
+  await writeFile(path.join(lanShareDir, "static", "index.html"), productionIndex, "dev/static/index.html(正式版)");
   await mirrorDir(devStaticDir, path.join(githubDir, "static"));
+  await writeFile(path.join(githubDir, "static", "index.html"), productionIndex, "dev/static/index.html(正式版)");
 }
 
 async function syncProductionExtras(targetDir, options = {}) {

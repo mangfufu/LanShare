@@ -10,7 +10,7 @@
     <div class="version-badge">
       <span id="nicknameDisplay" class="nickname" title="点击修改昵称">设置昵称</span>
       <span class="sep">·</span>
-      v2.2.3
+      v2.2.4
     </div>
 
     <div id="floatControl" class="float-control is-hidden">
@@ -50,11 +50,13 @@
           </div>
           <div class="toolbar-actions-right">
             <button id="upDirBtn" class="button ghost is-hidden" type="button">返回上级</button>
+            <button id="refreshBtn" class="button ghost" type="button">刷新</button>
+            <div id="selectionTools" class="selection-tools" aria-label="选择操作"></div>
             <div class="view-switch" aria-label="视图切换">
               <button id="listViewBtn" class="button ghost is-active" type="button">列表</button>
               <button id="gridViewBtn" class="button ghost" type="button">宫格</button>
             </div>
-            <button id="refreshBtn" class="button ghost" type="button">刷新</button>
+            <div id="selectionSummary" class="selection-summary toolbar-selection-summary">已选 0 项</div>
           </div>
         </div>
         <div id="message" class="message"></div>
@@ -71,11 +73,18 @@
         <div id="uploadQueue" class="upload-queue is-hidden"></div>
         <div id="tableView" class="table-wrap">
           <table>
+            <colgroup>
+              <col class="col-name" />
+              <col class="col-size" />
+              <col class="col-time" />
+              <col class="col-type" />
+              <col class="col-actions" />
+            </colgroup>
             <thead>
               <tr>
-                <th class="sort-th" data-sort="name">名称</th>
-                <th class="sort-th" data-sort="size">大小</th>
-                <th class="sort-th" data-sort="date">修改时间</th>
+                <th class="sort-th" data-sort="name" data-resize-column="name">名称</th>
+                <th class="sort-th" data-sort="size" data-resize-column="size">大小</th>
+                <th class="sort-th" data-sort="date" data-resize-column="date">修改时间</th>
                 <th>类型</th>
                 <th>操作</th>
               </tr>

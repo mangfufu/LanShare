@@ -7,6 +7,7 @@ const FLOAT_SPEED_KEY = "lan_file_server_float_speed";
 const FLOAT_SIZE_KEY = "lan_file_server_float_size";
 const CURRENT_DIR_KEY = "lan_file_server_current_dir";
 const CURSOR_EFFECT_KEY = "lan_file_server_cursor_effect";
+const COLUMN_WIDTHS_KEY = "lan_file_server_column_widths";
 
 const state = {
   currentDir: "",
@@ -53,6 +54,7 @@ const state = {
 
 const tableBody = document.querySelector("#fileTableBody");
 const tableView = document.querySelector("#tableView");
+const fileTable = tableView ? tableView.querySelector("table") : null;
 const gridView = document.querySelector("#gridView");
 const breadcrumb = document.querySelector("#breadcrumb");
 const messageBox = document.querySelector("#message");
@@ -134,8 +136,50 @@ const DRAG_SCROLL_MAX_SPEED = 24;
 let dragScrollFrame = 0;
 let dragScrollContainer = null;
 let dragScrollSpeed = 0;
+let toastHost = null;
+
+function ensureToastHost() {
+  if (toastHost) return toastHost;
+  toastHost = document.createElement("div");
+  toastHost.className = "toast-host";
+  document.body.appendChild(toastHost);
+  return toastHost;
+}
+
+function showToast(text, type = "info") {
+  const host = ensureToastHost();
+  const item = document.createElement("div");
+  item.className = `toast ${type}`;
+  const content = document.createElement("span");
+  content.className = "toast-content";
+  content.textContent = text;
+  item.appendChild(content);
+  if (type === "error") {
+    const closeBtn = document.createElement("button");
+    closeBtn.type = "button";
+    closeBtn.className = "toast-close";
+    closeBtn.setAttribute("aria-label", "关闭通知");
+    closeBtn.textContent = "×";
+    closeBtn.addEventListener("click", () => item.remove());
+    item.appendChild(closeBtn);
+  }
+  host.appendChild(item);
+  if (type === "error") return;
+  window.setTimeout(() => item.classList.add("is-leaving"), 2600);
+  window.setTimeout(() => item.remove(), 3100);
+}
+
+function shouldUseInlineMessage(text, type) {
+  return String(text || "").startsWith("搜索\"");
+}
 
 function showMessage(text, type = "info") {
+  if (!shouldUseInlineMessage(text, type)) {
+    showToast(text, type);
+    if (messageBox.textContent && messageBox.className === "message error") return;
+    clearMessage();
+    return;
+  }
   messageBox.textContent = text;
   messageBox.className = `message ${type}`;
 }
@@ -643,17 +687,17 @@ function getSelectionCount() {
 }
 
 function updateToolbarButtons() {
-  const batchContainer = document.querySelector(".toolbar-actions-right");
-  if (!batchContainer) return;
+  const selectionTools = document.querySelector("#selectionTools") || document.querySelector(".toolbar-actions-right");
+  if (!selectionTools) return;
+  const selectionSummary = document.querySelector("#selectionSummary");
 
   let moveBtn = document.querySelector("#batchMoveBtn");
   if (!moveBtn) {
     moveBtn = document.createElement("button");
     moveBtn.id = "batchMoveBtn";
     moveBtn.type = "button";
-    moveBtn.className = "button ghost";
+    moveBtn.className = "button ghost batch-action";
     moveBtn.addEventListener("click", moveSelectedItems);
-    batchContainer.appendChild(moveBtn);
   }
 
   let deleteBtn = document.querySelector("#batchDeleteBtn");
@@ -661,9 +705,8 @@ function updateToolbarButtons() {
     deleteBtn = document.createElement("button");
     deleteBtn.id = "batchDeleteBtn";
     deleteBtn.type = "button";
-    deleteBtn.className = "button ghost danger-button";
+    deleteBtn.className = "button ghost danger-button batch-action";
     deleteBtn.addEventListener("click", deleteSelectedItems);
-    batchContainer.appendChild(deleteBtn);
   }
 
   let downloadBtn = document.querySelector("#batchDownloadBtn");
@@ -671,9 +714,8 @@ function updateToolbarButtons() {
     downloadBtn = document.createElement("button");
     downloadBtn.id = "batchDownloadBtn";
     downloadBtn.type = "button";
-    downloadBtn.className = "button ghost";
+    downloadBtn.className = "button ghost batch-action";
     downloadBtn.addEventListener("click", downloadSelectedItems);
-    batchContainer.appendChild(downloadBtn);
   }
 
   let selectAllBtn = document.querySelector("#selectAllBtn");
@@ -681,9 +723,8 @@ function updateToolbarButtons() {
     selectAllBtn = document.createElement("button");
     selectAllBtn.id = "selectAllBtn";
     selectAllBtn.type = "button";
-    selectAllBtn.className = "button ghost";
+    selectAllBtn.className = "button ghost select-action";
     selectAllBtn.addEventListener("click", selectAll);
-    batchContainer.appendChild(selectAllBtn);
   }
 
   let invertBtn = document.querySelector("#invertSelectBtn");
@@ -691,26 +732,33 @@ function updateToolbarButtons() {
     invertBtn = document.createElement("button");
     invertBtn.id = "invertSelectBtn";
     invertBtn.type = "button";
-    invertBtn.className = "button ghost";
+    invertBtn.className = "button ghost select-action";
     invertBtn.addEventListener("click", invertSelection);
-    batchContainer.appendChild(invertBtn);
   }
 
   const count = getSelectionCount();
   const total = state.currentItems.length;
-  moveBtn.textContent = count > 0 ? `批量移动(${count})` : "批量移动";
-  deleteBtn.textContent = count > 0 ? `批量删除(${count})` : "批量删除";
-  downloadBtn.textContent = count > 0 ? `批量下载(${count})` : "批量下载";
+  if (selectionSummary) {
+    selectionSummary.textContent = `已选 ${count} 项`;
+  }
   selectAllBtn.textContent = count > 0 && count >= total ? "取消全选" : "全选";
   invertBtn.textContent = "反选";
+  moveBtn.textContent = "移动";
+  downloadBtn.textContent = "下载";
+  deleteBtn.textContent = "删除";
   moveBtn.title = count > 0 ? `移动已选 ${count} 个项目` : "先选择文件再批量移动";
   deleteBtn.title = count > 0 ? `删除已选 ${count} 个项目` : "先选择文件再批量删除";
   downloadBtn.title = count > 0 ? `下载已选 ${count} 个项目` : "先选择文件再批量下载";
   selectAllBtn.title = count > 0 && count >= total ? "取消全选" : "全选当前列表";
   invertBtn.title = "反选当前列表";
+  selectAllBtn.disabled = total === 0;
+  invertBtn.disabled = total === 0;
   moveBtn.disabled = count === 0;
   deleteBtn.disabled = count === 0;
   downloadBtn.disabled = count === 0;
+  for (const button of [selectAllBtn, invertBtn, moveBtn, downloadBtn, deleteBtn]) {
+    selectionTools.appendChild(button);
+  }
 }
 
 function renderBreadcrumb() {
@@ -1017,6 +1065,143 @@ function setViewMode(mode) {
   renderCurrentDirectory();
 }
 
+const RESIZABLE_TABLE_COLUMNS = {
+  name: { selector: ".col-name", min: 320, max: 1000, defaultWidth: 360 },
+  size: { selector: ".col-size", min: 90, max: 260, defaultWidth: 120 },
+  date: { selector: ".col-time", min: 150, max: 380, defaultWidth: 180 }
+};
+
+const FIXED_TABLE_COLUMN_WIDTH = 96 + 310;
+const SORT_LABELS = { name: "名称", size: "大小", date: "修改时间" };
+
+function ensureSortHeaderContent(th) {
+  let label = th.querySelector(".sort-label");
+  if (label) return label;
+
+  const existingHandle = th.querySelector(".column-resizer");
+  const labelText = SORT_LABELS[th.dataset.sort] || th.textContent.trim();
+  if (existingHandle) existingHandle.remove();
+  th.textContent = "";
+
+  label = document.createElement("span");
+  label.className = "sort-label";
+  label.textContent = labelText;
+  th.appendChild(label);
+  if (existingHandle) th.appendChild(existingHandle);
+  return label;
+}
+
+function getSavedColumnWidths() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(COLUMN_WIDTHS_KEY) || "{}");
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveColumnWidths(widths) {
+  localStorage.setItem(COLUMN_WIDTHS_KEY, JSON.stringify(widths));
+}
+
+function clampColumnWidth(key, width) {
+  const config = RESIZABLE_TABLE_COLUMNS[key];
+  if (!config) return width;
+  return Math.max(config.min, Math.min(config.max, Math.round(width)));
+}
+
+function updateTableMinWidth(widths) {
+  if (!fileTable) return;
+  const minimumWidth = Object.entries(RESIZABLE_TABLE_COLUMNS).reduce((sum, [key, config]) => {
+    return sum + Number(widths[key] || config.defaultWidth);
+  }, FIXED_TABLE_COLUMN_WIDTH);
+  fileTable.style.minWidth = `${minimumWidth}px`;
+}
+
+function applyColumnWidths(widths = getSavedColumnWidths()) {
+  if (!fileTable) return;
+  for (const [key, config] of Object.entries(RESIZABLE_TABLE_COLUMNS)) {
+    const col = fileTable.querySelector(config.selector);
+    if (!col) continue;
+    const width = Number(widths[key]);
+    col.style.width = Number.isFinite(width) ? `${clampColumnWidth(key, width)}px` : "";
+  }
+  updateTableMinWidth(widths);
+}
+
+function setColumnWidth(key, width) {
+  const widths = getSavedColumnWidths();
+  widths[key] = clampColumnWidth(key, width);
+  saveColumnWidths(widths);
+  applyColumnWidths(widths);
+}
+
+function resetColumnWidth(key) {
+  const widths = getSavedColumnWidths();
+  delete widths[key];
+  saveColumnWidths(widths);
+  applyColumnWidths(widths);
+}
+
+function startColumnResize(event, th, handle) {
+  const key = th.dataset.resizeColumn;
+  const config = RESIZABLE_TABLE_COLUMNS[key];
+  if (!config || !fileTable) return;
+
+  event.preventDefault();
+  event.stopPropagation();
+
+  const startX = event.clientX;
+  const startWidth = th.getBoundingClientRect().width;
+  document.body.classList.add("is-column-resizing");
+  th.classList.add("is-resizing");
+  if (handle && typeof handle.setPointerCapture === "function") {
+    handle.setPointerCapture(event.pointerId);
+  }
+
+  const onMove = (moveEvent) => {
+    moveEvent.preventDefault();
+    setColumnWidth(key, startWidth + moveEvent.clientX - startX);
+  };
+
+  const stop = () => {
+    document.body.classList.remove("is-column-resizing");
+    th.classList.remove("is-resizing");
+    document.removeEventListener("pointermove", onMove);
+    document.removeEventListener("pointerup", stop);
+    document.removeEventListener("pointercancel", stop);
+    if (handle && typeof handle.releasePointerCapture === "function") {
+      try { handle.releasePointerCapture(event.pointerId); } catch {}
+    }
+  };
+
+  document.addEventListener("pointermove", onMove);
+  document.addEventListener("pointerup", stop);
+  document.addEventListener("pointercancel", stop);
+}
+
+function initColumnResize() {
+  if (!fileTable) return;
+  applyColumnWidths();
+  document.querySelectorAll("th[data-resize-column]").forEach((th) => {
+    ensureSortHeaderContent(th);
+    if (th.querySelector(".column-resizer")) return;
+    th.classList.add("is-resizable");
+    const handle = document.createElement("span");
+    handle.className = "column-resizer";
+    handle.title = "拖动调整列宽，双击恢复默认";
+    handle.addEventListener("click", (event) => event.stopPropagation());
+    handle.addEventListener("dblclick", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      resetColumnWidth(th.dataset.resizeColumn);
+    });
+    handle.addEventListener("pointerdown", (event) => startColumnResize(event, th, handle));
+    th.appendChild(handle);
+  });
+  window.addEventListener("resize", () => applyColumnWidths());
+}
+
 // Theme color pairs for interpolation [light, dark]
 const THEME_COLORS = {
   "--bg":           ["#f5f5f5", "#141210"],
@@ -1124,10 +1309,14 @@ function isItemClickIgnored(event) {
 function handleItemClick(event, item) {
   if (isItemClickIgnored(event)) return;
   cancelPendingItemClick();
+  if (state.selectedPaths.size > 0) {
+    setSelected(item.path, !isSelected(item.path));
+    return;
+  }
   pendingItemClickTimer = window.setTimeout(() => {
     pendingItemClickTimer = null;
     setSelected(item.path, !isSelected(item.path));
-  }, 170);
+  }, 120);
 }
 
 function handleItemDoubleClick(event, item) {
@@ -1251,8 +1440,7 @@ function updateSortButtons() {
     const active = state.sortKey === k;
     th.classList.toggle("sort-active", active);
     th.classList.toggle("sort-desc", active && !state.sortAsc);
-    const labels = { name: "名称", size: "大小", date: "修改时间" };
-    th.textContent = labels[k];
+    ensureSortHeaderContent(th).textContent = SORT_LABELS[k];
   });
 }
 
@@ -3115,6 +3303,7 @@ moveHereBtn.addEventListener("click", async () => {
 
 updateToolbarButtons();
 updateSortButtons();
+initColumnResize();
 
 // Tab switching
 document.querySelectorAll(".tab").forEach(function(t) {

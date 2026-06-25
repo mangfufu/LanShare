@@ -27,6 +27,7 @@ const RECYCLE_CLEANUP_INTERVAL_MS = Number(process.env.RECYCLE_CLEANUP_INTERVAL_
 const MAX_PARALLEL_FILE_STREAMS = Number(process.env.MAX_PARALLEL_FILE_STREAMS || 48);
 const MAX_THUMB_SOURCE_SIZE = Number(process.env.MAX_THUMB_SOURCE_SIZE || 128 * 1024 * 1024);
 const MAX_VIDEO_THUMB_JOBS = Number(process.env.MAX_VIDEO_THUMB_JOBS || 1);
+const MAX_FOLDER_SIZE_DEPTH = Number(process.env.MAX_FOLDER_SIZE_DEPTH || 64);
 const batchDownloads = new Map();
 const logBuffer = [];
 const MAX_LOG_BUFFER = 200;
@@ -169,6 +170,10 @@ function resolveInsideRoot(relativePath) {
   return fullPath;
 }
 
+function toFsPath(filePath) {
+  return process.platform === "win32" ? path.toNamespacedPath(filePath) : filePath;
+}
+
 function resolveInsideDirectory(rootDir, relativePath, message = "路径越界") {
   const rootPath = path.resolve(rootDir);
   const fullPath = path.resolve(rootPath, String(relativePath || ""));
@@ -202,23 +207,37 @@ function getPreviewType(fileName) {
   return "none";
 }
 
-async function getDirSize(dirPath, depth) {
-  if (depth > 3) return 0;
+async function getDirSize(dirPath, depth = 1) {
+  const maxDepth = Number.isFinite(MAX_FOLDER_SIZE_DEPTH) && MAX_FOLDER_SIZE_DEPTH > 0
+    ? MAX_FOLDER_SIZE_DEPTH
+    : 64;
   let total = 0;
-  try {
-    const entries = await fsp.readdir(dirPath, { withFileTypes: true });
+  const stack = [{ dirPath, depth }];
+
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (current.depth > maxDepth) continue;
+
+    let entries;
+    try {
+      entries = await fsp.readdir(toFsPath(current.dirPath), { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
     for (const entry of entries) {
-      const fullPath = path.join(dirPath, entry.name);
+      const fullPath = path.join(current.dirPath, entry.name);
       try {
         if (entry.isDirectory()) {
-          total += await getDirSize(fullPath, depth + 1);
-        } else {
-          const stat = await fsp.stat(fullPath);
+          stack.push({ dirPath: fullPath, depth: current.depth + 1 });
+        } else if (entry.isFile()) {
+          const stat = await fsp.stat(toFsPath(fullPath));
           total += stat.size;
         }
       } catch {}
     }
-  } catch {}
+  }
+
   return total;
 }
 

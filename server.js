@@ -4,16 +4,37 @@ const fsp = require("fs/promises");
 const path = require("path");
 const crypto = require("crypto");
 const os = require("os");
-const { spawn } = require("child_process");
+const { spawn, execSync } = require("child_process");
+const { URL } = require("url");
+
+// 自动安装依赖
+function ensureDeps() {
+  const deps = ["busboy", "archiver", "sharp"];
+  const missing = [];
+  for (const dep of deps) {
+    try { require.resolve(dep); } catch { missing.push(dep); }
+  }
+  if (missing.length > 0) {
+    console.log(`正在安装缺失依赖: ${missing.join(", ")}...`);
+    try {
+      execSync(`npm install ${missing.join(" ")}`, { cwd: __dirname, stdio: "inherit" });
+      console.log("依赖安装完成");
+    } catch (e) {
+      console.error("依赖安装失败:", e.message);
+      process.exit(1);
+    }
+  }
+}
+ensureDeps();
+
 const Busboy = require("busboy");
 const archiver = require("archiver");
-const { URL } = require("url");
 let sharp;
-try { sharp = require("sharp"); } catch { console.error("错误: sharp 未安装，请手动运行 npm install sharp"); process.exit(1); }
+try { sharp = require("sharp"); } catch { console.error("错误: sharp 未安装"); process.exit(1); }
 const TMP_DIR = path.join(__dirname, "thumb_cache");
 
 const HOST = process.env.HOST || "0.0.0.0";
-const PORT = Number(process.env.PORT || 8080);
+const PORT = Number(process.env.PORT || 8082);
 const ROOT_DIR = path.resolve(process.env.SHARED_DIR || path.join(__dirname, "shared"));
 const BACKUP_DIR = path.resolve(process.env.BACKUP_DIR || path.join(__dirname, "backup"));
 const RECYCLE_DIR = path.resolve(process.env.RECYCLE_DIR || path.join(__dirname, "recycle_bin"));

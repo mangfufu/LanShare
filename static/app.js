@@ -552,6 +552,13 @@ function formatSize(size) {
   return `${value.toFixed(value >= 10 || unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
 }
 
+function formatItemSize(item) {
+  if (item.type !== "directory") return formatSize(item.size);
+  if (item.folderSize != null) return formatSize(item.folderSize);
+  if (item.folderSizeStatus === "pending" || item.folderSizeStatus === "stale") return "计算中";
+  return "-";
+}
+
 function getFileType(item) {
   if (item.type === "directory") return "文件夹";
   const name = item.name || "";
@@ -1749,7 +1756,7 @@ function createGridCard(item) {
   meta.className = "grid-meta";
   meta.innerHTML = `
     <div class="grid-type">${getFileType(item)}</div>
-    <div class="grid-size">${item.type === "directory" ? formatSize(item.folderSize) : formatSize(item.size)}</div>
+    <div class="grid-size">${formatItemSize(item)}</div>
     <div class="grid-time">${new Date(item.updatedAt).toLocaleString("zh-CN")}</div>
   `;
   card.appendChild(meta);
@@ -1799,7 +1806,7 @@ function renderRows(items) {
     wrap.appendChild(buildThumbnail(item, searchDir));
     tr.querySelector(".name-cell").appendChild(wrap);
     tr.querySelector(".type-cell").textContent = getFileType(item);
-    tr.querySelector(".size-cell").textContent = item.type === "directory" ? formatSize(item.folderSize) : formatSize(item.size);
+    tr.querySelector(".size-cell").textContent = formatItemSize(item);
     tr.querySelector(".time-cell").textContent = new Date(item.updatedAt).toLocaleString("zh-CN");
     tr.addEventListener("click", (event) => handleItemClick(event, item));
     tr.addEventListener("dblclick", (event) => handleItemDoubleClick(event, item));
@@ -1864,9 +1871,79 @@ function renderRows(items) {
 }
 
 let _loadDirController = null;
+let _folderSizePollTimer = null;
+
+function clearFolderSizePolling() {
+  if (_folderSizePollTimer) {
+    clearTimeout(_folderSizePollTimer);
+    _folderSizePollTimer = null;
+  }
+}
+
+function getPendingFolderSizePaths() {
+  return state.currentItems
+    .filter((item) => item.type === "directory" && (item.folderSizeStatus === "pending" || item.folderSizeStatus === "stale"))
+    .map((item) => item.path)
+    .slice(0, 200);
+}
+
+function mergeFolderSizeResults(items) {
+  const updates = new Map((items || []).map((item) => [item.path, item]));
+  let changed = false;
+  for (const item of state.currentItems) {
+    const next = updates.get(item.path);
+    if (!next) continue;
+    const nextSize = next.folderSize == null ? null : Number(next.folderSize);
+    if (item.folderSize !== nextSize) {
+      item.folderSize = nextSize;
+      changed = true;
+    }
+    if (item.folderSizeStatus !== next.folderSizeStatus) {
+      item.folderSizeStatus = next.folderSizeStatus;
+      changed = true;
+    }
+    if (item.folderSizeCachedAt !== next.folderSizeCachedAt) {
+      item.folderSizeCachedAt = next.folderSizeCachedAt;
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+function scheduleFolderSizePolling(delay = 800) {
+  clearFolderSizePolling();
+  if (state.searchQuery || getPendingFolderSizePaths().length === 0) return;
+  _folderSizePollTimer = setTimeout(pollFolderSizes, delay);
+}
+
+async function pollFolderSizes() {
+  _folderSizePollTimer = null;
+  const paths = getPendingFolderSizePaths();
+  if (state.searchQuery || paths.length === 0) return;
+
+  const requestDir = state.currentDir;
+  const params = new URLSearchParams();
+  for (const itemPath of paths) params.append("path", itemPath);
+
+  try {
+    const res = await fetch(`/api/folder-sizes?${params.toString()}`, { cache: "no-store" });
+    const data = await res.json();
+    if (!res.ok || requestDir !== state.currentDir) return;
+    if (mergeFolderSizeResults(data.items)) {
+      renderCurrentDirectory();
+    }
+  } catch {
+    // 下一次目录刷新会重新触发计算状态查询。
+  }
+
+  if (requestDir === state.currentDir && getPendingFolderSizePaths().length > 0) {
+    scheduleFolderSizePolling(1500);
+  }
+}
 
 async function loadDir(dir) {
   if (_loadDirController) _loadDirController.abort();
+  clearFolderSizePolling();
   _loadDirController = new AbortController();
   const signal = _loadDirController.signal;
   clearMessage();
@@ -1897,6 +1974,7 @@ async function loadDir(dir) {
     mainSearchInput.value = "";
   }
   renderCurrentDirectory();
+  scheduleFolderSizePolling();
 }
 
 async function loadMore() {
@@ -1912,6 +1990,7 @@ async function loadMore() {
       state.currentItems.push(...data.items);
       renderCurrentDirectory();
       state.fileTotal = data.total || state.currentItems.length;
+      scheduleFolderSizePolling();
     }
   } catch {}
   state.loadingMore = false;

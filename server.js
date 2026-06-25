@@ -19,6 +19,7 @@ const BACKUP_DIR = path.resolve(process.env.BACKUP_DIR || path.join(__dirname, "
 const RECYCLE_DIR = path.resolve(process.env.RECYCLE_DIR || path.join(__dirname, "recycle_bin"));
 const LOG_DIR = path.join(__dirname, "logs");
 const STATIC_DIR = path.join(__dirname, "static");
+const FOLDER_SIZE_CACHE_FILE = path.join(__dirname, "folder_size_cache.json");
 const MAX_BODY_SIZE = 1024 * 1024 * 1024;
 const MAX_FILE_SIZE = Number(process.env.MAX_FILE_SIZE || 4 * 1024 * 1024 * 1024);
 const BATCH_DOWNLOAD_TTL_MS = 30 * 60 * 1000;
@@ -28,6 +29,9 @@ const MAX_PARALLEL_FILE_STREAMS = Number(process.env.MAX_PARALLEL_FILE_STREAMS |
 const MAX_THUMB_SOURCE_SIZE = Number(process.env.MAX_THUMB_SOURCE_SIZE || 128 * 1024 * 1024);
 const MAX_VIDEO_THUMB_JOBS = Number(process.env.MAX_VIDEO_THUMB_JOBS || 1);
 const MAX_FOLDER_SIZE_DEPTH = Number(process.env.MAX_FOLDER_SIZE_DEPTH || 64);
+const MAX_FOLDER_SIZE_JOBS = Number(process.env.MAX_FOLDER_SIZE_JOBS || 1);
+const FOLDER_SIZE_CACHE_MAX_AGE_MS = Number(process.env.FOLDER_SIZE_CACHE_MAX_AGE_MS || 24 * 60 * 60 * 1000);
+const FOLDER_SIZE_CACHE_SAVE_DELAY_MS = 1000;
 const THUMB_CACHE_CLEANUP_INTERVAL_MS = Number(process.env.THUMB_CACHE_CLEANUP_INTERVAL_MS || 6 * 60 * 60 * 1000);
 const THUMB_CACHE_MAX_AGE_DAYS = Number(process.env.THUMB_CACHE_MAX_AGE_DAYS || 30);
 const THUMB_TEMP_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -40,6 +44,11 @@ const pendingFileStreamSlots = [];
 const videoThumbQueue = [];
 const videoThumbJobs = new Map();
 let activeVideoThumbJobs = 0;
+const folderSizeCache = new Map();
+const folderSizeQueue = [];
+const queuedFolderSizePaths = new Set();
+let activeFolderSizeJobs = 0;
+let folderSizeCacheSaveTimer = null;
 const CSRF_TOKEN = crypto.randomBytes(32).toString("hex");
 const PROTECTED_POST_PATHS = new Set([
   "/api/mkdir",
@@ -245,6 +254,191 @@ async function getDirSize(dirPath, depth = 1) {
   return total;
 }
 
+function getFolderSizeParent(relativePath) {
+  const normalized = safeRelative(relativePath);
+  if (!normalized) return "";
+  const parent = path.posix.dirname(normalized);
+  return parent === "." ? "" : safeRelative(parent);
+}
+
+async function loadFolderSizeCache() {
+  try {
+    const raw = JSON.parse(await fsp.readFile(FOLDER_SIZE_CACHE_FILE, "utf8"));
+    const entries = raw.entries && typeof raw.entries === "object" ? raw.entries : raw;
+    for (const [rawKey, rawEntry] of Object.entries(entries || {})) {
+      const key = safeRelative(rawKey);
+      const size = Number(rawEntry && rawEntry.size);
+      if (!Number.isFinite(size) || size < 0) continue;
+      folderSizeCache.set(key, {
+        size,
+        dirMtimeMs: Number(rawEntry.dirMtimeMs) || 0,
+        scannedAt: Number(rawEntry.scannedAt) || 0
+      });
+    }
+    if (folderSizeCache.size > 0) {
+      console.log(`文件夹大小缓存已加载 ${folderSizeCache.size} 项`);
+    }
+  } catch (error) {
+    if (error.code !== "ENOENT") {
+      console.error(`文件夹大小缓存读取失败: ${error.message}`);
+    }
+  }
+}
+
+async function saveFolderSizeCache() {
+  if (folderSizeCacheSaveTimer) {
+    clearTimeout(folderSizeCacheSaveTimer);
+    folderSizeCacheSaveTimer = null;
+  }
+  const entries = {};
+  for (const [key, entry] of folderSizeCache.entries()) {
+    entries[key] = entry;
+  }
+  const payload = JSON.stringify({
+    version: 1,
+    updatedAt: new Date().toISOString(),
+    entries
+  }, null, 2);
+  const tempPath = `${FOLDER_SIZE_CACHE_FILE}.${process.pid}.tmp`;
+  try {
+    await fsp.writeFile(tempPath, payload, "utf8");
+    await fsp.rename(tempPath, FOLDER_SIZE_CACHE_FILE);
+  } catch (error) {
+    await fsp.unlink(tempPath).catch(() => {});
+    console.error(`文件夹大小缓存保存失败: ${error.message}`);
+  }
+}
+
+function scheduleFolderSizeCacheSave() {
+  if (folderSizeCacheSaveTimer) return;
+  folderSizeCacheSaveTimer = setTimeout(() => {
+    saveFolderSizeCache().catch((error) => {
+      console.error(`文件夹大小缓存保存失败: ${error.message}`);
+    });
+  }, FOLDER_SIZE_CACHE_SAVE_DELAY_MS);
+  if (folderSizeCacheSaveTimer.unref) folderSizeCacheSaveTimer.unref();
+}
+
+function removeFolderSizeCacheKey(key) {
+  if (folderSizeCache.delete(key)) {
+    return true;
+  }
+  return false;
+}
+
+function invalidateFolderSizeCacheForPath(relativePath) {
+  const key = safeRelative(relativePath);
+  let changed = false;
+
+  if (!key) {
+    if (folderSizeCache.size > 0) {
+      folderSizeCache.clear();
+      changed = true;
+    }
+  } else {
+    for (const cacheKey of [...folderSizeCache.keys()]) {
+      if (cacheKey === key || cacheKey.startsWith(`${key}/`)) {
+        changed = removeFolderSizeCacheKey(cacheKey) || changed;
+      }
+    }
+  }
+
+  let current = key ? getFolderSizeParent(key) : "";
+  while (true) {
+    changed = removeFolderSizeCacheKey(current) || changed;
+    if (!current) break;
+    current = getFolderSizeParent(current);
+  }
+
+  if (changed) scheduleFolderSizeCacheSave();
+}
+
+function enqueueFolderSizeCalculation(relativePath) {
+  const key = safeRelative(relativePath);
+  if (queuedFolderSizePaths.has(key)) return;
+  queuedFolderSizePaths.add(key);
+  folderSizeQueue.push(key);
+  processFolderSizeQueue();
+}
+
+function processFolderSizeQueue() {
+  const maxJobs = Math.max(1, Number(MAX_FOLDER_SIZE_JOBS) || 1);
+  while (activeFolderSizeJobs < maxJobs && folderSizeQueue.length > 0) {
+    const key = folderSizeQueue.shift();
+    activeFolderSizeJobs += 1;
+    calculateFolderSizeJob(key)
+      .catch((error) => {
+        console.error(`文件夹大小计算失败 ${key || "shared"}: ${error.message}`);
+      })
+      .finally(() => {
+        activeFolderSizeJobs = Math.max(0, activeFolderSizeJobs - 1);
+        queuedFolderSizePaths.delete(key);
+        processFolderSizeQueue();
+      });
+  }
+}
+
+async function calculateFolderSizeJob(relativePath) {
+  const key = safeRelative(relativePath);
+  const dirPath = resolveInsideRoot(key);
+  const beforeStat = await fsp.stat(toFsPath(dirPath)).catch(() => null);
+  if (!beforeStat || !beforeStat.isDirectory()) {
+    if (folderSizeCache.delete(key)) scheduleFolderSizeCacheSave();
+    return;
+  }
+
+  const size = await getDirSize(dirPath, 1);
+  const currentStat = await fsp.stat(toFsPath(dirPath)).catch(() => null);
+  if (!currentStat || !currentStat.isDirectory()) {
+    if (folderSizeCache.delete(key)) scheduleFolderSizeCacheSave();
+    return;
+  }
+
+  folderSizeCache.set(key, {
+    size,
+    dirMtimeMs: currentStat.mtimeMs,
+    scannedAt: Date.now()
+  });
+  scheduleFolderSizeCacheSave();
+}
+
+function getFolderSizeInfo(relativePath, stat) {
+  const key = safeRelative(relativePath);
+  const entry = folderSizeCache.get(key);
+  const now = Date.now();
+
+  if (entry && Number.isFinite(entry.size)) {
+    const expired = FOLDER_SIZE_CACHE_MAX_AGE_MS > 0
+      && (!Number.isFinite(entry.scannedAt) || now - entry.scannedAt > FOLDER_SIZE_CACHE_MAX_AGE_MS);
+    const mtimeChanged = !Number.isFinite(entry.dirMtimeMs)
+      || Math.abs(Number(entry.dirMtimeMs) - stat.mtimeMs) > 1;
+    const stale = expired || mtimeChanged;
+    if (stale) enqueueFolderSizeCalculation(key);
+    return {
+      folderSize: entry.size,
+      folderSizeStatus: stale ? "stale" : "ready",
+      folderSizeCachedAt: entry.scannedAt || null
+    };
+  }
+
+  enqueueFolderSizeCalculation(key);
+  return {
+    folderSize: null,
+    folderSizeStatus: "pending",
+    folderSizeCachedAt: null
+  };
+}
+
+async function readFolderSizeStatus(relativePath) {
+  const key = safeRelative(relativePath);
+  const fullPath = resolveInsideRoot(key);
+  const stat = await fsp.stat(toFsPath(fullPath)).catch(() => null);
+  if (!stat || !stat.isDirectory()) {
+    return { path: key, folderSize: null, folderSizeStatus: "missing", folderSizeCachedAt: null };
+  }
+  return { path: key, ...getFolderSizeInfo(key, stat) };
+}
+
 async function buildListItem(item, normalizedDir) {
   const childRelative = safeRelative(path.posix.join(normalizedDir, item.name));
   const childPath = resolveInsideRoot(childRelative);
@@ -259,7 +453,7 @@ async function buildListItem(item, normalizedDir) {
     updatedAt: stat.mtime.toISOString()
   };
   if (item.isDirectory()) {
-    result.folderSize = await getDirSize(childPath, 1);
+    Object.assign(result, getFolderSizeInfo(childRelative, stat));
   }
   return result;
 }
@@ -1100,6 +1294,7 @@ async function handleStreamingUpload(req) {
               uploadedCount += 1;
               const segments = relativeNameRaw.split("/");
               uploadedNames.push(segments[segments.length - 1]);
+              invalidateFolderSizeCacheForPath(fileRelative);
               resolveFile();
             });
 
@@ -1238,6 +1433,7 @@ async function moveToRecycle(relativePath) {
     console.error(`删除失败: ${err.message} (${storedName})`);
     throw new Error("无法删除：文件正在被使用，请稍后重试。");
   }
+  invalidateFolderSizeCacheForPath(relativePath);
   const meta = {
     id,
     name: storedName,
@@ -1382,6 +1578,8 @@ async function moveItems(paths, targetDir, options = {}) {
         await moveToRecycle(item.destinationRelative);
       }
       await fsp.rename(item.sourcePath, item.destinationPath);
+      invalidateFolderSizeCacheForPath(item.sourceRelative);
+      invalidateFolderSizeCacheForPath(item.destinationRelative);
     } catch (err) {
       if (err.code === "EEXIST") {
         throw createConflictError([makeConflict(item.destinationRelative, item.existingDestination)]);
@@ -1427,6 +1625,7 @@ async function copyItems(paths, targetDir) {
     }
 
     await fsp.cp(sourcePath, destPath, { recursive: true });
+    invalidateFolderSizeCacheForPath(destRelative);
     copied.push({ from: sourceRelative, to: destRelative });
   }
 
@@ -1492,6 +1691,7 @@ async function restoreRecycleEntry(id) {
   await ensureDir(path.dirname(targetPath));
   await fsp.rename(sourcePath, targetPath);
   await fsp.rm(entryDir, { recursive: true, force: true });
+  invalidateFolderSizeCacheForPath(targetRelative);
 }
 
 async function permanentlyDeleteRecycleEntry(id) {
@@ -1620,6 +1820,17 @@ async function handleApi(req, res, url) {
     return true;
   }
 
+  if (req.method === "GET" && url.pathname === "/api/folder-sizes") {
+    try {
+      const paths = url.searchParams.getAll("path").slice(0, 200);
+      const items = await Promise.all(paths.map((item) => readFolderSizeStatus(item)));
+      sendJson(res, 200, { items });
+    } catch (error) {
+      sendJson(res, 400, { error: error.message });
+    }
+    return true;
+  }
+
   if (req.method === "GET" && url.pathname === "/api/search") {
     try {
       const query = String(url.searchParams.get("q") || "");
@@ -1673,6 +1884,7 @@ async function handleApi(req, res, url) {
       if (isInvalidFileName(name)) throw new Error("文件夹名称包含非法字符");
       const targetRelative = safeRelative(path.posix.join(parentDir, name));
       await ensureDir(resolveInsideRoot(targetRelative));
+      invalidateFolderSizeCacheForPath(targetRelative);
       logAction(getDeviceName(req), getClientIp(req), "创建文件夹", path.posix.join(parentDir, name));
       sendJson(res, 200, { ok: true, path: targetRelative });
     } catch (error) {
@@ -1732,6 +1944,7 @@ async function handleApi(req, res, url) {
       for (const f of txtFiles) {
         await fsp.writeFile(f, "").catch(() => {});
       }
+      invalidateFolderSizeCacheForPath(projectPath);
       logAction(getDeviceName(req), getClientIp(req), "创建项目文件夹", projectPath);
       sendJson(res, 200, { ok: true, path: projectPath });
     } catch (error) {
@@ -1795,6 +2008,8 @@ async function handleApi(req, res, url) {
       }
       await cleanupThumbCacheForPath(sourcePath, sourceStat);
       await fsp.rename(sourcePath, targetPath);
+      invalidateFolderSizeCacheForPath(sourceRelative);
+      invalidateFolderSizeCacheForPath(targetRelative);
       logAction(getDeviceName(req), getClientIp(req), "重命名", `${sourceRelative} → ${newName}`);
       sendJson(res, 200, { ok: true, oldPath: sourceRelative, newPath: targetRelative });
     } catch (error) {
@@ -2147,6 +2362,7 @@ async function start() {
   await ensureDir(RECYCLE_DIR);
   await ensureDir(LOG_DIR);
   await ensureDir(TMP_DIR);
+  await loadFolderSizeCache();
   await restoreLogBuffer();
   await cleanupExpiredRecycleEntries();
   setInterval(() => {

@@ -28,6 +28,9 @@ const MAX_PARALLEL_FILE_STREAMS = Number(process.env.MAX_PARALLEL_FILE_STREAMS |
 const MAX_THUMB_SOURCE_SIZE = Number(process.env.MAX_THUMB_SOURCE_SIZE || 128 * 1024 * 1024);
 const MAX_VIDEO_THUMB_JOBS = Number(process.env.MAX_VIDEO_THUMB_JOBS || 1);
 const MAX_FOLDER_SIZE_DEPTH = Number(process.env.MAX_FOLDER_SIZE_DEPTH || 64);
+const THUMB_CACHE_CLEANUP_INTERVAL_MS = Number(process.env.THUMB_CACHE_CLEANUP_INTERVAL_MS || 6 * 60 * 60 * 1000);
+const THUMB_CACHE_MAX_AGE_DAYS = Number(process.env.THUMB_CACHE_MAX_AGE_DAYS || 30);
+const THUMB_TEMP_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const batchDownloads = new Map();
 const logBuffer = [];
 const MAX_LOG_BUFFER = 200;
@@ -45,6 +48,7 @@ const PROTECTED_POST_PATHS = new Set([
   "/api/rename",
   "/api/move",
   "/api/copy",
+  "/api/check-conflicts",
   "/api/upload",
   "/api/download-batch",
   "/api/recycle/restore",
@@ -312,6 +316,104 @@ function isInvalidFileName(name) {
   return /[<>:"/\\|?*]/.test(name);
 }
 
+function getStatType(stat) {
+  if (!stat) return "unknown";
+  if (stat.isDirectory()) return "directory";
+  if (stat.isFile()) return "file";
+  return "other";
+}
+
+function makeConflict(relativePath, stat) {
+  return {
+    path: relativePath,
+    name: path.posix.basename(relativePath),
+    type: getStatType(stat)
+  };
+}
+
+function createConflictError(conflicts, message = "目标位置已存在同名项目") {
+  const error = new Error(message);
+  error.statusCode = 409;
+  error.conflicts = conflicts;
+  return error;
+}
+
+function normalizeUploadRelativeName(relativeNameRaw) {
+  const normalized = String(relativeNameRaw || "").replaceAll("\\", "/").trim();
+  if (!normalized) throw new Error("存在文件名为空的上传项");
+  const segments = normalized.split("/").filter(Boolean);
+  if (segments.length === 0) throw new Error("上传路径无效");
+  for (const segment of segments) {
+    if (segment === "." || segment === ".." || isInvalidFileName(segment)) {
+      throw new Error(`文件名非法: ${normalized}`);
+    }
+  }
+  return segments.join("/");
+}
+
+function getUploadTargetRelative(dir, relativeNameRaw) {
+  const safeDir = safeRelative(dir);
+  const uploadRelative = normalizeUploadRelativeName(relativeNameRaw);
+  return safeRelative(path.posix.join(safeDir, uploadRelative));
+}
+
+async function collectUploadConflicts(dir, entries) {
+  const safeDir = safeRelative(dir);
+  const conflictMap = new Map();
+  const uploadEntries = Array.isArray(entries) ? entries : [];
+
+  for (const entry of uploadEntries) {
+    const uploadRelative = normalizeUploadRelativeName(entry);
+    const segments = uploadRelative.split("/");
+    let currentDir = safeDir;
+
+    for (const segment of segments.slice(0, -1)) {
+      currentDir = safeRelative(path.posix.join(currentDir, segment));
+      const currentPath = resolveInsideRoot(currentDir);
+      const currentStat = await fsp.stat(toFsPath(currentPath)).catch(() => null);
+      if (currentStat && !currentStat.isDirectory()) {
+        conflictMap.set(currentDir, makeConflict(currentDir, currentStat));
+      }
+    }
+
+    const targetRelative = safeRelative(path.posix.join(safeDir, uploadRelative));
+    const targetPath = resolveInsideRoot(targetRelative);
+    const targetStat = await fsp.stat(toFsPath(targetPath)).catch(() => null);
+    if (targetStat) {
+      conflictMap.set(targetRelative, makeConflict(targetRelative, targetStat));
+    }
+  }
+
+  return [...conflictMap.values()];
+}
+
+async function ensureUploadParentDirectories(fileRelative, overwriteExisting) {
+  const segments = fileRelative.split("/").filter(Boolean);
+  let currentRelative = "";
+
+  for (const segment of segments.slice(0, -1)) {
+    currentRelative = safeRelative(path.posix.join(currentRelative, segment));
+    const currentPath = resolveInsideRoot(currentRelative);
+    const currentStat = await fsp.stat(toFsPath(currentPath)).catch(() => null);
+
+    if (!currentStat) {
+      await ensureDir(currentPath);
+      continue;
+    }
+
+    if (currentStat.isDirectory()) continue;
+
+    const conflict = makeConflict(currentRelative, currentStat);
+    if (!overwriteExisting) {
+      throw createConflictError([conflict], "存在同名项目，请确认是否覆盖");
+    }
+
+    await cleanupThumbCacheForPath(currentPath, currentStat);
+    await moveToRecycle(currentRelative);
+    await ensureDir(currentPath);
+  }
+}
+
 async function getRecycleEntryFileNames(entryId) {
   const names = [];
   try {
@@ -499,6 +601,167 @@ function getThumbCachePath(fullPath, stat, type, ext = "webp") {
   return path.join(TMP_DIR, `${key}.${ext}`);
 }
 
+function getThumbMetaPath(cachePath) {
+  return `${cachePath}.json`;
+}
+
+function getLegacyThumbCachePaths(fullPath) {
+  const key = crypto.createHash("md5").update(fullPath).digest("hex");
+  return [
+    path.join(TMP_DIR, `${key}.webp`),
+    path.join(TMP_DIR, `${key}.jpg`)
+  ];
+}
+
+function isPathInsideOrEqual(rootPath, candidatePath) {
+  const relative = path.relative(path.resolve(rootPath), path.resolve(candidatePath));
+  return !relative || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function isSameThumbSource(stat, sourceStat) {
+  return stat.size === sourceStat.size && Math.abs(stat.mtimeMs - sourceStat.mtimeMs) < 1;
+}
+
+async function writeThumbCacheMeta(cachePath, fullPath, stat, type) {
+  const meta = {
+    fullPath: path.resolve(fullPath),
+    type,
+    size: stat.size,
+    mtimeMs: stat.mtimeMs,
+    generatedAt: new Date().toISOString()
+  };
+  await fsp.writeFile(getThumbMetaPath(cachePath), JSON.stringify(meta, null, 2), "utf8").catch(() => {});
+}
+
+async function removeThumbCachePath(cachePath) {
+  await fsp.unlink(cachePath).catch(() => {});
+  await fsp.unlink(getThumbMetaPath(cachePath)).catch(() => {});
+}
+
+async function removeThumbCacheForFile(fullPath, stat) {
+  const ext = path.extname(fullPath).toLowerCase();
+  if (!IMAGE_THUMB_EXTS.has(ext) && !VIDEO_THUMB_EXTS.has(ext)) return;
+
+  const cachePaths = new Set(getLegacyThumbCachePaths(fullPath));
+  if (stat && stat.isFile()) {
+    if (IMAGE_THUMB_EXTS.has(ext)) {
+      cachePaths.add(getThumbCachePath(fullPath, stat, "image"));
+    }
+    if (VIDEO_THUMB_EXTS.has(ext)) {
+      cachePaths.add(getThumbCachePath(fullPath, stat, "video", "jpg"));
+    }
+  }
+
+  await Promise.all([...cachePaths].map((cachePath) => removeThumbCachePath(cachePath)));
+}
+
+function removeQueuedVideoThumbsForPath(fullPath) {
+  const resolved = path.resolve(fullPath);
+  for (let i = videoThumbQueue.length - 1; i >= 0; i--) {
+    const job = videoThumbQueue[i];
+    if (!isPathInsideOrEqual(resolved, job.fullPath)) continue;
+    videoThumbQueue.splice(i, 1);
+    videoThumbJobs.delete(job.cachePath);
+    fsp.unlink(job.tempPath).catch(() => {});
+  }
+}
+
+async function cleanupThumbCacheForPath(fullPath, stat) {
+  const currentStat = stat || await fsp.stat(toFsPath(fullPath)).catch(() => null);
+  if (!currentStat) return;
+
+  removeQueuedVideoThumbsForPath(fullPath);
+
+  if (currentStat.isFile()) {
+    await removeThumbCacheForFile(fullPath, currentStat);
+    return;
+  }
+
+  if (!currentStat.isDirectory()) return;
+
+  const stack = [fullPath];
+  while (stack.length > 0) {
+    const dirPath = stack.pop();
+    let entries;
+    try {
+      entries = await fsp.readdir(toFsPath(dirPath), { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      const childPath = path.join(dirPath, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(childPath);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      const childStat = await fsp.stat(toFsPath(childPath)).catch(() => null);
+      if (childStat) {
+        await removeThumbCacheForFile(childPath, childStat);
+      }
+    }
+  }
+}
+
+async function verifyThumbSource(meta) {
+  const fullPath = path.resolve(String(meta.fullPath || ""));
+  if (!isPathInsideOrEqual(ROOT_DIR, fullPath)) return false;
+  const stat = await fsp.stat(toFsPath(fullPath)).catch(() => null);
+  if (!stat || !stat.isFile()) return false;
+  return isSameThumbSource(stat, meta);
+}
+
+async function cleanupStaleThumbnailCache() {
+  await ensureDir(TMP_DIR);
+  const maxAgeMs = Number.isFinite(THUMB_CACHE_MAX_AGE_DAYS) && THUMB_CACHE_MAX_AGE_DAYS > 0
+    ? THUMB_CACHE_MAX_AGE_DAYS * 24 * 60 * 60 * 1000
+    : 0;
+  const now = Date.now();
+  const entries = await fsp.readdir(TMP_DIR, { withFileTypes: true }).catch(() => []);
+  let deletedCount = 0;
+
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    if (entry.name.endsWith(".json")) continue;
+
+    const cachePath = path.join(TMP_DIR, entry.name);
+    const lowerName = entry.name.toLowerCase();
+    if (lowerName.includes(".tmp")) {
+      const stat = await fsp.stat(cachePath).catch(() => null);
+      if (stat && now - stat.mtimeMs > THUMB_TEMP_MAX_AGE_MS) {
+        await fsp.unlink(cachePath).catch(() => {});
+        deletedCount += 1;
+      }
+      continue;
+    }
+
+    if (!lowerName.endsWith(".webp") && !lowerName.endsWith(".jpg")) continue;
+
+    const metaPath = getThumbMetaPath(cachePath);
+    let shouldDelete = false;
+    try {
+      const meta = JSON.parse(await fsp.readFile(metaPath, "utf8"));
+      shouldDelete = !(await verifyThumbSource(meta));
+    } catch {
+      if (maxAgeMs > 0) {
+        const stat = await fsp.stat(cachePath).catch(() => null);
+        shouldDelete = !!stat && now - stat.mtimeMs > maxAgeMs;
+      }
+    }
+
+    if (shouldDelete) {
+      await removeThumbCachePath(cachePath);
+      deletedCount += 1;
+    }
+  }
+
+  if (deletedCount > 0) {
+    console.log(`缩略图缓存已清理 ${deletedCount} 项`);
+  }
+  return deletedCount;
+}
+
 async function sendThumbCache(res, cachePath, mimeType = "image/webp") {
   const content = await fsp.readFile(cachePath);
   res.writeHead(200, {
@@ -532,7 +795,7 @@ function sendThumbPlaceholder(res, label = "VIDEO", status = "pending") {
   res.end(svg);
 }
 
-async function generateImageThumb(fullPath, cachePath) {
+async function generateImageThumb(fullPath, stat, cachePath) {
   const tempPath = `${cachePath}.${process.pid}.${Date.now()}.tmp`;
   try {
     await sharp(fullPath, { limitInputPixels: 12000 * 12000 })
@@ -545,17 +808,24 @@ async function generateImageThumb(fullPath, cachePath) {
       })
       .webp({ quality: 70 })
       .toFile(tempPath);
+    const currentStat = await fsp.stat(toFsPath(fullPath));
+    if (!isSameThumbSource(currentStat, stat)) {
+      await fsp.unlink(tempPath).catch(() => {});
+      return;
+    }
     await fsp.rename(tempPath, cachePath);
+    await writeThumbCacheMeta(cachePath, fullPath, stat, "image");
   } catch (error) {
     await fsp.unlink(tempPath).catch(() => {});
     throw error;
   }
 }
 
-function enqueueVideoThumb(fullPath, cachePath) {
+function enqueueVideoThumb(fullPath, stat, cachePath) {
   if (videoThumbJobs.has(cachePath)) return;
   const job = {
     fullPath,
+    sourceStat: { size: stat.size, mtimeMs: stat.mtimeMs },
     cachePath,
     tempPath: `${cachePath}.${process.pid}.${Date.now()}.tmp.jpg`
   };
@@ -608,7 +878,14 @@ function generateVideoThumb(job) {
         return;
       }
       try {
+        const currentStat = await fsp.stat(toFsPath(job.fullPath));
+        if (!isSameThumbSource(currentStat, job.sourceStat)) {
+          await fsp.unlink(job.tempPath).catch(() => {});
+          resolve();
+          return;
+        }
         await fsp.rename(job.tempPath, job.cachePath);
+        await writeThumbCacheMeta(job.cachePath, job.fullPath, job.sourceStat, "video");
         resolve();
       } catch (renameError) {
         await fsp.unlink(job.tempPath).catch(() => {});
@@ -657,7 +934,7 @@ async function handleThumbnail(res, url) {
       await sendThumbCache(res, cachePath);
       return;
     } catch {}
-    await generateImageThumb(fullPath, cachePath);
+    await generateImageThumb(fullPath, stat, cachePath);
     await sendThumbCache(res, cachePath);
     return;
   }
@@ -668,7 +945,7 @@ async function handleThumbnail(res, url) {
       await sendThumbCache(res, cachePath, "image/jpeg");
       return;
     } catch {}
-    enqueueVideoThumb(fullPath, cachePath);
+    enqueueVideoThumb(fullPath, stat, cachePath);
     sendThumbPlaceholder(res, "VIDEO", "pending");
     return;
   }
@@ -719,6 +996,7 @@ async function handleStreamingUpload(req) {
     });
 
     let dir = "";
+    let overwriteExisting = false;
     const relativePathMap = {};
     const fileTasks = [];
     let fileIndex = 0;
@@ -742,6 +1020,10 @@ async function handleStreamingUpload(req) {
         }
         return;
       }
+      if (name === "overwrite") {
+        overwriteExisting = value === "1" || value === "true";
+        return;
+      }
       const idxMatch = /^relativePath_(\d+)$/.exec(name);
       if (idxMatch) {
         relativePathMap[idxMatch[1]] = value;
@@ -761,31 +1043,11 @@ async function handleStreamingUpload(req) {
       const relativeNameRaw = String(relativePathMap[String(fileIndex)] || info.filename || "").replaceAll("\\", "/").trim();
       fileIndex += 1;
 
-      if (!relativeNameRaw) {
-        fileStream.resume();
-        fail(new Error("存在文件名为空的上传项"));
-        return;
-      }
-
-      const segments = relativeNameRaw.split("/").filter(Boolean);
-      if (segments.length === 0) {
-        fileStream.resume();
-        fail(new Error("上传路径无效"));
-        return;
-      }
-      for (const segment of segments) {
-        if (isInvalidFileName(segment)) {
-          fileStream.resume();
-          fail(new Error(`文件名非法: ${relativeNameRaw}`));
-          return;
-        }
-      }
-
       let fileRelative;
       let filePath;
       let backupPath;
       try {
-        fileRelative = safeRelative(path.posix.join(dir, relativeNameRaw));
+        fileRelative = getUploadTargetRelative(dir, relativeNameRaw);
         filePath = resolveInsideRoot(fileRelative);
         backupPath = path.join(BACKUP_DIR, backupBatchId, fileRelative);
       } catch (error) {
@@ -795,10 +1057,17 @@ async function handleStreamingUpload(req) {
       }
 
       const task = (async () => {
+        await ensureUploadParentDirectories(fileRelative, overwriteExisting);
+        const existingStat = await fsp.stat(toFsPath(filePath)).catch(() => null);
+        if (existingStat) {
+          const conflict = makeConflict(fileRelative, existingStat);
+          if (!overwriteExisting) {
+            throw createConflictError([conflict], "存在同名项目，请确认是否覆盖");
+          }
+          await cleanupThumbCacheForPath(filePath, existingStat);
+          await moveToRecycle(fileRelative);
+        }
         await ensureDir(path.dirname(filePath));
-        // 删除旧的缩略图缓存（同名文件上传时更新预览图）
-        const oldCache = path.join(TMP_DIR, crypto.createHash("md5").update(filePath).digest("hex") + ".webp");
-        fsp.unlink(oldCache).catch(() => {});
         // 只写 shared 文件，不等待备份
         let writeCompleted = false;
         try {
@@ -837,6 +1106,7 @@ async function handleStreamingUpload(req) {
             fileStream.pipe(sharedStream);
           });
         } catch (error) {
+          fileStream.resume();
           if (!writeCompleted) {
             await fsp.unlink(filePath).catch(() => {});
           }
@@ -980,7 +1250,67 @@ async function moveToRecycle(relativePath) {
   return meta;
 }
 
-async function moveItems(paths, targetDir) {
+async function collectMoveConflicts(paths, targetDir) {
+  const safeTargetDir = safeRelative(targetDir);
+  const targetDirPath = resolveInsideRoot(safeTargetDir);
+  const targetStat = await fsp.stat(targetDirPath).catch(() => null);
+  if (!targetStat || !targetStat.isDirectory()) {
+    throw new Error("目标文件夹不存在");
+  }
+
+  const sourceRelatives = [...new Set(paths.map((item) => safeRelative(item)).filter(Boolean))];
+  if (sourceRelatives.length === 0) {
+    throw new Error("没有可移动的项目");
+  }
+
+  for (const sourceRelative of sourceRelatives) {
+    if (!sourceRelative) {
+      throw new Error("不能移动 shared 根目录");
+    }
+    for (const otherRelative of sourceRelatives) {
+      if (sourceRelative !== otherRelative && otherRelative.startsWith(`${sourceRelative}/`)) {
+        throw new Error(`不能同时移动父目录和它的子项：${sourceRelative}`);
+      }
+    }
+  }
+
+  const destinationSet = new Set();
+  const conflictMap = new Map();
+  for (const sourceRelative of sourceRelatives) {
+    const sourcePath = resolveInsideRoot(sourceRelative);
+    const sourceStat = await fsp.stat(sourcePath).catch(() => null);
+    if (!sourceStat) {
+      throw new Error(`源项目不存在：${sourceRelative}`);
+    }
+
+    const sourceName = path.posix.basename(sourceRelative);
+    const destinationRelative = safeRelative(path.posix.join(safeTargetDir, sourceName));
+    const destinationPath = resolveInsideRoot(destinationRelative);
+
+    if (sourceRelative === destinationRelative) {
+      continue;
+    }
+
+    if (destinationRelative.startsWith(`${sourceRelative}/`)) {
+      throw new Error(`不能把文件夹移动到它自己的子目录中：${sourceName}`);
+    }
+
+    if (destinationSet.has(destinationRelative)) {
+      throw new Error(`移动目标发生重名冲突：${sourceName}`);
+    }
+    destinationSet.add(destinationRelative);
+
+    const existingDestination = await fsp.stat(destinationPath).catch(() => null);
+    if (existingDestination) {
+      conflictMap.set(destinationRelative, makeConflict(destinationRelative, existingDestination));
+    }
+  }
+
+  return [...conflictMap.values()];
+}
+
+async function moveItems(paths, targetDir, options = {}) {
+  const overwriteExisting = Boolean(options.overwrite);
   const safeTargetDir = safeRelative(targetDir);
   const targetDirPath = resolveInsideRoot(safeTargetDir);
   const targetStat = await fsp.stat(targetDirPath).catch(() => null);
@@ -1006,6 +1336,7 @@ async function moveItems(paths, targetDir) {
 
   const planned = [];
   const destinationSet = new Set();
+  const conflicts = [];
   for (const sourceRelative of sourceRelatives) {
 
     const sourcePath = resolveInsideRoot(sourceRelative);
@@ -1032,19 +1363,28 @@ async function moveItems(paths, targetDir) {
 
     const existingDestination = await fsp.stat(destinationPath).catch(() => null);
     if (existingDestination) {
-      throw new Error(`目标位置已存在同名项目：${sourceName}`);
+      conflicts.push(makeConflict(destinationRelative, existingDestination));
     }
 
-    planned.push({ sourceRelative, sourcePath, destinationRelative, destinationPath });
+    planned.push({ sourceRelative, sourcePath, sourceStat, destinationRelative, destinationPath, existingDestination });
+  }
+
+  if (conflicts.length > 0 && !overwriteExisting) {
+    throw createConflictError(conflicts);
   }
 
   const moved = [];
   for (const item of planned) {
     try {
+      await cleanupThumbCacheForPath(item.sourcePath, item.sourceStat);
+      if (item.existingDestination) {
+        await cleanupThumbCacheForPath(item.destinationPath, item.existingDestination);
+        await moveToRecycle(item.destinationRelative);
+      }
       await fsp.rename(item.sourcePath, item.destinationPath);
     } catch (err) {
       if (err.code === "EEXIST") {
-        throw new Error(`目标位置已存在同名项目：${path.posix.basename(item.sourceRelative)}`);
+        throw createConflictError([makeConflict(item.destinationRelative, item.existingDestination)]);
       }
       throw err;
     }
@@ -1415,10 +1755,8 @@ async function handleApi(req, res, url) {
             deletedNames.push(...await collectDirFileNames(fullPath));
           } else {
             deletedNames.push(path.basename(fullPath));
-            // 删除对应的缩略图缓存
-            const cache = path.join(TMP_DIR, crypto.createHash("md5").update(fullPath).digest("hex") + ".webp");
-            fsp.unlink(cache).catch(() => {});
           }
+          await cleanupThumbCacheForPath(fullPath, stat);
         } catch {}
       }
       const deleted = [];
@@ -1448,16 +1786,14 @@ async function handleApi(req, res, url) {
       const targetRelative = safeRelative(path.posix.join(parentRelative === "." ? "" : parentRelative, newName));
       const targetPath = resolveInsideRoot(targetRelative);
       if (sourceRelative === targetRelative) throw new Error("新名称不能与原名称相同");
-      await fsp.access(sourcePath);
+      const sourceStat = await fsp.stat(toFsPath(sourcePath));
       try {
         await fsp.access(targetPath);
         throw new Error("目标名称已存在");
       } catch (error) {
         if (error.message === "目标名称已存在") throw error;
       }
-      // 删除旧的缩略图缓存
-      const oldCache = path.join(TMP_DIR, crypto.createHash("md5").update(sourcePath).digest("hex") + ".webp");
-      fsp.unlink(oldCache).catch(() => {});
+      await cleanupThumbCacheForPath(sourcePath, sourceStat);
       await fsp.rename(sourcePath, targetPath);
       logAction(getDeviceName(req), getClientIp(req), "重命名", `${sourceRelative} → ${newName}`);
       sendJson(res, 200, { ok: true, oldPath: sourceRelative, newPath: targetRelative });
@@ -1472,12 +1808,12 @@ async function handleApi(req, res, url) {
       const body = parseJson(await readRequestBody(req));
       const paths = (Array.isArray(body.paths) ? body.paths : [body.path]).map((item) => safeRelative(item)).filter(Boolean);
       if (paths.length === 0) throw new Error("没有可移动的项目");
-      const moved = await moveItems(paths, body.targetDir);
+      const moved = await moveItems(paths, body.targetDir, { overwrite: body.overwrite === true });
       const movedNames = moved.map(m => m.from.split("/").pop());
       logAction(getDeviceName(req), getClientIp(req), "移动", `${paths.length} 项 → /${body.targetDir || ""}`, movedNames);
       sendJson(res, 200, { ok: true, moved });
     } catch (error) {
-      sendJson(res, error.statusCode || 400, { error: error.message });
+      sendJson(res, error.statusCode || 400, { error: error.message, conflicts: error.conflicts || [] });
     }
     return true;
   }
@@ -1497,6 +1833,26 @@ async function handleApi(req, res, url) {
     return true;
   }
 
+  if (req.method === "POST" && url.pathname === "/api/check-conflicts") {
+    try {
+      const body = parseJson(await readRequestBody(req));
+      const operation = String(body.operation || "");
+      let conflicts = [];
+      if (operation === "upload") {
+        conflicts = await collectUploadConflicts(body.dir, body.entries);
+      } else if (operation === "move") {
+        const paths = (Array.isArray(body.paths) ? body.paths : [body.path]).map((item) => safeRelative(item)).filter(Boolean);
+        conflicts = await collectMoveConflicts(paths, body.targetDir);
+      } else {
+        throw new Error("未知的冲突检查类型");
+      }
+      sendJson(res, 200, { ok: true, conflicts });
+    } catch (error) {
+      sendJson(res, error.statusCode || 400, { error: error.message, conflicts: error.conflicts || [] });
+    }
+    return true;
+  }
+
   if (req.method === "POST" && url.pathname === "/api/upload") {
     try {
       const contentType = String(req.headers["content-type"] || "");
@@ -1509,7 +1865,7 @@ async function handleApi(req, res, url) {
       logAction(getDeviceName(req), getClientIp(req), "上传", detail, names);
       sendJson(res, 200, { ok: true, uploaded: result.uploaded, backupBatchId: result.backupBatchId });
     } catch (error) {
-      sendJson(res, error.statusCode || 400, { error: error.message });
+      sendJson(res, error.statusCode || 400, { error: error.message, conflicts: error.conflicts || [] });
     }
     return true;
   }
@@ -1790,6 +2146,7 @@ async function start() {
   await ensureDir(BACKUP_DIR);
   await ensureDir(RECYCLE_DIR);
   await ensureDir(LOG_DIR);
+  await ensureDir(TMP_DIR);
   await restoreLogBuffer();
   await cleanupExpiredRecycleEntries();
   setInterval(() => {
@@ -1797,6 +2154,16 @@ async function start() {
       console.error(`回收站巡检失败: ${error.message}`);
     });
   }, RECYCLE_CLEANUP_INTERVAL_MS);
+  cleanupStaleThumbnailCache().catch((error) => {
+    console.error(`缩略图缓存巡检失败: ${error.message}`);
+  });
+  if (THUMB_CACHE_CLEANUP_INTERVAL_MS > 0) {
+    setInterval(() => {
+      cleanupStaleThumbnailCache().catch((error) => {
+        console.error(`缩略图缓存巡检失败: ${error.message}`);
+      });
+    }, THUMB_CACHE_CLEANUP_INTERVAL_MS);
+  }
   server.listen(PORT, HOST, () => {
     console.log(`共享目录: ${ROOT_DIR}`);
     console.log(`备份目录: ${BACKUP_DIR}`);

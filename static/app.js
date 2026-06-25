@@ -129,6 +129,12 @@ const moveCreateFolderBtn = moveDialog.querySelector("#moveCreateFolderBtn");
 const moveHereBtn = moveDialog.querySelector("#moveHereBtn");
 const closeMoveDialogBtn = moveDialog.querySelector("#closeMoveDialogBtn");
 
+const DRAG_SCROLL_EDGE_SIZE = 72;
+const DRAG_SCROLL_MAX_SPEED = 24;
+let dragScrollFrame = 0;
+let dragScrollContainer = null;
+let dragScrollSpeed = 0;
+
 function showMessage(text, type = "info") {
   messageBox.textContent = text;
   messageBox.className = `message ${type}`;
@@ -179,6 +185,116 @@ async function apiFetch(url, options = {}) {
   const res = await fetch(url, { ...options, headers });
   if (res.ok && (options.method === "POST" || options.method === undefined)) pollLogs();
   return res;
+}
+
+async function checkConflicts(payload) {
+  const res = await apiFetch("/api/check-conflicts", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+  const data = await parseJsonResponse(res);
+  if (!res.ok) {
+    throw new Error(data.error || "冲突检查失败");
+  }
+  return Array.isArray(data.conflicts) ? data.conflicts : [];
+}
+
+async function confirmOverwriteConflicts({ title, message, conflicts, confirmText }) {
+  if (!conflicts.length) return true;
+  return await openConfirmDialog({
+    title,
+    message,
+    items: conflicts.map((item) => item.path || item.name || "同名项目"),
+    confirmText,
+    danger: true
+  });
+}
+
+function getActiveFileScrollContainer() {
+  return state.viewMode === "grid" ? gridView : tableView;
+}
+
+function stopDragAutoScroll() {
+  if (dragScrollFrame) cancelAnimationFrame(dragScrollFrame);
+  dragScrollFrame = 0;
+  dragScrollContainer = null;
+  dragScrollSpeed = 0;
+}
+
+function runDragAutoScroll() {
+  if (!dragScrollContainer || dragScrollSpeed === 0) {
+    stopDragAutoScroll();
+    return;
+  }
+  dragScrollContainer.scrollTop += dragScrollSpeed;
+  dragScrollFrame = requestAnimationFrame(runDragAutoScroll);
+}
+
+function updateDragAutoScroll(event) {
+  const container = getActiveFileScrollContainer();
+  if (!container || container.classList.contains("is-hidden")) {
+    stopDragAutoScroll();
+    return;
+  }
+
+  const rect = container.getBoundingClientRect();
+  let speed = 0;
+  if (event.clientY < rect.top + DRAG_SCROLL_EDGE_SIZE) {
+    const ratio = Math.max(0, Math.min(1, (rect.top + DRAG_SCROLL_EDGE_SIZE - event.clientY) / DRAG_SCROLL_EDGE_SIZE));
+    speed = -Math.ceil(ratio * DRAG_SCROLL_MAX_SPEED);
+  } else if (event.clientY > rect.bottom - DRAG_SCROLL_EDGE_SIZE) {
+    const ratio = Math.max(0, Math.min(1, (event.clientY - (rect.bottom - DRAG_SCROLL_EDGE_SIZE)) / DRAG_SCROLL_EDGE_SIZE));
+    speed = Math.ceil(ratio * DRAG_SCROLL_MAX_SPEED);
+  }
+
+  if (speed === 0) {
+    stopDragAutoScroll();
+    return;
+  }
+
+  dragScrollContainer = container;
+  dragScrollSpeed = speed;
+  if (!dragScrollFrame) {
+    dragScrollFrame = requestAnimationFrame(runDragAutoScroll);
+  }
+}
+
+function positionDragCancelZone() {
+  const cancelZone = document.querySelector("#dragCancelZone");
+  const container = getActiveFileScrollContainer();
+  if (!cancelZone || !container || container.classList.contains("is-hidden")) return;
+
+  const rect = container.getBoundingClientRect();
+  const gap = 12;
+  const zoneWidth = window.innerWidth < 760 ? 132 : 176;
+  let left = rect.right + gap;
+  if (left + zoneWidth > window.innerWidth - gap) {
+    left = Math.max(gap, window.innerWidth - zoneWidth - gap);
+  }
+
+  const top = Math.max(gap, rect.top);
+  const bottomLimit = window.innerHeight - 46;
+  const height = Math.max(180, bottomLimit - top);
+
+  cancelZone.style.setProperty("--drag-cancel-left", `${Math.round(left)}px`);
+  cancelZone.style.setProperty("--drag-cancel-top", `${Math.round(top)}px`);
+  cancelZone.style.setProperty("--drag-cancel-width", `${Math.round(zoneWidth)}px`);
+  cancelZone.style.setProperty("--drag-cancel-height", `${Math.round(height)}px`);
+}
+
+function showDragCancelZone() {
+  const cancelZone = document.querySelector("#dragCancelZone");
+  if (!cancelZone) return;
+  positionDragCancelZone();
+  cancelZone.classList.remove("is-hidden");
+}
+
+function hideDragCancelZone() {
+  const cancelZone = document.querySelector("#dragCancelZone");
+  if (!cancelZone) return;
+  cancelZone.classList.remove("drag-over");
+  cancelZone.classList.add("is-hidden");
 }
 
 function showDialog(dialog) {
@@ -575,11 +691,16 @@ function updateToolbarButtons() {
 
   const count = getSelectionCount();
   const total = state.currentItems.length;
-  moveBtn.textContent = count > 0 ? `批量移动 (${count})` : "批量移动";
-  deleteBtn.textContent = count > 0 ? `批量删除 (${count})` : "批量删除";
-  downloadBtn.textContent = count > 0 ? `批量下载 (${count})` : "批量下载";
+  moveBtn.textContent = count > 0 ? `批量移动(${count})` : "批量移动";
+  deleteBtn.textContent = count > 0 ? `批量删除(${count})` : "批量删除";
+  downloadBtn.textContent = count > 0 ? `批量下载(${count})` : "批量下载";
   selectAllBtn.textContent = count > 0 && count >= total ? "取消全选" : "全选";
   invertBtn.textContent = "反选";
+  moveBtn.title = count > 0 ? `移动已选 ${count} 个项目` : "先选择文件再批量移动";
+  deleteBtn.title = count > 0 ? `删除已选 ${count} 个项目` : "先选择文件再批量删除";
+  downloadBtn.title = count > 0 ? `下载已选 ${count} 个项目` : "先选择文件再批量下载";
+  selectAllBtn.title = count > 0 && count >= total ? "取消全选" : "全选当前列表";
+  invertBtn.title = "反选当前列表";
   moveBtn.disabled = count === 0;
   deleteBtn.disabled = count === 0;
   downloadBtn.disabled = count === 0;
@@ -964,6 +1085,50 @@ function toggleSelected(path, checked) {
   updateToolbarButtons();
 }
 
+function syncItemSelectionUi(path) {
+  const selected = isSelected(path);
+  document.querySelectorAll("[data-item-path]").forEach((el) => {
+    if (el.dataset.itemPath !== path) return;
+    el.classList.toggle("is-selected", selected);
+    el.querySelectorAll(".select-checkbox").forEach((input) => {
+      input.checked = selected;
+    });
+  });
+}
+
+function setSelected(path, checked) {
+  toggleSelected(path, checked);
+  syncItemSelectionUi(path);
+}
+
+let pendingItemClickTimer = null;
+
+function cancelPendingItemClick() {
+  if (!pendingItemClickTimer) return;
+  clearTimeout(pendingItemClickTimer);
+  pendingItemClickTimer = null;
+}
+
+function isItemClickIgnored(event) {
+  const target = event.target;
+  return Boolean(target.closest("button, a, input, label, select, textarea, .grid-actions, .op-cell"));
+}
+
+function handleItemClick(event, item) {
+  if (isItemClickIgnored(event)) return;
+  cancelPendingItemClick();
+  pendingItemClickTimer = window.setTimeout(() => {
+    pendingItemClickTimer = null;
+    setSelected(item.path, !isSelected(item.path));
+  }, 170);
+}
+
+function handleItemDoubleClick(event, item) {
+  if (isItemClickIgnored(event)) return;
+  cancelPendingItemClick();
+  openPreview(item);
+}
+
 function clearSelections() {
   state.selectedPaths.clear();
   updateToolbarButtons();
@@ -1102,10 +1267,12 @@ function makeSelectCheckbox(item) {
   input.type = "checkbox";
   input.className = "select-checkbox";
   input.checked = isSelected(item.path);
+  input.title = "选择项目";
+  input.setAttribute("aria-label", `选择 ${item.name}`);
   input.addEventListener("click", (event) => event.stopPropagation());
   input.addEventListener("change", (event) => {
-    toggleSelected(item.path, event.target.checked);
-    input.blur(); // 移除焦点，使快捷键立即可用
+    setSelected(item.path, event.target.checked);
+    input.blur();
   });
   return input;
 }
@@ -1199,13 +1366,53 @@ async function deleteItem(item) {
   }
 }
 
-async function moveItems(paths, targetDir) {
+async function moveItems(paths, targetDir, forceOverwrite = false) {
+  let overwriteExisting = forceOverwrite;
+  if (!overwriteExisting) {
+    try {
+      const conflicts = await checkConflicts({
+        operation: "move",
+        paths,
+        targetDir
+      });
+      if (conflicts.length > 0) {
+        const confirmed = await confirmOverwriteConflicts({
+          title: "目标位置有同名项目",
+          message: "确认后会覆盖目标位置的同名项目，旧项目会移入回收站；取消则不会移动任何文件。",
+          conflicts,
+          confirmText: "覆盖并移动"
+        });
+        if (!confirmed) {
+          showMessage("已取消移动", "info");
+          return false;
+        }
+        overwriteExisting = true;
+      }
+    } catch (error) {
+      showMessage(error.message || "移动前检查失败", "error");
+      return false;
+    }
+  }
+
   const res = await apiFetch("/api/move", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ paths, targetDir })
+    body: JSON.stringify({ paths, targetDir, overwrite: overwriteExisting })
   });
   const data = await parseJsonResponse(res);
+  if (!res.ok && res.status === 409 && Array.isArray(data.conflicts) && data.conflicts.length > 0 && !overwriteExisting) {
+    const confirmed = await confirmOverwriteConflicts({
+      title: "目标位置有同名项目",
+      message: "确认后会覆盖目标位置的同名项目，旧项目会移入回收站；取消则不会移动任何文件。",
+      conflicts: data.conflicts,
+      confirmText: "覆盖并移动"
+    });
+    if (!confirmed) {
+      showMessage("已取消移动", "info");
+      return false;
+    }
+    return await moveItems(paths, targetDir, true);
+  }
   if (!res.ok) {
     showMessage(data.error || "移动失败", "error");
     return false;
@@ -1428,6 +1635,8 @@ async function downloadSelectedItems() {
 function createActions(item) {
   const actions = document.createElement("div");
   actions.className = "grid-actions";
+  actions.addEventListener("click", (event) => event.stopPropagation());
+  actions.addEventListener("dblclick", (event) => event.stopPropagation());
 
   if (item.type === "directory") {
     const openBtn = document.createElement("button");
@@ -1479,9 +1688,12 @@ function createGridCard(item) {
   const searchDir = state.searchQuery ? parentDir(item.path) : "";
   const card = document.createElement("article");
   card.className = "grid-card";
+  card.dataset.itemPath = item.path;
+  card.classList.toggle("is-selected", isSelected(item.path));
   if (state.clipboard.mode === "cut" && state.clipboard.items.includes(item.path)) card.classList.add("cut-clip");
   else if (state.clipboard.mode === "copy" && state.clipboard.items.includes(item.path)) card.classList.add("copy-clip");
-  card.ondblclick = () => openPreview(item);
+  card.addEventListener("click", (event) => handleItemClick(event, item));
+  card.addEventListener("dblclick", (event) => handleItemDoubleClick(event, item));
 
   // 拖拽支持 - 所有项目都可拖拽
   card.draggable = true;
@@ -1576,7 +1788,9 @@ function renderRows(items) {
   for (const item of items) {
     const searchDir = state.searchQuery ? parentDir(item.path) : "";
     const tr = rowTemplate.content.firstElementChild.cloneNode(true);
-    tr.className = item.previewType !== "none" || item.type === "directory" ? "interactive-row" : "";
+    tr.className = "interactive-row";
+    tr.dataset.itemPath = item.path;
+    tr.classList.toggle("is-selected", isSelected(item.path));
     if (state.clipboard.mode === "cut" && state.clipboard.items.includes(item.path)) tr.classList.add("cut-clip");
     else if (state.clipboard.mode === "copy" && state.clipboard.items.includes(item.path)) tr.classList.add("copy-clip");
     const wrap = document.createElement("div");
@@ -1587,7 +1801,8 @@ function renderRows(items) {
     tr.querySelector(".type-cell").textContent = getFileType(item);
     tr.querySelector(".size-cell").textContent = item.type === "directory" ? formatSize(item.folderSize) : formatSize(item.size);
     tr.querySelector(".time-cell").textContent = new Date(item.updatedAt).toLocaleString("zh-CN");
-    tr.ondblclick = () => openPreview(item);
+    tr.addEventListener("click", (event) => handleItemClick(event, item));
+    tr.addEventListener("dblclick", (event) => handleItemDoubleClick(event, item));
     tr.querySelector(".op-cell").appendChild(createActions(item));
 
     // 拖拽支持 - 所有项目都可拖拽
@@ -1957,6 +2172,31 @@ async function entriesFromDataTransfer(dataTransfer) {
 
 async function uploadEntries(fileEntries, label = "文件") {
   if (!fileEntries.length) return;
+  let overwriteExisting = false;
+  try {
+    const conflicts = await checkConflicts({
+      operation: "upload",
+      dir: state.currentDir,
+      entries: fileEntries.map((entry) => entry.relativePath)
+    });
+    if (conflicts.length > 0) {
+      const confirmed = await confirmOverwriteConflicts({
+        title: "发现同名项目",
+        message: "目标位置已经有同名文件或文件夹。确认后会覆盖，旧项目会移入回收站；取消则不会开始上传。",
+        conflicts,
+        confirmText: "覆盖上传"
+      });
+      if (!confirmed) {
+        showMessage("已取消上传", "info");
+        return;
+      }
+      overwriteExisting = true;
+    }
+  } catch (error) {
+    showMessage(error.message || "上传前检查失败", "error");
+    return;
+  }
+
   const task = createUploadTask(label, fileEntries.length);
   showMessage(`正在上传${label}，请稍候...`, "info");
   updateUploadTask(task, { status: "pending", message: "正在初始化安全校验" });
@@ -1971,6 +2211,7 @@ async function uploadEntries(fileEntries, label = "文件") {
 
   const formData = new FormData();
   formData.append("dir", state.currentDir);
+  formData.append("overwrite", overwriteExisting ? "1" : "0");
   fileEntries.forEach(({ file, relativePath }, i) => {
     formData.append(`relativePath_${i}`, relativePath);
     formData.append("files", file, file.name);
@@ -2207,8 +2448,8 @@ document.addEventListener("dragover", (event) => {
   // 内部拖拽（文件/文件夹/面包屑）显示取消区域
   if (event.dataTransfer && event.dataTransfer.types.includes("application/json")) {
     event.preventDefault();
-    var cancelZone = document.querySelector("#dragCancelZone");
-    if (cancelZone) cancelZone.classList.remove("is-hidden");
+    updateDragAutoScroll(event);
+    showDragCancelZone();
     return;
   }
   event.preventDefault();
@@ -2220,13 +2461,14 @@ document.addEventListener("dragleave", (event) => {
   if (event.target.closest && event.target.closest("#tab-audio, #tab-video")) return;
   if (event.clientX === 0 && event.clientY === 0) {
     setDropActive(false);
-    var cancelZone = document.querySelector("#dragCancelZone");
-    if (cancelZone) cancelZone.classList.add("is-hidden");
+    stopDragAutoScroll();
+    hideDragCancelZone();
   }
 });
 
 document.addEventListener("drop", async (event) => {
   if (_draggingChar) return;
+  stopDragAutoScroll();
   // 工具 iframe 区域由工具自身处理
   if (event.target.closest && event.target.closest("#tab-audio, #tab-video")) {
     setDropActive(false);
@@ -2234,9 +2476,7 @@ document.addEventListener("drop", async (event) => {
   }
   event.preventDefault();
   setDropActive(false);
-  // 隐藏取消区域
-  var cancelZone = document.querySelector("#dragCancelZone");
-  if (cancelZone) cancelZone.classList.add("is-hidden");
+  hideDragCancelZone();
   try {
     const entries = await entriesFromDataTransfer(event.dataTransfer);
     await uploadEntries(entries, "拖拽内容");
@@ -2245,19 +2485,28 @@ document.addEventListener("drop", async (event) => {
   }
 });
 
+document.addEventListener("dragend", () => {
+  stopDragAutoScroll();
+  hideDragCancelZone();
+});
+
 // 取消区域拖拽支持
 var dragCancelZone = document.querySelector("#dragCancelZone");
 if (dragCancelZone) {
   dragCancelZone.addEventListener("dragover", (e) => {
     e.preventDefault();
+    e.stopPropagation();
+    stopDragAutoScroll();
+    positionDragCancelZone();
     e.dataTransfer.dropEffect = "none";
     dragCancelZone.classList.add("drag-over");
   });
   dragCancelZone.addEventListener("dragleave", () => dragCancelZone.classList.remove("drag-over"));
   dragCancelZone.addEventListener("drop", (e) => {
     e.preventDefault();
-    dragCancelZone.classList.remove("drag-over");
-    dragCancelZone.classList.add("is-hidden");
+    e.stopPropagation();
+    stopDragAutoScroll();
+    hideDragCancelZone();
     showMessage("已取消拖拽操作", "info");
   });
 }
@@ -2612,6 +2861,15 @@ if (bgBtn && bgInput) {
 const hideBtn = document.querySelector("#hideUiBtn");
 if (hideBtn) {
   let uiHidden = false;
+  const hideIcon = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>';
+  const showIcon = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>';
+  function updateHideButton() {
+    hideBtn.innerHTML = uiHidden ? showIcon : hideIcon;
+    hideBtn.title = uiHidden ? "显示界面" : "隐藏界面，纯享背景";
+    hideBtn.setAttribute("aria-label", uiHidden ? "显示界面" : "隐藏界面");
+    hideBtn.classList.toggle("is-active", uiHidden);
+  }
+  updateHideButton();
   hideBtn.addEventListener("click", () => {
     uiHidden = !uiHidden;
     const els = [
@@ -2637,7 +2895,7 @@ if (hideBtn) {
         delete el.dataset.origDisplay;
       }
     }
-    hideBtn.textContent = uiHidden ? "🐵" : "🙈";
+    updateHideButton();
   });
 }
 
@@ -3739,11 +3997,11 @@ document.addEventListener("keydown", async (e) => {
     "新建项目一键生成影视目录，省时省力",
     "上传时有速度显示，网速一目了然",
     "右上角滑块切主题，日间夜间随心换",
-    "右下角 🖼 换背景，🙈 躲起来摸鱼"
+    "右下角可以换背景，也可以隐藏界面只看背景"
   ]
 
   var tipBar = document.createElement("div")
-  tipBar.style.cssText = "position:fixed;bottom:0;left:0;right:0;z-index:1100;padding:8px 16px;text-align:center;font-size:13px;color:var(--muted);background:color-mix(in srgb,var(--panel) 80%,transparent);border-top:1px solid var(--line);backdrop-filter:blur(10px);pointer-events:auto;cursor:pointer;transition:transform 300ms ease;"
+  tipBar.className = "tips-bar"
   document.body.appendChild(tipBar)
 
   var tipIndex = 0
@@ -3757,7 +4015,6 @@ document.addEventListener("keydown", async (e) => {
   function startRotation() {
     clearInterval(tipTimer)
     tipTimer = setInterval(showTip, 6000)
-    showTip()
   }
 
   // 点击切换下一条
@@ -3765,5 +4022,6 @@ document.addEventListener("keydown", async (e) => {
     showTip()
   })
 
-  setTimeout(startRotation, 3000)
+  showTip()
+  startRotation()
 })()

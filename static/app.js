@@ -8,6 +8,7 @@ const FLOAT_SIZE_KEY = "lan_file_server_float_size";
 const CURRENT_DIR_KEY = "lan_file_server_current_dir";
 const CURSOR_EFFECT_KEY = "lan_file_server_cursor_effect";
 const COLUMN_WIDTHS_KEY = "lan_file_server_column_widths";
+const INTERNAL_DRAG_TYPE = "application/x-lanshare-paths";
 
 const state = {
   currentDir: "",
@@ -358,6 +359,34 @@ function closeDialog(dialog) {
     dialog.close();
   } else {
     dialog.removeAttribute("open");
+  }
+}
+
+function getDataTransferTypes(dataTransfer) {
+  return Array.from(dataTransfer?.types || []);
+}
+
+function hasDataTransferType(dataTransfer, type) {
+  return getDataTransferTypes(dataTransfer).includes(type);
+}
+
+function isExternalFileDrag(event) {
+  return hasDataTransferType(event.dataTransfer, "Files") || (event.dataTransfer?.files?.length || 0) > 0;
+}
+
+function isInternalMoveDrag(event) {
+  if (!event.dataTransfer) return false;
+  if (hasDataTransferType(event.dataTransfer, INTERNAL_DRAG_TYPE)) return true;
+  return hasDataTransferType(event.dataTransfer, "application/json") && !isExternalFileDrag(event);
+}
+
+function getInternalDragPaths(dataTransfer) {
+  try {
+    const raw = dataTransfer.getData(INTERNAL_DRAG_TYPE) || dataTransfer.getData("application/json") || "[]";
+    const paths = JSON.parse(raw);
+    return Array.isArray(paths) ? paths : [];
+  } catch {
+    return [];
   }
 }
 
@@ -777,15 +806,18 @@ function renderBreadcrumb() {
   rootButton.onclick = () => loadDir("");
   // 面包屑拖拽支持
   rootButton.addEventListener("dragover", (e) => {
+    if (!isInternalMoveDrag(e)) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = "move";
     rootButton.classList.add("drag-over");
   });
   rootButton.addEventListener("dragleave", () => rootButton.classList.remove("drag-over"));
   rootButton.addEventListener("drop", async (e) => {
+    if (!isInternalMoveDrag(e)) return;
     e.preventDefault();
+    e.stopPropagation();
     rootButton.classList.remove("drag-over");
-    const paths = JSON.parse(e.dataTransfer.getData("application/json") || "[]");
+    const paths = getInternalDragPaths(e.dataTransfer);
     if (paths.length) {
       const ok = await moveItems(paths, "");
       if (ok) { showMessage(`已移动 ${paths.length} 个项目`, "success"); loadDir(state.currentDir); }
@@ -810,6 +842,7 @@ function renderBreadcrumb() {
     // 面包屑拖拽支持
     let navigateTimer = null;
     btn.addEventListener("dragover", (e) => {
+      if (!isInternalMoveDrag(e)) return;
       e.preventDefault();
       e.dataTransfer.dropEffect = "move";
       btn.classList.add("drag-over");
@@ -825,10 +858,12 @@ function renderBreadcrumb() {
       if (navigateTimer) { clearTimeout(navigateTimer); navigateTimer = null; }
     });
     btn.addEventListener("drop", async (e) => {
+      if (!isInternalMoveDrag(e)) return;
       e.preventDefault();
+      e.stopPropagation();
       btn.classList.remove("drag-over");
       if (navigateTimer) { clearTimeout(navigateTimer); navigateTimer = null; }
-      const paths = JSON.parse(e.dataTransfer.getData("application/json") || "[]");
+      const paths = getInternalDragPaths(e.dataTransfer);
       if (paths.length) {
         const ok = await moveItems(paths, targetDir);
         if (ok) { showMessage(`已移动 ${paths.length} 个项目`, "success"); loadDir(state.currentDir); }
@@ -1896,6 +1931,7 @@ function createGridCard(item) {
     const paths = state.selectedPaths.size > 0 && state.selectedPaths.has(item.path)
       ? [...state.selectedPaths]
       : [item.path];
+    e.dataTransfer.setData(INTERNAL_DRAG_TYPE, JSON.stringify(paths));
     e.dataTransfer.setData("application/json", JSON.stringify(paths));
     e.dataTransfer.effectAllowed = "move";
   });
@@ -1904,6 +1940,7 @@ function createGridCard(item) {
   if (item.type === "directory") {
     let navigateTimer = null;
     card.addEventListener("dragover", (e) => {
+      if (!isInternalMoveDrag(e)) return;
       e.preventDefault();
       e.dataTransfer.dropEffect = "move";
       card.classList.add("drag-over");
@@ -1920,10 +1957,12 @@ function createGridCard(item) {
       if (navigateTimer) { clearTimeout(navigateTimer); navigateTimer = null; }
     });
     card.addEventListener("drop", async (e) => {
+      if (!isInternalMoveDrag(e)) return;
       e.preventDefault();
+      e.stopPropagation();
       card.classList.remove("drag-over");
       if (navigateTimer) { clearTimeout(navigateTimer); navigateTimer = null; }
-      const paths = JSON.parse(e.dataTransfer.getData("application/json") || "[]");
+      const paths = getInternalDragPaths(e.dataTransfer);
       if (paths.length && item.type === "directory") {
         const ok = await moveItems(paths, item.path);
         if (ok) { showMessage(`已移动 ${paths.length} 个项目`, "success"); loadDir(state.currentDir); }
@@ -2006,6 +2045,7 @@ function renderRows(items) {
       const paths = state.selectedPaths.size > 0 && state.selectedPaths.has(item.path)
         ? [...state.selectedPaths]
         : [item.path];
+      e.dataTransfer.setData(INTERNAL_DRAG_TYPE, JSON.stringify(paths));
       e.dataTransfer.setData("application/json", JSON.stringify(paths));
       e.dataTransfer.effectAllowed = "move";
     });
@@ -2014,6 +2054,7 @@ function renderRows(items) {
     if (item.type === "directory") {
       let navigateTimer = null;
       tr.addEventListener("dragover", (e) => {
+        if (!isInternalMoveDrag(e)) return;
         e.preventDefault();
         e.dataTransfer.dropEffect = "move";
         tr.classList.add("drag-over");
@@ -2029,10 +2070,12 @@ function renderRows(items) {
         if (navigateTimer) { clearTimeout(navigateTimer); navigateTimer = null; }
       });
       tr.addEventListener("drop", async (e) => {
+        if (!isInternalMoveDrag(e)) return;
         e.preventDefault();
+        e.stopPropagation();
         tr.classList.remove("drag-over");
         if (navigateTimer) { clearTimeout(navigateTimer); navigateTimer = null; }
-        const paths = JSON.parse(e.dataTransfer.getData("application/json") || "[]");
+        const paths = getInternalDragPaths(e.dataTransfer);
         if (paths.length && item.type === "directory") {
           const ok = await moveItems(paths, item.path);
           if (ok) { showMessage(`已移动 ${paths.length} 个项目`, "success"); loadDir(state.currentDir); }
@@ -2713,12 +2756,13 @@ document.addEventListener("dragover", (event) => {
     return;
   }
   // 内部拖拽（文件/文件夹/面包屑）显示取消区域
-  if (event.dataTransfer && event.dataTransfer.types.includes("application/json")) {
+  if (isInternalMoveDrag(event)) {
     event.preventDefault();
     updateDragAutoScroll(event);
     showDragCancelZone();
     return;
   }
+  if (!isExternalFileDrag(event)) return;
   event.preventDefault();
   setDropActive(true);
 });
@@ -2741,6 +2785,17 @@ document.addEventListener("drop", async (event) => {
     setDropActive(false);
     return;
   }
+  if (isInternalMoveDrag(event)) {
+    event.preventDefault();
+    setDropActive(false);
+    hideDragCancelZone();
+    return;
+  }
+  if (!isExternalFileDrag(event)) {
+    setDropActive(false);
+    hideDragCancelZone();
+    return;
+  }
   event.preventDefault();
   setDropActive(false);
   hideDragCancelZone();
@@ -2761,6 +2816,7 @@ document.addEventListener("dragend", () => {
 var dragCancelZone = document.querySelector("#dragCancelZone");
 if (dragCancelZone) {
   dragCancelZone.addEventListener("dragover", (e) => {
+    if (!isInternalMoveDrag(e)) return;
     e.preventDefault();
     e.stopPropagation();
     stopDragAutoScroll();
@@ -2770,6 +2826,7 @@ if (dragCancelZone) {
   });
   dragCancelZone.addEventListener("dragleave", () => dragCancelZone.classList.remove("drag-over"));
   dragCancelZone.addEventListener("drop", (e) => {
+    if (!isInternalMoveDrag(e)) return;
     e.preventDefault();
     e.stopPropagation();
     stopDragAutoScroll();

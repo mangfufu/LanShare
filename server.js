@@ -34,7 +34,7 @@ try { sharp = require("sharp"); } catch { console.error("错误: sharp 未安装
 const TMP_DIR = path.join(__dirname, "thumb_cache");
 
 const HOST = process.env.HOST || "0.0.0.0";
-const PORT = Number(process.env.PORT || 8080);
+const PORT = Number(process.env.PORT || 8082);
 const ROOT_DIR = path.resolve(process.env.SHARED_DIR || path.join(__dirname, "shared"));
 const BACKUP_DIR = path.resolve(process.env.BACKUP_DIR || path.join(__dirname, "backup"));
 const RECYCLE_DIR = path.resolve(process.env.RECYCLE_DIR || path.join(__dirname, "recycle_bin"));
@@ -771,8 +771,13 @@ function acquireFileStreamSlot() {
     activeFileStreams += 1;
     return Promise.resolve();
   }
-  return new Promise((resolve) => pendingFileStreamSlots.push(resolve)).then(() => {
-    activeFileStreams += 1;
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error("文件流槽位超时")), 30000);
+    pendingFileStreamSlots.push(() => {
+      clearTimeout(timeout);
+      activeFileStreams += 1;
+      resolve();
+    });
   });
 }
 

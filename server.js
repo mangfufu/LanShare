@@ -811,6 +811,9 @@ async function pipeFileToResponse(res, filePath, options = {}) {
     releaseOnce();
   });
   stream.pipe(res);
+  stream.on("end", () => {
+    res.end();
+  });
 }
 
 function getThumbCachePath(fullPath, stat, type, ext = "webp") {

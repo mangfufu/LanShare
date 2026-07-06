@@ -34,7 +34,7 @@ try { sharp = require("sharp"); } catch { console.error("错误: sharp 未安装
 const TMP_DIR = path.join(__dirname, "thumb_cache");
 
 const HOST = process.env.HOST || "0.0.0.0";
-const PORT = Number(process.env.PORT || 8082);
+const PORT = Number(process.env.PORT || 8080);
 const ROOT_DIR = path.resolve(process.env.SHARED_DIR || path.join(__dirname, "shared"));
 const BACKUP_DIR = path.resolve(process.env.BACKUP_DIR || path.join(__dirname, "backup"));
 const RECYCLE_DIR = path.resolve(process.env.RECYCLE_DIR || path.join(__dirname, "recycle_bin"));
@@ -811,9 +811,6 @@ async function pipeFileToResponse(res, filePath, options = {}) {
     releaseOnce();
   });
   stream.pipe(res);
-  stream.on("end", () => {
-    res.end();
-  });
 }
 
 function getThumbCachePath(fullPath, stat, type, ext = "webp") {

@@ -1142,7 +1142,14 @@ function saveColumnWidths(widths) {
 function clampColumnWidth(key, width) {
   const config = RESIZABLE_TABLE_COLUMNS[key];
   if (!config) return width;
-  return Math.max(config.min, Math.min(config.max, Math.round(width)));
+  // 计算可用最大宽度：容器可视宽度 - 其他可调列的最小宽度 - 固定列宽度
+  const tableWrap = fileTable ? fileTable.closest(".table-wrap") : null
+  const containerWidth = tableWrap ? tableWrap.clientWidth : window.innerWidth
+  const otherMinWidth = Object.entries(RESIZABLE_TABLE_COLUMNS).reduce((sum, [k, c]) => {
+    return sum + (k === key ? 0 : c.min)
+  }, FIXED_TABLE_COLUMN_WIDTH)
+  const dynamicMax = Math.max(config.min, containerWidth - otherMinWidth - 40)
+  return Math.max(config.min, Math.min(dynamicMax, Math.round(width)));
 }
 
 function updateTableMinWidth(widths) {

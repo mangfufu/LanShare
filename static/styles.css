@@ -1131,6 +1131,8 @@ tr:last-child td { border-bottom: none; }
   max-width: 960px;
   padding: 0;
   color: var(--text);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 
 .preview-dialog::backdrop { background: var(--dialog-backdrop); }

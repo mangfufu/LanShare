@@ -1042,6 +1042,8 @@ function generateVideoThumb(job) {
       "-y",
       "-hide_banner",
       "-loglevel", "error",
+      "-analyzeduration", "100M",
+      "-probesize", "50M",
       "-ss", "00:00:01",
       "-i", job.fullPath,
       "-map", "0:v:0",

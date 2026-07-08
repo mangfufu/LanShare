@@ -46,7 +46,6 @@ const MAX_FILE_SIZE = Number(process.env.MAX_FILE_SIZE || 8 * 1024 * 1024 * 1024
 const BATCH_DOWNLOAD_TTL_MS = 30 * 60 * 1000;
 const RECYCLE_RETENTION_DAYS = Number(process.env.RECYCLE_RETENTION_DAYS || 7);
 const RECYCLE_CLEANUP_INTERVAL_MS = Number(process.env.RECYCLE_CLEANUP_INTERVAL_MS || 60 * 60 * 1000);
-const MAX_PARALLEL_FILE_STREAMS = Number(process.env.MAX_PARALLEL_FILE_STREAMS || 48);
 const MAX_THUMB_SOURCE_SIZE = Number(process.env.MAX_THUMB_SOURCE_SIZE || 128 * 1024 * 1024);
 const MAX_VIDEO_THUMB_JOBS = Number(process.env.MAX_VIDEO_THUMB_JOBS || 1);
 const MAX_FOLDER_SIZE_DEPTH = Number(process.env.MAX_FOLDER_SIZE_DEPTH || 64);
@@ -60,8 +59,6 @@ const batchDownloads = new Map();
 const logBuffer = [];
 const MAX_LOG_BUFFER = 200;
 const MAX_LOG_SIZE = 10 * 1024 * 1024; // 10MB per file
-let activeFileStreams = 0;
-const pendingFileStreamSlots = [];
 const videoThumbQueue = [];
 const videoThumbJobs = new Map();
 let activeVideoThumbJobs = 0;
@@ -766,38 +763,9 @@ async function serveStaticFile(res, filePath) {
   });
 }
 
-function acquireFileStreamSlot() {
-  if (activeFileStreams < MAX_PARALLEL_FILE_STREAMS) {
-    activeFileStreams += 1;
-    return Promise.resolve();
-  }
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error("文件流槽位超时")), 30000);
-    pendingFileStreamSlots.push(() => {
-      clearTimeout(timeout);
-      activeFileStreams += 1;
-      resolve();
-    });
-  });
-}
-
-function releaseFileStreamSlot() {
-  activeFileStreams = Math.max(0, activeFileStreams - 1);
-  const next = pendingFileStreamSlots.shift();
-  if (next) next();
-}
-
 async function pipeFileToResponse(res, filePath, options = {}) {
-  await acquireFileStreamSlot();
   const stream = fs.createReadStream(filePath, options);
-  let released = false;
-  const releaseOnce = () => {
-    if (released) return;
-    released = true;
-    releaseFileStreamSlot();
-  };
   stream.on("error", (error) => {
-    releaseOnce();
     console.error(`文件流读取失败: ${error.message}`);
     if (!res.headersSent) {
       sendText(res, error.code === "EMFILE" ? 503 : 500, "文件读取失败，请稍后重试");
@@ -805,10 +773,8 @@ async function pipeFileToResponse(res, filePath, options = {}) {
     }
     res.destroy();
   });
-  stream.on("close", releaseOnce);
   res.on("close", () => {
     stream.destroy();
-    releaseOnce();
   });
   stream.pipe(res);
 }

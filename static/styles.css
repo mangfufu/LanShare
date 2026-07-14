@@ -1037,7 +1037,6 @@ tr:last-child td { border-bottom: none; }
 .interactive-row.is-completed,
 .grid-card.is-completed {
   background: color-mix(in srgb, var(--success, #22c55e) 6%, transparent);
-  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--success, #22c55e) 40%, transparent);
 }
 
 .thumb {

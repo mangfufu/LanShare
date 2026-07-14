@@ -50,7 +50,7 @@ const state = {
   loadingMore: false,
   sortKey: "name",
   sortAsc: true,
-  filterMode: "all", // all | completed | incomplete
+  filterStatus: "all", // all | completed | in_progress | not_started
   clipboard: { items: [], mode: null }
 };
 
@@ -1548,11 +1548,10 @@ function getFilteredCurrentItems() {
       return item.name.toLowerCase().indexOf(keyword) !== -1 || item.path.toLowerCase().indexOf(keyword) !== -1
     })
   }
-  // 完成状态过滤
-  if (state.filterMode === "completed") {
-    items = items.filter(function(item) { return item.completed })
-  } else if (state.filterMode === "incomplete") {
-    items = items.filter(function(item) { return !item.completed })
+  // 状态过滤
+  var fs = state.filterStatus
+  if (fs && fs !== "all") {
+    items = items.filter(function(item) { return item.status === fs })
   }
   return items
 }
@@ -1602,9 +1601,6 @@ function sortItems(items) {
   }
 
   sorted.sort((a, b) => {
-    // 已完成的项目排到底部
-    if (a.completed && !b.completed) return 1;
-    if (!a.completed && b.completed) return -1;
     if (a.type === "directory" && b.type !== "directory") return -1;
     if (a.type !== "directory" && b.type === "directory") return 1;
     let cmp = 0;
@@ -1799,15 +1795,9 @@ document.addEventListener("contextmenu", function(e) {
   if (item.type === "directory") {
     menuItems.push({ label: "打开", action: function() { navigateToDir(item.path) } })
     menuItems.push({ sep: true })
-    if (item.completed) {
-      menuItems.push({ label: "✅ 已完成", action: function() {
-        toggleComplete(item, target.querySelector("[data-complete]") || { textContent: "" })
-      }})
-    } else {
-      menuItems.push({ label: "标记完成", action: function() {
-        toggleComplete(item, target.querySelector("[data-complete]") || { textContent: "" })
-      }})
-    }
+    menuItems.push({ label: "待开始", action: function() { setItemStatus(item, "not_started") } })
+    menuItems.push({ label: "进行中", action: function() { setItemStatus(item, "in_progress") } })
+    menuItems.push({ label: "已完成", action: function() { setItemStatus(item, "completed") } })
     menuItems.push({ sep: true })
     menuItems.push({ label: "重命名", action: function() { renameItem(item) } })
     menuItems.push({ label: "移动", action: function() { moveItem(item) } })
@@ -1831,15 +1821,28 @@ document.addEventListener("contextmenu", function(e) {
   showContextMenu(menuItems, e.clientX, e.clientY)
 })
 
-async function toggleComplete(item, btn) {
-  var res = await apiFetch("/api/toggle-complete", {
+async function setItemStatus(item, status) {
+  var res = await apiFetch("/api/set-status", {
     method: "POST",
-    body: JSON.stringify({ path: item.path })
+    body: JSON.stringify({ path: item.path, status: status })
   })
   if (res.error) { showMessage(res.error, "error"); return }
-  // 从服务器重新加载目录以获取最新的 completed 状态
-  loadDir(state.currentDir)
+  // 更新本地状态
+  item.status = status
+  // 只更新对应行的 UI，不重新渲染整个列表
+  var row = document.querySelector('[data-itempath="' + item.path.replace(/"/g, '') + '"]')
+  if (row) {
+    row.classList.remove("is-completed", "is-in-progress")
+    if (status === "completed") row.classList.add("is-completed")
+    else if (status === "in_progress") row.classList.add("is-in-progress")
+    // 更新状态下拉框选中值
+    var selEl = row.querySelector(".status-badge")
+    if (selEl) selEl.value = status
+  }
 }
+
+var _statusLabels = { completed: "已完成", in_progress: "进行中", not_started: "待开始" }
+var _statusColors = { completed: "#22c55e", in_progress: "#3b82f6", not_started: "" }
 
 async function deleteItem(item) {
   const label = item.type === "directory" ? "文件夹" : "文件";
@@ -2162,14 +2165,27 @@ function createActions(item) {
   moveBtn.onclick = () => moveItem(item);
   actions.appendChild(moveBtn);
 
-  // 目录完成标记
+  // 目录状态下拉框（所有目录）
   if (item.type === "directory") {
-    var completeBtn = document.createElement("button");
-    completeBtn.className = "link-button";
-    completeBtn.dataset.complete = "1";
-    completeBtn.textContent = item.completed ? "✅ 已完成" : "标记完成";
-    completeBtn.onclick = function() { toggleComplete(item, completeBtn) };
-    actions.appendChild(completeBtn);
+    var statusSel = document.createElement("select");
+    statusSel.className = "link-button status-badge";
+    statusSel.className = "link-button status-badge";
+    var opts = [
+      { value: "not_started", label: "待开始" },
+      { value: "in_progress", label: "进行中" },
+      { value: "completed", label: "已完成" }
+    ];
+    for (var si = 0; si < opts.length; si++) {
+      var opt = document.createElement("option");
+      opt.value = opts[si].value;
+      opt.textContent = opts[si].label;
+      if (opts[si].value === item.status) opt.selected = true;
+      statusSel.appendChild(opt);
+    }
+    statusSel.addEventListener("change", function() {
+      setItemStatus(item, this.value)
+    });
+    actions.appendChild(statusSel);
   }
 
   const deleteBtn = document.createElement("button");
@@ -2193,7 +2209,8 @@ function createGridCard(item) {
   card.classList.toggle("is-selected", isSelected(item.path));
   if (state.clipboard.mode === "cut" && state.clipboard.items.includes(item.path)) card.classList.add("cut-clip");
   else if (state.clipboard.mode === "copy" && state.clipboard.items.includes(item.path)) card.classList.add("copy-clip");
-  if (item.completed) card.classList.add("is-completed");
+  if (item.status === "completed") card.classList.add("is-completed");
+  else if (item.status === "in_progress") card.classList.add("is-in-progress");
   card.addEventListener("click", (event) => handleItemClick(event, item));
   card.addEventListener("dblclick", (event) => handleItemDoubleClick(event, item));
 
@@ -2310,7 +2327,8 @@ function renderRows(items) {
     tr.querySelector(".size-cell").textContent = formatItemSize(item);
     tr.querySelector(".time-cell").textContent = new Date(item.updatedAt).toLocaleString("zh-CN");
     tr.__itemData = item;
-    if (item.completed) tr.classList.add("is-completed");
+    if (item.status === "completed") tr.classList.add("is-completed");
+    else if (item.status === "in_progress") tr.classList.add("is-in-progress");
     tr.addEventListener("click", (event) => handleItemClick(event, item));
     tr.addEventListener("dblclick", (event) => handleItemDoubleClick(event, item));
     tr.querySelector(".op-cell").appendChild(createActions(item));
@@ -3581,15 +3599,14 @@ mainSearchInput.addEventListener("input", (event) => {
 listViewBtn.addEventListener("click", () => setViewMode("list"));
 gridViewBtn.addEventListener("click", () => setViewMode("grid"));
 
-// 完成筛选
-document.querySelectorAll(".filter-switch .button").forEach(function(btn) {
-  btn.addEventListener("click", function() {
-    document.querySelectorAll(".filter-switch .button").forEach(function(b) { b.classList.remove("is-active") })
-    btn.classList.add("is-active")
-    state.filterMode = btn.id === "filterAllBtn" ? "all" : btn.id === "filterCompleteBtn" ? "completed" : "incomplete"
+// 状态筛选下拉框
+var statusFilter = document.getElementById("statusFilter")
+if (statusFilter) {
+  statusFilter.addEventListener("change", function() {
+    state.filterStatus = this.value
     renderCurrentDirectory()
   })
-})
+}
 document.querySelectorAll(".sort-th").forEach((th) => {
   th.addEventListener("click", () => toggleSort(th.dataset.sort));
 });
@@ -3612,6 +3629,7 @@ recycleToggleBtn.addEventListener("click", () => {
   loadRecycleItems();
 });
 closeRecycleBtn.addEventListener("click", () => recycleDrawer.classList.add("is-hidden"));
+
 recycleSearchInput.addEventListener("input", (event) => {
   state.recycleFilter = event.target.value;
   renderRecycleItems();

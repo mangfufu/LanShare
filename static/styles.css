@@ -829,7 +829,8 @@ th:nth-child(5) {
   gap: 4px;
 }
 
-.op-cell .link-button {
+.op-cell .link-button,
+.op-cell .status-badge.link-button {
   padding: 7px 8px;
   font-size: 13px;
 }
@@ -1036,7 +1037,20 @@ tr:last-child td { border-bottom: none; }
 
 .interactive-row.is-completed,
 .grid-card.is-completed {
-  background: color-mix(in srgb, var(--success, #22c55e) 6%, transparent);
+  background: color-mix(in srgb, #22c55e 6%, transparent);
+}
+.interactive-row.is-in-progress,
+.grid-card.is-in-progress {
+  background: color-mix(in srgb, #3b82f6 6%, transparent);
+}
+.status-badge.link-button,
+.filter-switch select.button.ghost {
+  padding: 8px 12px;
+  border-radius: 10px;
+  line-height: 1;
+  height: auto;
+  -webkit-appearance: auto;
+  appearance: auto;
 }
 
 .thumb {

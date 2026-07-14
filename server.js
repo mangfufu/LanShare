@@ -81,7 +81,7 @@ const PROTECTED_POST_PATHS = new Set([
   "/api/recycle/restore",
   "/api/recycle/delete",
   "/api/nickname",
-  "/api/toggle-complete"
+  "/api/set-status"
 ]);
 
 const MIME_TYPES = {
@@ -475,13 +475,16 @@ async function buildListItem(item, normalizedDir) {
   };
   if (item.isDirectory()) {
     Object.assign(result, getFolderSizeInfo(childRelative, stat));
-    // 检查是否标记为已完成
+    // 读取项目状态：completed / in_progress / not_started
+    var status = "not_started"
     try {
-      await fsp.access(path.join(childPath, ".complete"))
-      result.completed = true
+      status = (await fsp.readFile(path.join(childPath, ".status"), "utf8")).trim()
     } catch (_) {
-      result.completed = false
+      // 兼容旧版 .complete 标记
+      try { await fsp.access(path.join(childPath, ".complete")); status = "completed" } catch (_2) {}
     }
+    result.status = status
+    result.isProject = await fsp.access(path.join(childPath, ".project")).then(function() { return true }).catch(function() { return false })
   }
   return result;
 }
@@ -1856,6 +1859,35 @@ async function handleApi(req, res, url) {
     return true;
   }
 
+  // 已完成项目列表
+  if (req.method === "GET" && url.pathname === "/api/completed-projects") {
+    try {
+      var projects = []
+      async function scan(dir) {
+        var entries
+        try { entries = await fsp.readdir(dir, { withFileTypes: true }) } catch { return }
+        for (var entry of entries) {
+          if (!entry.isDirectory()) continue
+          var full = path.join(dir, entry.name)
+          // 检查 .status 文件
+          var status = null
+          try { status = (await fsp.readFile(path.join(full, ".status"), "utf8")).trim() } catch {}
+          if (status === "completed") {
+            var relativePath = path.relative(ROOT_DIR, full).replace(/\\/g, "/")
+            projects.push({ name: entry.name, path: relativePath })
+          }
+          // 递归扫描子目录
+          await scan(full)
+        }
+      }
+      await scan(ROOT_DIR)
+      sendJson(res, 200, { items: projects })
+    } catch (error) {
+      sendJson(res, 500, { error: error.message })
+    }
+    return true
+  }
+
   if (req.method === "GET" && url.pathname === "/api/logs") {
     sendJson(res, 200, { entries: [...logBuffer] });
     return true;
@@ -1948,6 +1980,8 @@ async function handleApi(req, res, url) {
       for (const f of txtFiles) {
         await fsp.writeFile(f, "").catch(() => {});
       }
+      // 标记为项目目录
+      await fsp.writeFile(path.join(projectFull, ".project"), "").catch(() => {});
       invalidateFolderSizeCacheForPath(projectPath);
       logAction(getDeviceName(req), getClientIp(req), "创建项目文件夹", projectPath);
       sendJson(res, 200, { ok: true, path: projectPath });
@@ -2174,25 +2208,22 @@ async function handleApi(req, res, url) {
     return true;
   }
 
-  // 切换完成标记
-  if (req.method === "POST" && url.pathname === "/api/toggle-complete") {
+  // 设置项目状态
+  if (req.method === "POST" && url.pathname === "/api/set-status") {
     try {
       const body = parseJson(await readRequestBody(req));
       const dir = safeRelative(body.path || "");
       const fullPath = resolveInsideRoot(dir);
       const stat = await fsp.stat(fullPath);
-      if (!stat.isDirectory()) throw new Error("只能标记目录");
-      const marker = path.join(fullPath, ".complete");
-      let completed = false;
-      try {
-        await fsp.access(marker);
-        await fsp.unlink(marker);
-        completed = false;
-      } catch (_) {
-        await fsp.writeFile(marker, "");
-        completed = true;
-      }
-      sendJson(res, 200, { ok: true, completed });
+      if (!stat.isDirectory()) throw new Error("只能设置目录状态");
+      var status = String(body.status || "not_started").trim()
+      if (!["completed", "in_progress", "not_started"].includes(status)) throw new Error("无效的状态");
+      var marker = path.join(fullPath, ".status")
+      // 删除旧版 .complete 标记
+      var oldMarker = path.join(fullPath, ".complete")
+      try { await fsp.unlink(oldMarker) } catch (_) {}
+      await fsp.writeFile(marker, status, "utf8")
+      sendJson(res, 200, { ok: true, status });
     } catch (error) {
       sendJson(res, 400, { error: error.message });
     }

@@ -50,6 +50,7 @@ const state = {
   loadingMore: false,
   sortKey: "name",
   sortAsc: true,
+  filterMode: "all", // all | completed | incomplete
   clipboard: { items: [], mode: null }
 };
 
@@ -926,6 +927,9 @@ function buildThumbnail(item, searchDir) {
 
   if (item.type === "directory") {
     thumb.textContent = "DIR";
+    if (item.completed) {
+      thumb.classList.add("is-completed")
+    }
   } else if (item.previewType === "image") {
     const img = document.createElement("img");
     img.dataset.src = `/api/thumb?path=${encodeURIComponent(item.path)}&w=200`;
@@ -1012,7 +1016,16 @@ function showPreviewItem(item) {
       if (img) { img.src = src; img.alt = item.name; }
     } else if (item.previewType === "video") {
       var video = previewBody.querySelector("video");
-      if (video) { video.src = src; video.play().catch(() => {}); }
+      if (video) {
+        var ext = (item.name || "").toLowerCase().match(/\.(\w+)$/)
+        ext = ext ? ext[1] : ""
+        if (["mp4", "webm", "ogg"].indexOf(ext) === -1) {
+          loadWasmPlayer(video, src, item.name)
+        } else {
+          video.src = src
+          video.play().catch(function() {})
+        }
+      }
     } else if (item.previewType === "audio") {
       var audio = previewBody.querySelector("audio");
       if (audio) { audio.src = src; audio.play().catch(() => {}); }
@@ -1031,11 +1044,18 @@ function showPreviewItem(item) {
     } else if (item.previewType === "video") {
       const video = document.createElement("video");
       video.className = "preview-video";
-      video.src = src;
       video.controls = true;
       video.autoplay = true;
       video.playsInline = true;
       previewBody.appendChild(video);
+      // 非原生格式走 WASM 转码
+      var ext = (item.name || "").toLowerCase().match(/\.(\w+)$/)
+      ext = ext ? ext[1] : ""
+      if (["mp4", "webm", "ogg"].indexOf(ext) === -1) {
+        loadWasmPlayer(video, src, item.name)
+      } else {
+        video.src = src
+      }
     } else if (item.previewType === "audio") {
       previewBody.innerHTML = `
         <div class="audio-preview">
@@ -1098,6 +1118,131 @@ function setViewMode(mode) {
   listViewBtn.classList.toggle("is-active", isList);
   gridViewBtn.classList.toggle("is-active", !isList);
   renderCurrentDirectory();
+}
+
+// ========== ffmpeg.wasm 视频播放器（非原生格式） ==========
+var _wasmLoading = null
+var _wasmMemCache = {}
+function loadWasmPlayer(videoEl, fileUrl, fileName) {
+  var ext = (fileName || "").toLowerCase().match(/\.(\w+)$/)
+  ext = ext ? ext[1] : "mkv"
+  var nativeFormats = ["mp4", "webm", "ogg"]
+
+  if (nativeFormats.indexOf(ext) !== -1) {
+    videoEl.src = fileUrl
+    videoEl.play().catch(function() {})
+    return
+  }
+
+  // 检查内存缓存
+  var cacheKey = fileUrl
+  if (_wasmMemCache[cacheKey]) {
+    videoEl.src = _wasmMemCache[cacheKey]
+    videoEl.play().catch(function() {})
+    return
+  }
+
+  // 显示加载状态
+  videoEl.style.display = "none"
+  var statusEl = document.createElement("div")
+  statusEl.className = "wasm-status"
+  statusEl.innerHTML = '<div class="wasm-spinner"></div><div class="wasm-text">正在准备播放器...</div>'
+  videoEl.parentNode.insertBefore(statusEl, videoEl)
+
+  function setStatus(text) {
+    var t = statusEl.querySelector(".wasm-text")
+    if (t) t.textContent = text
+  }
+
+  // 动态加载 ffmpeg.wasm
+  if (!_wasmLoading) {
+    _wasmLoading = (async function() {
+      var m = await import('/node_modules/@ffmpeg/ffmpeg/dist/esm/index.js')
+      var u = await import('/node_modules/@ffmpeg/util/dist/esm/index.js')
+      return { FFmpeg: m.FFmpeg, fetchFile: u.fetchFile, toBlobURL: u.toBlobURL }
+    })()
+  }
+
+  _wasmLoading.then(async function(ffmpegLib) {
+    try {
+      setStatus("正在下载视频...")
+      var headRes = await fetch(fileUrl, { method: "HEAD" }).catch(function() { return null })
+      var fileSize = headRes ? parseInt(headRes.headers.get("content-length") || "0") : 0
+      if (fileSize > 1073741824) setStatus("大文件转码中，请耐心等待...")
+
+      var inputName = "input." + ext
+      var outputName = "output.mp4"
+
+      var ffmpeg = new ffmpegLib.FFmpeg()
+      ffmpeg.on("progress", function(_) {
+        var pct = Math.round(_.progress * 100)
+        if (isFinite(pct)) setStatus("转码中... " + pct + "%")
+      })
+
+      setStatus("加载解码器...")
+      var baseURL = location.origin + "/wasm"
+      await ffmpeg.load({
+        coreURL: await ffmpegLib.toBlobURL(baseURL + "/ffmpeg-core.js", "text/javascript"),
+        wasmURL: await ffmpegLib.toBlobURL(baseURL + "/ffmpeg-core.wasm", "application/wasm"),
+      })
+
+      setStatus("正在下载视频...")
+      await ffmpeg.writeFile(inputName, await ffmpegLib.fetchFile(fileUrl))
+
+      setStatus("转码中...（快速模式）")
+      // 先尝试快速复制模式（不重新编码）
+      var remuxOk = false
+      try {
+        await ffmpeg.exec([
+          "-i", inputName,
+          "-c:v", "copy",
+          "-c:a", "copy",
+          "-movflags", "+faststart+frag_keyframe+empty_moov",
+          "-y",
+          outputName
+        ])
+        var s = await ffmpeg.readFile(outputName)
+        if (s && s.byteLength > 0) remuxOk = true
+      } catch (_) {}
+
+      if (!remuxOk) {
+        setStatus("转码中...（编码模式，较慢）")
+        // 复制模式失败 → 重新编码（兼容所有格式，但吃 CPU）
+        await ffmpeg.exec([
+          "-i", inputName,
+          "-c:v", "libx264",
+          "-preset", "fast",
+          "-crf", "23",
+          "-c:a", "aac",
+          "-movflags", "+faststart+frag_keyframe+empty_moov",
+          "-y",
+          outputName
+        ])
+      }
+
+      setStatus("加载到播放器...")
+      var data = await ffmpeg.readFile(outputName)
+      var blob = new Blob([data.buffer], { type: "video/mp4" })
+      var blobUrl = URL.createObjectURL(blob)
+
+      _wasmMemCache[cacheKey] = blobUrl
+      videoEl.src = blobUrl
+      videoEl.style.display = ""
+      statusEl.remove()
+      videoEl.play().catch(function() {})
+
+    } catch (err) {
+      console.error("WASM 播放失败:", err)
+      setStatus("转码失败: " + (err.message || JSON.stringify(err)))
+      var a = document.createElement("a")
+      a.href = fileUrl
+      a.textContent = "下载文件"
+      a.style.color = "var(--accent)"
+      a.style.marginTop = "8px"
+      statusEl.appendChild(document.createElement("br"))
+      statusEl.appendChild(a)
+    }
+  })
 }
 
 const RESIZABLE_TABLE_COLUMNS = {
@@ -1395,9 +1540,21 @@ function invertSelection() {
 }
 
 function getFilteredCurrentItems() {
-  const keyword = state.searchFilter.trim().toLowerCase();
-  if (!keyword) return state.currentItems;
-  return state.currentItems.filter((item) => item.name.toLowerCase().includes(keyword) || item.path.toLowerCase().includes(keyword));
+  var items = state.currentItems;
+  // 搜索过滤
+  var keyword = state.searchFilter.trim().toLowerCase();
+  if (keyword) {
+    items = items.filter(function(item) {
+      return item.name.toLowerCase().indexOf(keyword) !== -1 || item.path.toLowerCase().indexOf(keyword) !== -1
+    })
+  }
+  // 完成状态过滤
+  if (state.filterMode === "completed") {
+    items = items.filter(function(item) { return item.completed })
+  } else if (state.filterMode === "incomplete") {
+    items = items.filter(function(item) { return !item.completed })
+  }
+  return items
 }
 
 function sortItems(items) {
@@ -1445,6 +1602,9 @@ function sortItems(items) {
   }
 
   sorted.sort((a, b) => {
+    // 已完成的项目排到底部
+    if (a.completed && !b.completed) return 1;
+    if (!a.completed && b.completed) return -1;
     if (a.type === "directory" && b.type !== "directory") return -1;
     if (a.type !== "directory" && b.type === "directory") return 1;
     let cmp = 0;
@@ -1585,6 +1745,100 @@ async function deleteItems(paths, labelText) {
   showMessage(`已移入回收站${labelText}`, "success");
   await loadRecycleItems();
   return true;
+}
+
+// ========== 右键菜单 ==========
+var ctxMenu = null
+function showContextMenu(items, x, y) {
+  hideContextMenu()
+  ctxMenu = document.createElement("div")
+  ctxMenu.className = "ctx-menu"
+  ctxMenu.style.left = x + "px"
+  ctxMenu.style.top = y + "px"
+  for (var i = 0; i < items.length; i++) {
+    var item = items[i]
+    if (item.sep) {
+      var sep = document.createElement("div")
+      sep.className = "ctx-sep"
+      ctxMenu.appendChild(sep)
+      continue
+    }
+    var btn = document.createElement("button")
+    btn.className = "ctx-item" + (item.danger ? " ctx-danger" : "")
+    btn.textContent = item.label
+    btn.addEventListener("click", function() {
+      hideContextMenu()
+      item.action()
+    })
+    ctxMenu.appendChild(btn)
+  }
+  document.body.appendChild(ctxMenu)
+  // 防止溢出
+  var rect = ctxMenu.getBoundingClientRect()
+  if (rect.right > window.innerWidth) ctxMenu.style.left = (x - rect.width) + "px"
+  if (rect.bottom > window.innerHeight) ctxMenu.style.top = (y - rect.height) + "px"
+}
+
+function hideContextMenu() {
+  if (ctxMenu) { ctxMenu.remove(); ctxMenu = null }
+}
+
+document.addEventListener("click", hideContextMenu)
+document.addEventListener("keydown", function(e) {
+  if (e.key === "Escape") hideContextMenu()
+})
+document.addEventListener("contextmenu", function(e) {
+  // 找点击的目标文件项
+  var target = e.target.closest(".file-row, .grid-card")
+  if (!target) return
+  e.preventDefault()
+  var item = target.__itemData
+  if (!item) return
+
+  var menuItems = []
+  if (item.type === "directory") {
+    menuItems.push({ label: "打开", action: function() { navigateToDir(item.path) } })
+    menuItems.push({ sep: true })
+    if (item.completed) {
+      menuItems.push({ label: "✅ 已完成", action: function() {
+        toggleComplete(item, target.querySelector("[data-complete]") || { textContent: "" })
+      }})
+    } else {
+      menuItems.push({ label: "标记完成", action: function() {
+        toggleComplete(item, target.querySelector("[data-complete]") || { textContent: "" })
+      }})
+    }
+    menuItems.push({ sep: true })
+    menuItems.push({ label: "重命名", action: function() { renameItem(item) } })
+    menuItems.push({ label: "移动", action: function() { moveItem(item) } })
+    menuItems.push({ sep: true })
+    menuItems.push({ label: "删除", action: function() { deleteItem(item) }, danger: true })
+  } else {
+    if (item.previewType !== "none") {
+      menuItems.push({ label: "预览", action: function() { openPreview(item) } })
+    }
+    menuItems.push({ label: "下载", action: function() {
+      var a = document.createElement("a")
+      a.href = "/download?path=" + encodeURIComponent(item.path)
+      a.click()
+    }})
+    menuItems.push({ sep: true })
+    menuItems.push({ label: "重命名", action: function() { renameItem(item) } })
+    menuItems.push({ label: "移动", action: function() { moveItem(item) } })
+    menuItems.push({ sep: true })
+    menuItems.push({ label: "删除", action: function() { deleteItem(item) }, danger: true })
+  }
+  showContextMenu(menuItems, e.clientX, e.clientY)
+})
+
+async function toggleComplete(item, btn) {
+  var res = await apiFetch("/api/toggle-complete", {
+    method: "POST",
+    body: JSON.stringify({ path: item.path })
+  })
+  if (res.error) { showMessage(res.error, "error"); return }
+  // 从服务器重新加载目录以获取最新的 completed 状态
+  loadDir(state.currentDir)
 }
 
 async function deleteItem(item) {
@@ -1908,6 +2162,16 @@ function createActions(item) {
   moveBtn.onclick = () => moveItem(item);
   actions.appendChild(moveBtn);
 
+  // 目录完成标记
+  if (item.type === "directory") {
+    var completeBtn = document.createElement("button");
+    completeBtn.className = "link-button";
+    completeBtn.dataset.complete = "1";
+    completeBtn.textContent = item.completed ? "✅ 已完成" : "标记完成";
+    completeBtn.onclick = function() { toggleComplete(item, completeBtn) };
+    actions.appendChild(completeBtn);
+  }
+
   const deleteBtn = document.createElement("button");
   deleteBtn.className = "link-button danger-button";
   deleteBtn.textContent = "删除";
@@ -1929,6 +2193,7 @@ function createGridCard(item) {
   card.classList.toggle("is-selected", isSelected(item.path));
   if (state.clipboard.mode === "cut" && state.clipboard.items.includes(item.path)) card.classList.add("cut-clip");
   else if (state.clipboard.mode === "copy" && state.clipboard.items.includes(item.path)) card.classList.add("copy-clip");
+  if (item.completed) card.classList.add("is-completed");
   card.addEventListener("click", (event) => handleItemClick(event, item));
   card.addEventListener("dblclick", (event) => handleItemDoubleClick(event, item));
 
@@ -2001,7 +2266,9 @@ function createGridCard(item) {
 function renderGrid(items) {
   gridView.innerHTML = "";
   for (const item of items) {
-    gridView.appendChild(createGridCard(item));
+    var card = createGridCard(item);
+    card.__itemData = item;
+    gridView.appendChild(card);
   }
   if (!items.length && state.searchQuery) {
     const empty = document.createElement("div");
@@ -2042,6 +2309,8 @@ function renderRows(items) {
     tr.querySelector(".type-cell").textContent = getFileType(item);
     tr.querySelector(".size-cell").textContent = formatItemSize(item);
     tr.querySelector(".time-cell").textContent = new Date(item.updatedAt).toLocaleString("zh-CN");
+    tr.__itemData = item;
+    if (item.completed) tr.classList.add("is-completed");
     tr.addEventListener("click", (event) => handleItemClick(event, item));
     tr.addEventListener("dblclick", (event) => handleItemDoubleClick(event, item));
     tr.querySelector(".op-cell").appendChild(createActions(item));
@@ -3311,6 +3580,16 @@ mainSearchInput.addEventListener("input", (event) => {
 });
 listViewBtn.addEventListener("click", () => setViewMode("list"));
 gridViewBtn.addEventListener("click", () => setViewMode("grid"));
+
+// 完成筛选
+document.querySelectorAll(".filter-switch .button").forEach(function(btn) {
+  btn.addEventListener("click", function() {
+    document.querySelectorAll(".filter-switch .button").forEach(function(b) { b.classList.remove("is-active") })
+    btn.classList.add("is-active")
+    state.filterMode = btn.id === "filterAllBtn" ? "all" : btn.id === "filterCompleteBtn" ? "completed" : "incomplete"
+    renderCurrentDirectory()
+  })
+})
 document.querySelectorAll(".sort-th").forEach((th) => {
   th.addEventListener("click", () => toggleSort(th.dataset.sort));
 });

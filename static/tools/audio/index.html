@@ -58,20 +58,30 @@
             </div>
           </div>
 
-          <video id="videoPreview" class="video-preview" controls hidden></video>
+          <video id="videoPreview" class="video-preview" hidden></video>
 
           <div class="trim-section">
-            <div class="dual-slider">
+            <div class="dual-slider" id="dualSlider">
               <div class="dual-slider-track">
+                <div class="dual-slider-progress" id="playProgress"></div>
                 <div class="dual-slider-fill" id="rangeFill"></div>
               </div>
               <input type="range" id="rangeStart" class="dual-slider-range" min="0" max="0" step="0.01" value="0">
               <input type="range" id="rangeEnd" class="dual-slider-range" min="0" max="0" step="0.01" value="0">
+              <div class="play-head" id="playHead" title="拖动以定位"></div>
             </div>
             <div class="trim-inputs">
-              <input id="trimStart" type="number" min="0" step="0.01" value="0" style="text-align:center">
-              <span class="trim-dash">—</span>
-              <input id="trimEnd" type="number" min="0" step="0.01" value="0" style="text-align:center">
+              <div class="trim-left">
+                <button id="playBtn" class="play-btn" title="播放/暂停">
+                  <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><polygon points="8,5 19,12 8,19"/></svg>
+                </button>
+                <span id="timeDisplay" class="time-display">00:00 / 00:00</span>
+              </div>
+              <div class="trim-range-inputs">
+                <input id="trimStart" type="number" min="0" step="0.01" value="0" style="text-align:center">
+                <span class="trim-dash">—</span>
+                <input id="trimEnd" type="number" min="0" step="0.01" value="0" style="text-align:center">
+              </div>
             </div>
           </div>
 

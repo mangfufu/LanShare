@@ -80,7 +80,8 @@ const PROTECTED_POST_PATHS = new Set([
   "/api/download-batch",
   "/api/recycle/restore",
   "/api/recycle/delete",
-  "/api/nickname"
+  "/api/nickname",
+  "/api/toggle-complete"
 ]);
 
 const MIME_TYPES = {
@@ -107,7 +108,9 @@ const MIME_TYPES = {
   ".avi": "video/x-msvideo",
   ".txt": "text/plain; charset=utf-8",
   ".pdf": "application/pdf",
-  ".zip": "application/zip"
+  ".zip": "application/zip",
+  ".wasm": "application/wasm",
+  ".worker": "application/javascript"
 };
 
 const IMAGE_THUMB_EXTS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"]);
@@ -472,6 +475,13 @@ async function buildListItem(item, normalizedDir) {
   };
   if (item.isDirectory()) {
     Object.assign(result, getFolderSizeInfo(childRelative, stat));
+    // 检查是否标记为已完成
+    try {
+      await fsp.access(path.join(childPath, ".complete"))
+      result.completed = true
+    } catch (_) {
+      result.completed = false
+    }
   }
   return result;
 }
@@ -2164,6 +2174,31 @@ async function handleApi(req, res, url) {
     return true;
   }
 
+  // 切换完成标记
+  if (req.method === "POST" && url.pathname === "/api/toggle-complete") {
+    try {
+      const body = parseJson(await readRequestBody(req));
+      const dir = safeRelative(body.path || "");
+      const fullPath = resolveInsideRoot(dir);
+      const stat = await fsp.stat(fullPath);
+      if (!stat.isDirectory()) throw new Error("只能标记目录");
+      const marker = path.join(fullPath, ".complete");
+      let completed = false;
+      try {
+        await fsp.access(marker);
+        await fsp.unlink(marker);
+        completed = false;
+      } catch (_) {
+        await fsp.writeFile(marker, "");
+        completed = true;
+      }
+      sendJson(res, 200, { ok: true, completed });
+    } catch (error) {
+      sendJson(res, 400, { error: error.message });
+    }
+    return true;
+  }
+
   return false;
 }
 
@@ -2308,9 +2343,23 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && url.pathname === "/app.js") return void await serveStaticFile(res, path.join(STATIC_DIR, "app.js"));
     if (req.method === "GET" && url.pathname === "/styles.css") return void await serveStaticFile(res, path.join(STATIC_DIR, "styles.css"));
     if (req.method === "GET") {
+      // 播放器页面
+      if (url.pathname === "/player" || url.pathname === "/player/") {
+        return void await serveStaticFile(res, path.join(STATIC_DIR, "player", "index.html"))
+      }
       const p = path.resolve(STATIC_DIR, url.pathname.replace(/^\//, ""));
       if (p.startsWith(STATIC_DIR + path.sep) || p === STATIC_DIR) {
         try { await fsp.access(p); return void await serveStaticFile(res, p); } catch {}
+      }
+      // 为播放器提供 node_modules 访问
+      const nm = path.resolve(__dirname, "node_modules", url.pathname.replace(/^\/node_modules\//, ""));
+      if (nm.startsWith(path.resolve(__dirname, "node_modules") + path.sep)) {
+        try { await fsp.access(nm); return void await serveStaticFile(res, nm); } catch {}
+      }
+      // ffmpeg.wasm 核心文件
+      if (url.pathname === "/wasm/ffmpeg-core.js" || url.pathname === "/wasm/ffmpeg-core.wasm") {
+        const wasmPath = path.join(__dirname, "node_modules", "@ffmpeg", "core", "dist", "esm", path.basename(url.pathname))
+        try { await fsp.access(wasmPath); return void await serveStaticFile(res, wasmPath); } catch {}
       }
     }
     sendText(res, 404, "Not Found");

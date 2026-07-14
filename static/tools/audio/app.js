@@ -76,7 +76,73 @@ const elements = {
   rangeFill: document.getElementById("rangeFill"),
   formatSelect: document.getElementById("formatSelect"),
   statusMessage: document.getElementById("statusMessage"),
+  playBtn: document.getElementById("playBtn"),
+  timeDisplay: document.getElementById("timeDisplay"),
+  playHead: document.getElementById("playHead"),
+  playProgress: document.getElementById("playProgress"),
+  dualSlider: document.getElementById("dualSlider"),
 };
+
+/* 自定义播放器控制 - 以选取范围为起止点 */
+elements.playBtn.addEventListener("click", function() {
+  var v = elements.videoPreview;
+  if (v.paused) {
+    var start = parseFloat(elements.trimStart.value) || 0
+    if (v.currentTime < start || v.currentTime > parseFloat(elements.trimEnd.value || 0)) {
+      v.currentTime = start
+    }
+    v.play().catch(function() {})
+    elements.playBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>'
+  } else {
+    v.pause()
+    elements.playBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><polygon points="8,5 19,12 8,19"/></svg>'
+  }
+})
+
+function fmtTime(t) {
+  if (!t || !isFinite(t)) return "00:00"
+  var m = Math.floor(t / 60)
+  var s = Math.floor(t % 60)
+  return (m < 10 ? "0" : "") + m + ":" + (s < 10 ? "0" : "") + s
+}
+
+elements.videoPreview.addEventListener("timeupdate", function() {
+  var v = this
+  // 到达选取终点时暂停
+  var end = parseFloat(elements.trimEnd.value)
+  if (end > 0 && v.currentTime >= end && !v.paused) {
+    v.pause()
+    return
+  }
+  var pct = v.duration ? (v.currentTime / v.duration * 100) : 0
+  elements.playHead.style.left = pct + "%"
+  elements.playProgress.style.width = pct + "%"
+  elements.timeDisplay.textContent = fmtTime(v.currentTime) + " / " + fmtTime(v.duration)
+})
+
+elements.videoPreview.addEventListener("loadedmetadata", function() {
+  elements.timeDisplay.textContent = fmtTime(0) + " / " + fmtTime(this.duration)
+  elements.playHead.style.left = "0%"
+  elements.playProgress.style.width = "0%"
+})
+
+elements.videoPreview.addEventListener("play", function() {
+  elements.playBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>'
+})
+
+elements.videoPreview.addEventListener("pause", function() {
+  elements.playBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><polygon points="8,5 19,12 8,19"/></svg>'
+})
+
+// 点击进度条跳转
+elements.dualSlider.addEventListener("click", function(e) {
+  if (e.target.closest(".dual-slider-range")) return
+  var v = elements.videoPreview
+  if (!v.duration) return
+  var rect = this.getBoundingClientRect()
+  var pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
+  v.currentTime = pct * v.duration
+})
 
 elements.audioInput.addEventListener("change", handleFileImport);
 // Document-level drag handlers: essential for iframe to accept drops from outside
@@ -174,6 +240,11 @@ function syncRangeToTrim() {
   elements.trimStart.value = elements.rangeStart.value;
   elements.trimEnd.value = elements.rangeEnd.value;
   updateRangeFill();
+  // 拖动范围手柄时更新视频预览
+  var v = elements.videoPreview
+  if (v && v.duration && this && (this === elements.rangeStart || this === elements.rangeEnd)) {
+    v.currentTime = parseFloat(this.value)
+  }
 }
 
 function syncTrimToRange() {

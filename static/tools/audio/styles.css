@@ -56,9 +56,7 @@ html, body {
   border-radius: 24px;
   cursor: pointer;
   transition: border-color 180ms ease, background 180ms ease;
-  background: color-mix(in srgb, var(--panel-strong) 60%, transparent);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  background: color-mix(in srgb, var(--panel-strong) 80%, transparent);
   position: relative;
   z-index: 10;
 }
@@ -132,8 +130,6 @@ html, body {
   padding: 10px 14px;
   min-width: 0;
   overflow: hidden;
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
 }
 
 .file-meta, .merge-meta {
@@ -262,29 +258,46 @@ html, body {
 
 .trim-dash { color: var(--muted); font-size: 14px; }
 
-/* ── Dual slider ───────────────────────── */
+/* ── 统一播放器 + 范围选择 ──────────── */
+
+.trim-section { margin-bottom: 10px; }
 
 .dual-slider {
   position: relative;
   height: 36px;
+  cursor: pointer;
+  margin-bottom: 6px;
 }
 .dual-slider-track {
   position: absolute;
   top: 50%;
   left: 0;
   right: 0;
-  height: 4px;
+  height: 6px;
   background: var(--line);
-  border-radius: 3px;
+  border-radius: 4px;
   transform: translateY(-50%);
   pointer-events: none;
+  overflow: hidden;
+}
+.dual-slider-progress {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  width: 0;
+  background: rgba(255,255,255,0.25);
+  border-radius: 4px;
+  pointer-events: none;
+  z-index: 1;
 }
 .dual-slider-fill {
   position: absolute;
   top: 0;
   bottom: 0;
   background: var(--accent);
-  border-radius: 3px;
+  border-radius: 4px;
+  z-index: 2;
 }
 .dual-slider-range {
   position: absolute;
@@ -295,13 +308,13 @@ html, body {
   background: transparent;
   pointer-events: none;
   margin: 0;
-  z-index: 2;
+  z-index: 4;
 }
 .dual-slider-range::-webkit-slider-thumb {
   -webkit-appearance: none;
-  height: 20px;
-  width: 9px;
-  border-radius: 3px;
+  height: 22px;
+  width: 10px;
+  border-radius: 4px;
   background: var(--accent);
   border: 2px solid var(--panel);
   box-shadow: 0 1px 4px rgba(0,0,0,0.3);
@@ -309,15 +322,91 @@ html, body {
   pointer-events: auto;
 }
 .dual-slider-range::-moz-range-thumb {
-  height: 20px;
-  width: 9px;
-  border-radius: 3px;
+  height: 22px;
+  width: 10px;
+  border-radius: 4px;
   background: var(--accent);
   border: 2px solid var(--panel);
   box-shadow: 0 1px 4px rgba(0,0,0,0.3);
   cursor: pointer;
   pointer-events: auto;
 }
+
+/* 播放头 */
+.play-head {
+  position: absolute;
+  top: 50%;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.4);
+  transform: translate(-50%, -50%);
+  z-index: 3;
+  pointer-events: none;
+  left: 0;
+  transition: box-shadow 0.15s;
+  border: 2px solid var(--accent);
+}
+.dual-slider:hover .play-head {
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 20%, transparent);
+}
+
+/* 控制行 */
+.trim-inputs {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.trim-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.play-btn {
+  background: none;
+  border: none;
+  color: var(--text);
+  cursor: pointer;
+  padding: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  width: 32px;
+  height: 32px;
+  transition: background 0.12s;
+}
+.play-btn:hover {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.time-display {
+  font-size: 13px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.trim-range-inputs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.trim-range-inputs input {
+  width: 80px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 13px;
+  background: var(--panel-strong);
+  color: var(--text);
+}
+.trim-range-inputs input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
+}
+.trim-dash { color: var(--muted); font-size: 13px; }
 
 /* ── Effect bar ────────────────────────── */
 

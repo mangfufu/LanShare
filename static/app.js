@@ -1827,10 +1827,8 @@ async function setItemStatus(item, status) {
     body: JSON.stringify({ path: item.path, status: status })
   })
   if (res.error) { showMessage(res.error, "error"); return }
-  // 更新本地状态
   item.status = status
-  // 只更新对应行的 UI，不重新渲染整个列表
-  var row = document.querySelector('[data-itempath="' + item.path.replace(/"/g, '') + '"]')
+  var row = document.querySelector('[data-item-path="' + item.path.replace(/"/g, '') + '"]')
   if (row) {
     row.classList.remove("is-completed", "is-in-progress")
     if (status === "completed") row.classList.add("is-completed")

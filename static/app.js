@@ -1601,6 +1601,11 @@ function sortItems(items) {
   }
 
   sorted.sort((a, b) => {
+    // 按状态排序：进行中 > 待开始 > 已完成
+    var so = { in_progress: 0, not_started: 1, completed: 2 }
+    var sa = so[a.status] !== undefined ? so[a.status] : 0
+    var sb = so[b.status] !== undefined ? so[b.status] : 0
+    if (sa !== sb) return sa - sb
     if (a.type === "directory" && b.type !== "directory") return -1;
     if (a.type !== "directory" && b.type === "directory") return 1;
     let cmp = 0;
@@ -2163,8 +2168,8 @@ function createActions(item) {
   moveBtn.onclick = () => moveItem(item);
   actions.appendChild(moveBtn);
 
-  // 目录状态下拉框（所有目录）
-  if (item.type === "directory") {
+  // 目录状态下拉框（仅 shared 根目录）
+  if (item.type === "directory" && (!state.currentDir || state.currentDir === "")) {
     var statusSel = document.createElement("select");
     statusSel.className = "link-button status-badge";
     statusSel.className = "link-button status-badge";

@@ -1352,7 +1352,7 @@ async function handleStreamingUpload(req) {
 async function listDirectory(relativeDir, offset, limit) {
   const dirPath = resolveInsideRoot(relativeDir);
   const items = await fsp.readdir(dirPath, { withFileTypes: true });
-  const filtered = items.filter(i => !i.name.startsWith(".bg"));
+  const filtered = items.filter(i => !i.name.startsWith("."));
   const sorted = filtered.sort((a, b) => {
     if (a.isDirectory() !== b.isDirectory()) return a.isDirectory() ? -1 : 1;
     return compareNames(a.name, b.name);

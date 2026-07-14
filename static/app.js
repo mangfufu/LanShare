@@ -1648,6 +1648,7 @@ function updateSortButtons() {
 }
 
 function renderCurrentDirectory() {
+  updateFilterByDir()
   renderBreadcrumb();
   if (state.searchQuery) {
     const items = sortItems(state.searchResults);
@@ -1694,7 +1695,12 @@ async function renameItem(item) {
     suffix: extension,
     hint: hasExtension ? `最终名称会保留原后缀：${extension}` : "",
     confirmText: "重命名",
-    validate: (value) => validatePlainName(value, "新名称不能为空")
+    validate: function(value) {
+      var e = validatePlainName(value, "新名称不能为空")
+      if (e) return e
+      if (value.trim().startsWith(".")) return "名称不能以 . 开头"
+      return ""
+    }
   });
   if (inputName == null) return;
   let trimmedName = String(inputName).trim();
@@ -2068,7 +2074,12 @@ async function createMoveTargetFolder() {
     title: "新建目标文件夹",
     label: `创建位置：shared${state.moveTargetDir ? `/${state.moveTargetDir}` : ""}`,
     confirmText: "创建",
-    validate: (value) => validatePlainName(value, "文件夹名称不能为空")
+    validate: function(value) {
+      var e = validatePlainName(value, "文件夹名称不能为空")
+      if (e) return e
+      if (value.trim().startsWith(".")) return "名称不能以 . 开头"
+      return ""
+    }
   });
   if (name == null) return;
   const res = await apiFetch("/api/mkdir", {
@@ -2903,7 +2914,12 @@ async function createFolder() {
     label: `创建位置：shared${state.currentDir ? `/${state.currentDir}` : ""}`,
     value: "",
     confirmText: "创建",
-    validate: (value) => validatePlainName(value, "文件夹名称不能为空")
+    validate: function(value) {
+      var e = validatePlainName(value, "文件夹名称不能为空")
+      if (e) return e
+      if (value.trim().startsWith(".")) return "名称不能以 . 开头"
+      return ""
+    }
   });
   if (name == null) return;
   const res = await apiFetch("/api/mkdir", {
@@ -3610,6 +3626,12 @@ if (statusFilter) {
     renderCurrentDirectory()
   })
 }
+// 切换目录时隐藏筛选（仅根目录显示）
+function updateFilterByDir() {
+  if (!statusFilter) return
+  statusFilter.style.display = (!state.currentDir || state.currentDir === "") ? "" : "none"
+}
+updateFilterByDir()
 document.querySelectorAll(".sort-th").forEach((th) => {
   th.addEventListener("click", () => toggleSort(th.dataset.sort));
 });

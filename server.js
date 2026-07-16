@@ -1937,7 +1937,7 @@ async function handleApi(req, res, url) {
       const parentDir = safeRelative(body.parentDir);
       if (!name) throw new Error("项目名称不能为空");
       if (isInvalidFileName(name)) throw new Error("项目名称包含非法字符");
-      const projectPath = safeRelative(path.posix.join(parentDir, `《${name}》`));
+      const projectPath = safeRelative(path.posix.join(parentDir, name));
       const projectFull = resolveInsideRoot(projectPath);
 
       // 中文数字映射

@@ -2411,6 +2411,7 @@ function renderRows(items) {
 
 let _loadDirController = null;
 let _folderSizePollTimer = null;
+var _scrollPositions = {}
 
 function clearFolderSizePolling() {
   if (_folderSizePollTimer) {
@@ -2483,6 +2484,11 @@ async function pollFolderSizes() {
 async function loadDir(dir) {
   if (_loadDirController) _loadDirController.abort();
   clearFolderSizePolling();
+  // 保存当前目录的滚动位置
+  if (state.currentDir != null) {
+    var curScroll = document.querySelector(state.viewMode === "grid" ? "#gridView" : ".table-wrap")
+    if (curScroll) _scrollPositions[state.currentDir] = curScroll.scrollTop
+  }
   _loadDirController = new AbortController();
   const signal = _loadDirController.signal;
   clearMessage();
@@ -2514,6 +2520,11 @@ async function loadDir(dir) {
   }
   renderCurrentDirectory();
   scheduleFolderSizePolling();
+  // 恢复目标目录的滚动位置
+  if (dir in _scrollPositions) {
+    var restore = document.querySelector(state.viewMode === "grid" ? "#gridView" : ".table-wrap")
+    if (restore) window.setTimeout(function() { restore.scrollTop = _scrollPositions[dir] }, 0)
+  }
 }
 
 async function loadMore() {

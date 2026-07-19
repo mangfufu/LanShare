@@ -4,13 +4,18 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>局域网文件服务器</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@600;700&family=Noto+Sans+SC:wght@400;500;700;900&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/skins.css" />
   </head>
   <body>
+    <script>document.body.dataset.uiStyle = "editorial";</script>
     <div class="version-badge">
       <span id="nicknameDisplay" class="nickname" title="点击修改昵称">设置昵称</span>
       <span class="sep">·</span>
-      v2.2.7
+      v3.0.0
     </div>
 
     <div id="floatControl" class="float-control is-hidden">
@@ -47,13 +52,14 @@
             </div>
             <button id="mkdirBtn" class="button warm" type="button">新建文件夹</button>
             <button id="createProjectBtn" class="button warm" type="button">新建项目</button>
-            <div class="filter-switch">
-              <select id="statusFilter" class="button ghost">
-                <option value="all">全部</option>
-                <option value="not_started">待开始</option>
-                <option value="in_progress">进行中</option>
-                <option value="completed">已完成</option>
-              </select>
+            <div class="filter-switch" id="filterSwitch">
+              <button id="filterSwitchBtn" class="button ghost" type="button">全部</button>
+              <div id="filterSwitchMenu" class="filter-switch-menu is-hidden">
+                <button class="filter-opt" data-value="all">全部</button>
+                <button class="filter-opt" data-value="not_started">待开始</button>
+                <button class="filter-opt" data-value="in_progress">进行中</button>
+                <button class="filter-opt" data-value="completed">已完成</button>
+              </div>
             </div>
           </div>
           <div class="toolbar-actions-right">
@@ -131,11 +137,10 @@
     </button>
     <input id="bgFileInput" type="file" accept="image/*,video/*" hidden />
     <div id="bgOverlay" class="bg-overlay"></div>
-    <div id="themeSliderWrap" class="theme-slider-wrap">
-      <span class="theme-icon">☀</span>
-      <input type="range" id="themeSlider" min="0" max="100" value="0" />
-      <span class="theme-icon">☽</span>
-    </div>
+    <button id="themeToggleBtn" class="theme-toggle" type="button" title="切换到夜间模式">
+      <svg class="tgl-sun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+      <svg class="tgl-moon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+    </button>
     <button id="recycleToggleBtn" class="recycle-toggle" type="button" title="回收站">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
       <span id="recycleCountBadge">0</span>
@@ -196,6 +201,19 @@
         <button id="previewNextBtn" class="button ghost" type="button" disabled>下一张 ▶</button>
       </div>
     </dialog>
+
+    <!-- 聊天面板（测试阶段默认显示） -->
+    <aside id="chatPanel" class="chat-panel is-hidden">
+      <div class="chat-head">
+        <span class="chat-title">聊天</span>
+        <button id="chatCloseBtn" class="button ghost" type="button">✕</button>
+      </div>
+      <div id="chatList" class="chat-list"></div>
+      <div class="chat-input-row">
+        <input id="chatInput" class="chat-input" type="text" placeholder="写点啥…" maxlength="500" autocomplete="off" />
+        <button id="chatSendBtn" class="chat-send" type="button">发</button>
+      </div>
+    </aside>
 
     <template id="rowTemplate">
       <tr>

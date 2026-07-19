@@ -15,6 +15,7 @@ const state = {
   viewMode: localStorage.getItem(VIEW_MODE_KEY) === "grid" ? "grid" : "list",
   theme: localStorage.getItem(THEME_KEY) === "dark" ? "dark" : "light",
   themePos: Number(localStorage.getItem(THEME_POS_KEY)) || 0,
+  uiStyle: "editorial",
   currentItems: [],
   previewIndex: -1,
   moveTargetDir: "",
@@ -35,12 +36,7 @@ const state = {
   csrfToken: "",
   csrfPromise: null,
   nickname: localStorage.getItem(NICKNAME_KEY) || "",
-  glowColor: localStorage.getItem(NICKNAME_GLOW_COLOR_KEY) || (() => {
-    const colors = ["#7c6cf0","#0a84ff","#00c7be","#34c759","#ffd60a","#ff9f0a","#ff3b30","#ff375f","#bf5af2"];
-    const picked = colors[Math.floor(Math.random() * colors.length)];
-    localStorage.setItem(NICKNAME_GLOW_COLOR_KEY, picked);
-    return picked;
-  })(),
+  glowColor: localStorage.getItem(NICKNAME_GLOW_COLOR_KEY) || "#57503f",
   cursorEffect: localStorage.getItem(CURSOR_EFFECT_KEY) !== null ? localStorage.getItem(CURSOR_EFFECT_KEY) : "comet",
   floatSpeed: Number(localStorage.getItem(FLOAT_SPEED_KEY)) || 10,
   floatSize: Number(localStorage.getItem(FLOAT_SIZE_KEY)) || 200,
@@ -435,8 +431,9 @@ function openInputDialog({ title, label, value = "", suffix = "", hint = "", con
     input.focus();
     input.select();
 
+    dialog.addEventListener("mousedown", (e) => { dialog._downTarget = e.target; });
     dialog.addEventListener("click", (event) => {
-      if (event.target === dialog || event.target.dataset.action === "cancel") finish(null);
+      if (event.target === dialog && dialog._downTarget === dialog || event.target.dataset.action === "cancel") finish(null);
     });
     dialog.addEventListener("cancel", (event) => {
       event.preventDefault();
@@ -492,8 +489,9 @@ function openConfirmDialog({ title, message, items = [], confirmText = "确定",
       dialog.remove();
       resolve(result);
     };
+    dialog.addEventListener("mousedown", (e) => { dialog._downTarget = e.target; });
     dialog.addEventListener("click", (event) => {
-      if (event.target === dialog || event.target.dataset.action === "cancel") finish(false);
+      if (event.target === dialog && dialog._downTarget === dialog || event.target.dataset.action === "cancel") finish(false);
       if (event.target.dataset.action === "confirm") finish(true);
     });
     dialog.addEventListener("cancel", (event) => {
@@ -517,6 +515,7 @@ function setUploadProgress(percent, text, options = {}) {
   uploadProgressFill.style.width = `${Math.max(0, Math.min(100, percent))}%`;
   if (options.speed !== undefined && uploadSpeedEl) {
     uploadSpeedEl.textContent = options.speed;
+    window._uploadSpeed = options.speed;
   }
 }
 
@@ -583,8 +582,8 @@ function renderUploadQueue() {
     row.className = `upload-task ${task.status}`;
     row.innerHTML = `
       <div class="upload-task-main">
-        <div class="upload-task-title">${escapeHtml(task.label)} · ${task.count} 项</div>
-        <div class="upload-task-message">${escapeHtml(task.message)}</div>
+        <div class="upload-task-title">${escapeHtml(task.label)}</div>
+        <div class="upload-task-message">${escapeHtml(window._uploadSpeed || "")} · ${task.progress.toFixed(0)}%</div>
         <div class="upload-task-bar"><div style="width:${Math.max(0, Math.min(100, task.progress))}%"></div></div>
       </div>
     `;
@@ -1404,6 +1403,31 @@ const THEME_COLORS = {
   "--floating-text":["#ffffff", "#141210"]
 };
 
+const STYLE_PALETTES = {
+  classic: THEME_COLORS,
+  editorial: {
+    "--bg":           ["#c8cfbe", "#16140f"],
+    "--panel":        ["#d0d7c7", "#201d15"],
+    "--panel-strong": ["#d0d7c7", "#252119"],
+    "--panel-hover":  ["#c6cebb", "#2c2820"],
+    "--panel-soft":   ["#c1c9b5", "#1c1a13"],
+    "--line":         ["#b3bba9", "#3b362a"],
+    "--text":         ["#20261d", "#e8e2d2"],
+    "--muted":        ["#636c5d", "#8d8571"],
+    "--accent":       ["#4a7c59", "#35a596"],
+    "--floating-bg":  ["#20261d", "#e8e2d2"],
+    "--floating-text":["#c8cfbe", "#16140f"],
+    "--paper-deep":   ["#bcc4b0", "#1a1712"],
+    "--ink-soft":     ["#434f3a", "#b5ad99"],
+    "--line-soft":    ["#bac2ae", "#2e2a20"],
+    "--s-blue":       ["#2f6db3", "#6aa3e0"],
+    "--s-amber":      ["#a87b24", "#d3a04a"],
+    "--s-green":      ["#3e7c4f", "#6fb585"],
+    "--danger":       ["#b23b3b", "#d96454"],
+    "--success":      ["#3e7c4f", "#6fb585"]
+  }
+};
+
 function hexToRgb(hex) {
   const c = hex.replace("#","");
   return [parseInt(c.slice(0,2),16), parseInt(c.slice(2,4),16), parseInt(c.slice(4,6),16)];
@@ -1417,41 +1441,35 @@ function lerpColor(a, b, t) {
   return `rgb(${r},${g},${b_})`;
 }
 
+let appliedThemeKeys = [];
 function applyThemePos(pos) {
   state.themePos = pos;
   state.theme = pos < 50 ? "light" : "dark";
   localStorage.setItem(THEME_POS_KEY, String(pos));
   localStorage.setItem(THEME_KEY, state.theme);
-  const t = pos / 100;
-  const vars = {};
-  for (const [key, [light, dark]] of Object.entries(THEME_COLORS)) {
-    vars[key] = lerpColor(light, dark, t);
+  const btn = document.querySelector("#themeToggleBtn");
+  if (btn) {
+    btn.title = pos < 50 ? "切换" : "切换";
+    var sun = btn.querySelector(".tgl-sun"), moon = btn.querySelector(".tgl-moon");
+    if (sun && moon) { sun.style.display = pos < 50 ? "" : "none"; moon.style.display = pos < 50 ? "none" : ""; }
   }
-  document.body.style.setProperty("--bg", vars["--bg"]);
-  document.body.style.setProperty("--panel", vars["--panel"]);
-  document.body.style.setProperty("--panel-strong", vars["--panel-strong"]);
-  document.body.style.setProperty("--line", vars["--line"]);
-  document.body.style.setProperty("--text", vars["--text"]);
-  document.body.style.setProperty("--muted", vars["--muted"]);
-  document.body.style.setProperty("--accent", vars["--accent"]);
-  document.body.style.setProperty("--floating-bg", vars["--floating-bg"]);
-  document.body.style.setProperty("--floating-text", vars["--floating-text"]);
-  document.body.style.setProperty("--panel-hover", vars["--panel-hover"]);
-  document.body.style.setProperty("--panel-soft", vars["--panel-soft"]);
+  const t = pos / 100;
+  const palette = STYLE_PALETTES.editorial;
+  for (var key of appliedThemeKeys) {
+    if (!Object.prototype.hasOwnProperty.call(palette, key)) document.body.style.removeProperty(key);
+  }
+  for (var [key, [light, dark]] of Object.entries(palette)) {
+    document.body.style.setProperty(key, lerpColor(light, dark, t));
+  }
+  appliedThemeKeys = Object.keys(palette);
 }
 
 function applyTheme(theme) {
-  const pos = theme === "dark" ? 100 : 0;
-  const slider = document.querySelector("#themeSlider");
-  if (slider) slider.value = pos;
-  applyThemePos(pos);
+  applyThemePos(theme === "dark" ? 100 : 0);
 }
 
 function toggleTheme() {
-  const newPos = state.themePos < 50 ? 100 : 0;
-  const slider = document.querySelector("#themeSlider");
-  if (slider) slider.value = newPos;
-  applyThemePos(newPos);
+  applyThemePos(state.themePos < 50 ? 100 : 0);
 }
 
 function isSelected(path) {
@@ -1515,6 +1533,32 @@ function handleItemDoubleClick(event, item) {
 function clearSelections() {
   state.selectedPaths.clear();
   updateToolbarButtons();
+}
+
+function copyItem(item) {
+  state.clipboard = { items: [item.path], mode: "copy" }
+  document.querySelectorAll(".cut-clip, .copy-clip").forEach(function(el) { el.classList.remove("cut-clip", "copy-clip") })
+  var row = document.querySelector('[data-item-path="' + item.path.replace(/"/g, '') + '"]')
+  if (row) row.classList.add("copy-clip")
+  showMessage("已复制到剪贴板", "success")
+}
+
+async function pasteFromClipboard() {
+  var items = state.clipboard.items, mode = state.clipboard.mode
+  if (!items.length) return
+  try {
+    if (mode === "copy") {
+      var res = await apiFetch("/api/copy", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ paths: items, targetDir: state.currentDir }) })
+      var data = await parseJsonResponse(res)
+      if (!res.ok) { showMessage(data.error || "粘贴失败", "error"); return }
+      showMessage("已粘贴 " + data.copied + " 个项目", "success")
+    } else {
+      var ok = await moveItems(items, state.currentDir)
+      if (ok) showMessage("已粘贴 " + items.length + " 个项目", "success")
+    }
+  } catch(e) { showMessage(e.message || "粘贴失败", "error") }
+  state.clipboard = { items: [], mode: null }
+  await loadDir(state.currentDir)
 }
 
 function selectAll() {
@@ -1659,6 +1703,7 @@ function renderCurrentDirectory() {
   } else {
     renderRows(sortItems(getFilteredCurrentItems()), false);
   }
+  updateToolbarButtons();
 }
 
 function makeSelectCheckbox(item) {
@@ -1762,8 +1807,8 @@ function showContextMenu(items, x, y) {
   ctxMenu.className = "ctx-menu"
   ctxMenu.style.left = x + "px"
   ctxMenu.style.top = y + "px"
-  for (var i = 0; i < items.length; i++) {
-    var item = items[i]
+  for (let i = 0; i < items.length; i++) {
+    let item = items[i]
     if (item.sep) {
       var sep = document.createElement("div")
       sep.className = "ctx-sep"
@@ -1795,22 +1840,22 @@ document.addEventListener("keydown", function(e) {
   if (e.key === "Escape") hideContextMenu()
 })
 document.addEventListener("contextmenu", function(e) {
-  // 找点击的目标文件项
-  var target = e.target.closest(".file-row, .grid-card")
-  if (!target) return
-  e.preventDefault()
-  var item = target.__itemData
-  if (!item) return
+  var target = e.target.closest(".interactive-row, .grid-card")
+  if (target) {
+    e.preventDefault()
+    var item = target.__itemData
+    if (!item) return
 
   var menuItems = []
   if (item.type === "directory") {
-    menuItems.push({ label: "打开", action: function() { navigateToDir(item.path) } })
+    menuItems.push({ label: "打开", action: function() { loadDir(item.path) } })
     menuItems.push({ sep: true })
     menuItems.push({ label: "待开始", action: function() { setItemStatus(item, "not_started") } })
     menuItems.push({ label: "进行中", action: function() { setItemStatus(item, "in_progress") } })
     menuItems.push({ label: "已完成", action: function() { setItemStatus(item, "completed") } })
     menuItems.push({ sep: true })
     menuItems.push({ label: "重命名", action: function() { renameItem(item) } })
+    menuItems.push({ label: "复制", action: function() { copyItem(item) } })
     menuItems.push({ label: "移动", action: function() { moveItem(item) } })
     menuItems.push({ sep: true })
     menuItems.push({ label: "删除", action: function() { deleteItem(item) }, danger: true })
@@ -1825,11 +1870,29 @@ document.addEventListener("contextmenu", function(e) {
     }})
     menuItems.push({ sep: true })
     menuItems.push({ label: "重命名", action: function() { renameItem(item) } })
+    menuItems.push({ label: "复制", action: function() { copyItem(item) } })
     menuItems.push({ label: "移动", action: function() { moveItem(item) } })
     menuItems.push({ sep: true })
     menuItems.push({ label: "删除", action: function() { deleteItem(item) }, danger: true })
   }
   showContextMenu(menuItems, e.clientX, e.clientY)
+  } else if (!e.target.closest("input, textarea, button, a, select, label")) {
+    e.preventDefault()
+    showContextMenu([
+      { label: "上传文件", action: function() { var b = document.querySelector("#fileInput"); if (b) b.click() } },
+      { label: "上传文件夹", action: function() { var b = document.querySelector("#folderInput"); if (b) b.click() } },
+      { sep: true },
+      { label: "新建文件夹", action: function() { createFolder() } },
+      { label: "新建项目", action: function() { var b = document.querySelector("#createProjectBtn"); if (b) b.click() } },
+      { sep: true },
+      { label: "全选", action: function() { selectAll() } },
+      ...(state.clipboard.items.length ? [{ label: "粘贴", action: function() { pasteFromClipboard() } }] : []),
+      { label: "刷新", action: function() { loadDir(state.currentDir) } },
+      { label: "返回上级", action: function() { var b = document.querySelector("#upDirBtn"); if (b && !b.classList.contains("is-hidden")) b.click() } },
+      { sep: true },
+      { label: state.viewMode === "grid" ? "列表视图" : "宫格视图", action: function() { setViewMode(state.viewMode === "grid" ? "list" : "grid") } }
+    ], e.clientX, e.clientY)
+  }
 })
 
 async function setItemStatus(item, status) {
@@ -1844,14 +1907,24 @@ async function setItemStatus(item, status) {
     row.classList.remove("is-completed", "is-in-progress")
     if (status === "completed") row.classList.add("is-completed")
     else if (status === "in_progress") row.classList.add("is-in-progress")
-    // 更新状态下拉框选中值
     var selEl = row.querySelector(".status-badge")
-    if (selEl) selEl.value = status
+    if (selEl) {
+      selEl.textContent = statusLabels[status] || "待开始"
+      selEl.classList.remove("is-in-progress", "is-completed")
+      if (status === "in_progress") selEl.classList.add("is-in-progress")
+      if (status === "completed") selEl.classList.add("is-completed")
+    }
   }
 }
 
 var _statusLabels = { completed: "已完成", in_progress: "进行中", not_started: "待开始" }
+var statusLabels = _statusLabels
 var _statusColors = { completed: "#22c55e", in_progress: "#3b82f6", not_started: "" }
+function setStatusBadgeColor(el, status) {
+  el.classList.remove("is-in-progress", "is-completed")
+  if (status === "in_progress") el.classList.add("is-in-progress")
+  if (status === "completed") el.classList.add("is-completed")
+}
 
 async function deleteItem(item) {
   const label = item.type === "directory" ? "文件夹" : "文件";
@@ -2179,27 +2252,53 @@ function createActions(item) {
   moveBtn.onclick = () => moveItem(item);
   actions.appendChild(moveBtn);
 
-  // 目录状态下拉框（仅 shared 根目录）
+  // 目录状态自定义下拉框
   if (item.type === "directory" && (!state.currentDir || state.currentDir === "")) {
-    var statusSel = document.createElement("select");
-    statusSel.className = "link-button status-badge";
-    statusSel.className = "link-button status-badge";
-    var opts = [
+    var statusOpts = [
       { value: "not_started", label: "待开始" },
       { value: "in_progress", label: "进行中" },
       { value: "completed", label: "已完成" }
     ];
-    for (var si = 0; si < opts.length; si++) {
-      var opt = document.createElement("option");
-      opt.value = opts[si].value;
-      opt.textContent = opts[si].label;
-      if (opts[si].value === item.status) opt.selected = true;
-      statusSel.appendChild(opt);
-    }
-    statusSel.addEventListener("change", function() {
-      setItemStatus(item, this.value)
+    var statusBtn = document.createElement("button");
+    statusBtn.type = "button";
+    statusBtn.className = "link-button status-badge";
+    statusBtn.textContent = statusLabels[item.status] || "待开始";
+    setStatusBadgeColor(statusBtn, item.status);
+
+    var statusMenu = document.createElement("div");
+    statusMenu.className = "status-badge-menu is-hidden";
+    statusOpts.forEach(function(opt) {
+      var optBtn = document.createElement("button");
+      optBtn.type = "button";
+      optBtn.className = "status-badge-opt";
+      optBtn.textContent = opt.label;
+      optBtn.dataset.value = opt.value;
+      if (opt.value === item.status) optBtn.classList.add("active");
+      optBtn.addEventListener("click", function(e) {
+        e.stopPropagation();
+        setItemStatus(item, this.dataset.value);
+        statusBtn.textContent = this.textContent;
+        setStatusBadgeColor(statusBtn, this.dataset.value);
+        statusMenu.querySelectorAll(".status-badge-opt").forEach(function(o) { o.classList.remove("active"); });
+        this.classList.add("active");
+        statusMenu.classList.add("is-hidden");
+      });
+      statusMenu.appendChild(optBtn);
     });
-    actions.appendChild(statusSel);
+
+    statusBtn.addEventListener("click", function(e) {
+      e.stopPropagation();
+      var allMenus = document.querySelectorAll(".status-badge-menu");
+      allMenus.forEach(function(m) { if (m !== statusMenu) m.classList.add("is-hidden"); });
+      statusMenu.classList.toggle("is-hidden");
+    });
+
+    var wrap = document.createElement("span");
+    wrap.style.position = "relative";
+    wrap.style.display = "inline-flex";
+    wrap.appendChild(statusBtn);
+    wrap.appendChild(statusMenu);
+    actions.appendChild(wrap);
   }
 
   const deleteBtn = document.createElement("button");
@@ -2991,8 +3090,9 @@ async function createProject() {
     resolve(result);
   };
 
+  dialog.addEventListener("mousedown", (e) => { dialog._downTarget = e.target; });
   dialog.addEventListener("click", (event) => {
-    if (event.target === dialog || event.target.dataset.action === "cancel") finish(null);
+    if (event.target === dialog && dialog._downTarget === dialog || event.target.dataset.action === "cancel") finish(null);
   });
   dialog.addEventListener("cancel", (event) => {
     event.preventDefault();
@@ -3217,23 +3317,24 @@ function promptNickname() {
 
 const GLOW_COLORS = [
   { label: "无", color: "" },
-  { label: "紫", color: "#7c6cf0" },
-  { label: "蓝", color: "#0a84ff" },
-  { label: "青", color: "#00c7be" },
-  { label: "绿", color: "#34c759" },
-  { label: "黄", color: "#ffd60a" },
-  { label: "橙", color: "#ff9f0a" },
-  { label: "红", color: "#ff3b30" },
-  { label: "粉", color: "#ff375f" },
-  { label: "紫罗兰", color: "#bf5af2" },
+  { label: "墨灰", color: "#57503f" },
+  { label: "松石", color: "#0f766e" },
+  { label: "琥珀", color: "#a87b24" },
+  { label: "藏蓝", color: "#2f6db3" },
+  { label: "苔绿", color: "#3e7c4f" },
+  { label: "赭红", color: "#b23b3b" },
+  { label: "岩灰", color: "#6b7280" },
+  { label: "天蓝", color: "#0a84ff" },
+  { label: "翠绿", color: "#34c759" },
   { label: "自定义", color: "custom" }
 ];
 
 const CURSOR_EFFECTS = [
-  { key: "classic", label: "经典" },
-  { key: "ribbon", label: "丝带" },
-  { key: "spark", label: "星尘" },
-  { key: "comet", label: "彗尾" }
+  { key: "classic", label: "墨印" },
+  { key: "ribbon", label: "墨痕" },
+  { key: "spark", label: "墨澜" },
+  { key: "comet", label: "墨篆" },
+  { key: "stain", label: "墨染" }
 ];
 
 function changeNickname() {
@@ -3254,14 +3355,17 @@ function changeNickname() {
       <div class="input-row">
         <input class="field" name="value" autocomplete="off" placeholder="例如：张三" value="${escapeHtml(state.nickname)}" style="color:var(--text);background:var(--panel-strong)" />
       </div>
-      <div style="font-size:13px;color:var(--muted);margin-top:4px">光效颜色</div>
-      <div id="colorPicker" style="display:flex;gap:6px;flex-wrap:wrap;padding:4px 0">
+      <div style="font-size:13px;color:var(--muted);margin-top:4px">墨砚</div>
+      <div id="colorPicker" style="display:flex;gap:4px;flex-wrap:wrap;padding:4px 0">
         ${GLOW_COLORS.map((c, i) => {
           if (c.color === "custom") {
-            return `<input type="color" id="customColor" value="${selColor || "#7c6cf0"}" style="width:36px;height:36px;border:none;border-radius:50%;cursor:pointer;padding:0;background:none;accent-color:var(--accent)" />`;
+            return `<label style="width:32px;height:32px;border:1px solid var(--line);border-radius:2px;cursor:pointer;position:relative;overflow:hidden;display:flex;align-items:center;justify-content:center">
+              <input type="color" id="customColor" value="${selColor || "#57503f"}" style="position:absolute;inset:-10px;cursor:pointer;opacity:0" />
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--text)" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+            </label>`;
           }
           const isActive = (!c.color && !selColor) || (c.color && c.color === selColor);
-          return `<div data-idx="${i}" class="color-swatch ${isActive ? "active" : ""}" style="width:36px;height:36px;border-radius:50%;cursor:pointer;background:${c.color || "var(--panel)"};${c.color ? `box-shadow:0 0 6px ${c.color}40` : "border:1px dashed var(--line)"};display:flex;align-items:center;justify-content:center;font-size:16px;transition:transform 120ms ease">${c.color ? "" : "✕"}</div>`;
+          return `<div data-idx="${i}" class="color-swatch ${isActive ? "active" : ""}" style="width:32px;height:32px;border:1px solid ${isActive ? "var(--text)" : "var(--line)"};border-radius:2px;cursor:pointer;background:${c.color || "transparent"};display:flex;align-items:center;justify-content:center;font-size:14px;transition:border-color 120ms ease">${c.color ? "" : "✕"}</div>`;
         }).join("")}
       </div>
       <div style="font-size:13px;color:var(--muted);margin-top:8px">鼠标特效</div>
@@ -3333,7 +3437,8 @@ function changeNickname() {
     if (!name) { msg.textContent = "昵称不能为空"; msg.className = "message-area error"; input.focus(); return; }
     finish(name);
   });
-  d.addEventListener("click", (e) => { if (e.target === d || e.target.dataset.action === "cancel") finish(null); });
+  d.addEventListener("mousedown", (e) => { d._downTarget = e.target; });
+  d.addEventListener("click", (e) => { if (e.target === d && d._downTarget === d || e.target.dataset.action === "cancel") finish(null); });
   d.addEventListener("cancel", (e) => { e.preventDefault(); finish(null); });
   showDialog(d);
 }
@@ -3439,6 +3544,7 @@ async function pollLogs() {
 
 if (logToggleBtn) {
   logToggleBtn.addEventListener("click", () => {
+    recycleDrawer.classList.add("is-hidden")
     const hidden = logPanel.classList.toggle("is-hidden");
     if (!hidden) {
       renderLogEntries();
@@ -3525,7 +3631,7 @@ if (hideBtn) {
       document.querySelector(".hero"),
       document.querySelector(".panel"),
       document.querySelector("#logToggleBtn"),
-      document.querySelector("#themeSliderWrap"),
+      document.querySelector("#themeToggleBtn"),
       document.querySelector("#recycleToggleBtn"),
       document.querySelector("#logPanel"),
       document.querySelector("#recycleDrawer"),
@@ -3629,18 +3735,31 @@ mainSearchInput.addEventListener("input", (event) => {
 listViewBtn.addEventListener("click", () => setViewMode("list"));
 gridViewBtn.addEventListener("click", () => setViewMode("grid"));
 
-// 状态筛选下拉框
-var statusFilter = document.getElementById("statusFilter")
-if (statusFilter) {
-  statusFilter.addEventListener("change", function() {
-    state.filterStatus = this.value
-    renderCurrentDirectory()
+// 状态筛选自定义下拉框
+var filterSwitchBtn = document.getElementById("filterSwitchBtn")
+var filterSwitchMenu = document.getElementById("filterSwitchMenu")
+if (filterSwitchBtn && filterSwitchMenu) {
+  filterSwitchBtn.addEventListener("click", function(e) {
+    e.stopPropagation()
+    filterSwitchMenu.classList.toggle("is-hidden")
   })
+  filterSwitchMenu.querySelectorAll(".filter-opt").forEach(function(opt) {
+    opt.addEventListener("click", function() {
+      var val = this.dataset.value
+      state.filterStatus = val
+      filterSwitchBtn.textContent = this.textContent
+      filterSwitchMenu.querySelectorAll(".filter-opt").forEach(function(o) { o.classList.remove("active") })
+      this.classList.add("active")
+      filterSwitchMenu.classList.add("is-hidden")
+      renderCurrentDirectory()
+    })
+  })
+  document.addEventListener("click", function() { filterSwitchMenu.classList.add("is-hidden") })
 }
-// 切换目录时隐藏筛选（仅根目录显示）
 function updateFilterByDir() {
-  if (!statusFilter) return
-  statusFilter.style.display = (!state.currentDir || state.currentDir === "") ? "" : "none"
+  var sw = document.getElementById("filterSwitch")
+  if (!sw) return
+  sw.style.display = (!state.currentDir || state.currentDir === "") ? "" : "none"
 }
 updateFilterByDir()
 document.querySelectorAll(".sort-th").forEach((th) => {
@@ -3661,6 +3780,7 @@ var previewNextBtn = document.querySelector("#previewNextBtn");
 if (previewPrevBtn) previewPrevBtn.addEventListener("click", () => navigatePreview(-1));
 if (previewNextBtn) previewNextBtn.addEventListener("click", () => navigatePreview(1));
 recycleToggleBtn.addEventListener("click", () => {
+  logPanel.classList.add("is-hidden")
   recycleDrawer.classList.toggle("is-hidden");
   loadRecycleItems();
 });
@@ -3711,18 +3831,15 @@ document.querySelectorAll(".tab").forEach(function(t) {
     document.querySelectorAll(".tab-content").forEach(function(x) { x.classList.remove("active"); });
     var target = document.getElementById("tab-" + tab);
     if (target) target.classList.add("active");
-    // Show/hide file-specific UI when switching tabs
-    var isFiles = tab === "files";
-    document.querySelector("#logPanel").classList.toggle("is-hidden", !isFiles);
   });
 });
 
-// Theme slider init
-const themeSlider = document.querySelector("#themeSlider");
-if (themeSlider) {
-  themeSlider.value = state.themePos;
-  themeSlider.addEventListener("input", () => applyThemePos(Number(themeSlider.value)));
+// Theme toggle button init
+const themeToggleBtn = document.querySelector("#themeToggleBtn");
+if (themeToggleBtn) {
+  themeToggleBtn.addEventListener("click", toggleTheme);
 }
+document.body.dataset.uiStyle = "editorial";
 applyThemePos(state.themePos);
 initBackground();
 setViewMode(state.viewMode);
@@ -3755,6 +3872,7 @@ function startFloatingChars() {
   const firstColor = state.glowColor.split(",")[0] || state.glowColor || "#7c6cf0";
   floatChars = chars.map((ch, i) => {
     const el = document.createElement("div");
+    el.className = "float-char";
     el.textContent = ch;
     el.style.cssText = `
       position: fixed; z-index: 0; pointer-events: none; user-select: none;
@@ -4065,6 +4183,7 @@ function spawnFileEventChars(names, action) {
   const newChars = names.map((name) => {
     const text = `${actionLabel} ${name}`;
     const el = document.createElement("div");
+    el.className = "float-char float-char-event";
     el.textContent = text;
     el.style.cssText = `
       position: fixed; z-index: 0; pointer-events: none; user-select: none;
@@ -4099,9 +4218,9 @@ function startCursorParticles() {
 
   let w = cursorParticleCanvas.width = window.innerWidth;
   let h = cursorParticleCanvas.height = window.innerHeight;
-  let lastX = 0, lastY = 0, lastDX = 0, lastDY = 0, hasPointer = false;
-  const trailNodes = [];
-  const mode = state.cursorEffect || "";
+  let lastX = 0, lastY = 0;
+  const trail = [], mode = state.cursorEffect || "";
+
   _cursorResize = () => {
     w = cursorParticleCanvas.width = window.innerWidth;
     h = cursorParticleCanvas.height = window.innerHeight;
@@ -4110,402 +4229,202 @@ function startCursorParticles() {
 
   _cursorMouseMove = (e) => {
     if (!state.glowColor) return;
-    const color = state.glowColor;
-    const dx = hasPointer ? e.clientX - lastX : 0;
-    const dy = hasPointer ? e.clientY - lastY : 0;
-    const speed = Math.hypot(dx, dy);
-    lastX = e.clientX;
-    lastY = e.clientY;
-    if (speed > 0.1) { lastDX = dx; lastDY = dy; }
-    hasPointer = true;
 
     if (mode === "classic") {
-      // 经典：每帧稳定产出小圆点，带重力下落
-      for (let i = 0; i < 3; i++) {
+      if (Math.random() < 0.2) {
         cursorParticles.push({
-          x: e.clientX + (Math.random() - 0.5) * 4,
-          y: e.clientY + (Math.random() - 0.5) * 4,
-          vx: (Math.random() - 0.5) * 2.2,
-          vy: (Math.random() - 0.5) * 2.2 - 1.0,
-          r: 2.5 + Math.random() * 4.5,
-          life: 1,
-          decay: 0.014 + Math.random() * 0.006,
-          mode,
-          color
+          x: e.clientX + (Math.random() - 0.5) * 6, y: e.clientY,
+          vx: (Math.random() - 0.5) * 0.6, vy: (Math.random() - 0.5) * 0.6 - 0.3,
+          r: 1.2 + Math.random() * 2, life: 0.6,
+          decay: 0.015 + Math.random() * 0.01,
+          color: state.glowColor
         });
       }
       return;
     }
 
-    if (speed < 3) return;
-
     if (mode === "ribbon") {
-      // 丝带：左右双轨波浪带状，扭动扩散
-      const mx = Math.abs(dx) < 0.15 && Math.abs(lastDX) > 0.15 ? lastDX : dx;
-      const my = Math.abs(dy) < 0.15 && Math.abs(lastDY) > 0.15 ? lastDY : dy;
-      for (let s = -1; s <= 1; s += 2) {
-        const drift = s * (8 + Math.sin(performance.now() * 0.01) * 3);
-        const node = {
-          x: e.clientX - mx * 0.1 + drift,
-          y: e.clientY - my * 0.1 - drift * 0.25,
-          vx: mx * 0.03 + s * 0.15,
-          vy: my * 0.03 - 0.08,
-          r: Math.min(9, 2.5 + speed * 0.04),
-          life: 1,
-          decay: 0.024 + Math.random() * 0.006,
-          ribbonSide: s,
-          wave: Math.random() * Math.PI * 2,
-          mode,
-          color
-        };
-        cursorParticles.push(node);
-        trailNodes.push(node);
-      }
-    } else if (mode === "spark") {
-      // 星尘：十字星形粒子，极小且闪，方向偏随机
-      const count = speed > 20 ? 5 : 3;
-      for (let i = 0; i < count; i++) {
+      trail.push({ x: e.clientX, y: e.clientY, life: 1 });
+      if (trail.length > 60) trail.shift();
+      return;
+    }
+
+    if (mode === "spark") {
+      if (Math.random() < 0.3) {
         cursorParticles.push({
-          x: e.clientX + (Math.random() - 0.5) * 6,
-          y: e.clientY + (Math.random() - 0.5) * 6,
-          vx: dx * 0.015 + (Math.random() - 0.5) * 1.8,
-          vy: dy * 0.015 + (Math.random() - 0.5) * 1.8,
-          r: 1.2 + Math.random() * 2.2,
-          life: 1,
-          decay: 0.06 + Math.random() * 0.025,
-          sparkShape: true,
-          mode,
-          color
+          x: e.clientX, y: e.clientY, vx: 0, vy: 0,
+          r: 12, life: 0.7,
+          decay: 0.01 + Math.random() * 0.006,
+          color: state.glowColor, ripple: true
         });
       }
-    } else if (mode === "comet") {
-      // 彗尾：粗头在前，身后跟随衰减细尾
-      const mx = Math.abs(dx) < 0.15 && Math.abs(lastDX) > 0.15 ? lastDX : dx;
-      const my = Math.abs(dy) < 0.15 && Math.abs(lastDY) > 0.15 ? lastDY : dy;
-      const node = {
-        x: e.clientX - mx * 0.4,
-        y: e.clientY - my * 0.4,
-        vx: mx * 0.12,
-        vy: my * 0.12 - 0.05,
-        r: Math.min(26, 7 + speed * 0.14),
-        life: 1,
-        decay: 0.018 + Math.random() * 0.005,
-        head: true,
-        mode,
-        color
-      };
-      cursorParticles.push(node);
-      trailNodes.push(node);
+      return;
+    }
+
+    if (mode === "comet") {
+      trail.push({ x: e.clientX, y: e.clientY, life: 1 });
+      if (trail.length > 40) trail.shift();
+      return;
+    }
+
+    if (mode === "stain") {
+      if (Math.random() < 0.08) {
+        cursorParticles.push({
+          x: e.clientX + (Math.random() - 0.5) * 20, y: e.clientY + (Math.random() - 0.5) * 20,
+          vx: 0, vy: 0,
+          r: 3 + Math.random() * 6, life: 0.7,
+          decay: 0.004 + Math.random() * 0.003,
+          color: state.glowColor, bloom: true
+        });
+      }
+      return;
     }
   };
   document.addEventListener("mousemove", _cursorMouseMove);
 
   _cursorClick = (e) => {
     if (!state.glowColor) return;
-    const color = state.glowColor;
+    const c = state.glowColor;
 
     if (mode === "classic") {
-      // 经典点击：中心冲击环 + 稠密弹幕（圆形均匀爆散）
-      cursorParticles.push({ x: e.clientX, y: e.clientY, vx: 0, vy: 0, r: 14, life: 0.52, decay: 0.07, ring: true, mode, color });
-      for (let i = 0; i < 36; i++) {
-        const a = (Math.PI * 2 * i) / 36 + Math.random() * 0.05;
-        const sp = 1.5 + Math.random() * 5.5;
-        cursorParticles.push({ x: e.clientX, y: e.clientY, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 1.4, r: 2 + Math.random() * 5, life: 1, decay: 0.018 + Math.random() * 0.008, mode, color });
-      }
-      for (let i = 0; i < 6; i++) {
-        const a = Math.random() * Math.PI * 2;
-        const sp = 0.5 + Math.random() * 1.2;
-        cursorParticles.push({ x: e.clientX, y: e.clientY, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 0.4, r: 7 + Math.random() * 6, life: 0.44, decay: 0.075 + Math.random() * 0.02, burstGlow: true, mode, color });
-      }
+      cursorParticles.push({ x: e.clientX, y: e.clientY, vx: 0, vy: 0, r: 8, life: 0.9, decay: 0.028, ripple: true, color: c });
+      cursorParticles.push({ x: e.clientX, y: e.clientY, vx: 0, vy: 0, r: 8, life: 0.6, decay: 0.04, ripple: true, color: c });
+      cursorParticles.push({ x: e.clientX, y: e.clientY, vx: 0, vy: 0, r: 8, life: 0.35, decay: 0.06, ripple: true, color: c });
       return;
     }
-
     if (mode === "ribbon") {
-      // 丝带点击：中心波纹脉冲 + 左右两翼飞散
-      cursorParticles.push({ x: e.clientX, y: e.clientY, vx: 0, vy: 0, r: 20, life: 0.88, decay: 0.032, ribbonPulse: true, mode, color });
-      for (let s = -1; s <= 1; s += 2) {
-        cursorParticles.push({ x: e.clientX, y: e.clientY, vx: s * 3, vy: -1.5, r: 8, life: 0.5, decay: 0.06, ring: true, ribbonSide: s, wave: Math.random() * Math.PI * 2, mode, color });
-        for (let i = 0; i < 14; i++) {
-          cursorParticles.push({ x: e.clientX + s * (3 + Math.random() * 6), y: e.clientY + (Math.random() - 0.5) * 6, vx: s * (0.8 + Math.random() * 1.8), vy: -0.2 + (Math.random() - 0.5) * 1.0, r: 2 + Math.random() * 2.2, life: 1, decay: 0.032 + Math.random() * 0.008, ribbonSide: s, wave: Math.random() * Math.PI * 2, mode, color });
-        }
+      for (let i = 0; i < 3; i++) {
+        cursorParticles.push({ x: e.clientX, y: e.clientY, vx: 0, vy: 0, r: 8 + i * 15, life: 0.7, decay: 0.035, ring: true, color: c });
       }
       return;
     }
-
     if (mode === "spark") {
-      // 星尘点击：十字闪光 + 等角度射线 + 小光晕
-      cursorParticles.push({ x: e.clientX, y: e.clientY, vx: 0, vy: 0, r: 10, life: 0.48, decay: 0.08, sparkFlash: true, mode, color });
-      for (let i = 0; i < 22; i++) {
-        const a = (Math.PI * 2 * i) / 22 + Math.random() * 0.06;
-        const sp = 2 + Math.random() * 4;
-        cursorParticles.push({ x: e.clientX, y: e.clientY, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, r: 1.5 + Math.random() * 1.5, life: 1, decay: 0.04 + Math.random() * 0.014, sparkRay: true, mode, color });
+      cursorParticles.push({ x: e.clientX, y: e.clientY, vx: 0, vy: 0, r: 20, life: 0.85, decay: 0.016, ripple: true, color: c });
+      cursorParticles.push({ x: e.clientX, y: e.clientY, vx: 0, vy: 0, r: 20, life: 0.55, decay: 0.028, ripple: true, color: c });
+      cursorParticles.push({ x: e.clientX, y: e.clientY, vx: 0, vy: 0, r: 12, life: 0.4, decay: 0.035, ripple: true, color: c });
+      cursorParticles.push({ x: e.clientX, y: e.clientY, vx: 0, vy: 0, r: 12, life: 0.25, decay: 0.05, ripple: true, color: c });
+      return;
+    }
+    if (mode === "comet") {
+      for (let i = 0; i < 20; i++) {
+        const a = Math.random() * Math.PI * 2, sp = 2 + Math.random() * 6;
+        cursorParticles.push({ x: e.clientX, y: e.clientY, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, r: 0.4 + Math.random() * 1.0, life: 0.7, decay: 0.04 + Math.random() * 0.03, color: c });
       }
-      for (let i = 0; i < 10; i++) {
-        const a = Math.random() * Math.PI * 2;
-        const sp = 0.6 + Math.random() * 1.4;
-        cursorParticles.push({ x: e.clientX, y: e.clientY, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, r: 3 + Math.random() * 2, life: 0.78, decay: 0.05 + Math.random() * 0.014, burstGlow: true, mode, color });
+      for (let i = 0; i < 4; i++) {
+        const a = (Math.PI / 4) + (Math.PI / 2) * i;
+        cursorParticles.push({ x: e.clientX, y: e.clientY, vx: 0, vy: 0, r: 16, life: 0.5, decay: 0.06, stroke: true, color: c, angle: a });
       }
       return;
     }
-
-    // 彗尾点击：小冲击环 + 慢速块状碎片
-    cursorParticles.push({ x: e.clientX, y: e.clientY, vx: 0, vy: 0, r: 22, life: 0.44, decay: 0.1, ring: true, mode, color });
-    cursorParticles.push({ x: e.clientX, y: e.clientY, vx: 0, vy: -0.3, r: 28, life: 0.36, decay: 0.095, burstGlow: true, mode, color });
-    // 零星大块碎片
-    for (let i = 0; i < 6; i++) {
-      const a = Math.random() * Math.PI * 2;
-      const sp = 0.5 + Math.random() * 1.2;
-      cursorParticles.push({ x: e.clientX, y: e.clientY, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 0.6, r: 4 + Math.random() * 3.5, life: 1, decay: 0.022 + Math.random() * 0.006, mode, color });
+    if (mode === "stain") {
+      for (let i = 0; i < 9; i++) {
+        cursorParticles.push({
+          x: e.clientX + (Math.random() - 0.5) * 40, y: e.clientY + (Math.random() - 0.5) * 40,
+          vx: 0, vy: 0, r: 3 + Math.random() * 8, life: 0.9,
+          decay: 0.003 + Math.random() * 0.002, bloom: true, color: c
+        });
+      }
+      return;
     }
   };
   document.addEventListener("click", _cursorClick);
 
-  function animate() {
+  (function animate() {
     cursorCtx.clearRect(0, 0, w, h);
-    cursorCtx.globalCompositeOperation = "lighter";
+    cursorCtx.globalCompositeOperation = "source-over";
 
-    for (let i = trailNodes.length - 1; i >= 0; i--) {
-      if (trailNodes[i].life <= 0) trailNodes.splice(i, 1);
-    }
-
-    // --- 丝带：双轨波浪连线 ---
-    if (mode === "ribbon" && trailNodes.length > 1) {
-      for (let i = 1; i < trailNodes.length; i++) {
-        const prev = trailNodes[i - 1], curr = trailNodes[i];
-        const alpha = Math.min(prev.life, curr.life) * 0.18;
-        if (alpha <= 0.002) continue;
-        cursorCtx.strokeStyle = curr.color;
-        cursorCtx.globalAlpha = alpha;
-        cursorCtx.lineWidth = Math.max(1.2, curr.r * 0.38);
-        cursorCtx.lineCap = "round";
-        cursorCtx.beginPath();
-        const midX = (prev.x + curr.x) / 2, midY = (prev.y + curr.y) / 2;
-        cursorCtx.moveTo(prev.x, prev.y);
-        cursorCtx.quadraticCurveTo(midX + (curr.ribbonSide || 1) * 5, midY - 4, curr.x, curr.y);
-        cursorCtx.stroke();
+    if ((mode === "ribbon" || mode === "comet") && trail.length > 1) {
+      for (let i = trail.length - 1; i >= 0; i--) {
+        trail[i].life -= mode === "ribbon" ? 0.02 : 0.03;
+        if (trail[i].life <= 0) { trail.splice(i, 1); continue; }
       }
-    }
-
-    // --- 彗尾：粗头拖出渐细尾线 ---
-    if (mode === "comet" && trailNodes.length > 1) {
-      for (let i = 1; i < trailNodes.length; i++) {
-        const prev = trailNodes[i - 1], curr = trailNodes[i];
-        const alpha = Math.min(prev.life, curr.life) * 0.24;
-        if (alpha <= 0.003) continue;
-        cursorCtx.strokeStyle = curr.color;
-        cursorCtx.globalAlpha = alpha;
-        cursorCtx.lineWidth = Math.max(3, curr.r * 0.85);
-        cursorCtx.lineCap = "round";
-        cursorCtx.beginPath();
-        cursorCtx.moveTo(prev.x, prev.y);
-        cursorCtx.lineTo(curr.x, curr.y);
-        cursorCtx.stroke();
-        cursorCtx.globalAlpha = alpha * 0.42;
-        cursorCtx.lineWidth = Math.max(1.2, curr.r * 0.32);
-        cursorCtx.beginPath();
-        cursorCtx.moveTo(prev.x, prev.y);
-        cursorCtx.lineTo(curr.x, curr.y);
-        cursorCtx.stroke();
+      if (trail.length > 1) {
+        cursorCtx.strokeStyle = state.glowColor;
+        cursorCtx.lineCap = "round"; cursorCtx.lineJoin = "round";
+        if (mode === "ribbon") {
+          cursorCtx.globalAlpha = 0.45;
+          for (let i = 1; i < trail.length; i++) {
+            var t = trail[i], p = trail[i-1];
+            cursorCtx.lineWidth = t.life * 5 + 1;
+            cursorCtx.beginPath();
+            cursorCtx.moveTo(p.x, p.y);
+            cursorCtx.quadraticCurveTo(p.x, p.y, (p.x + t.x) / 2, (p.y + t.y) / 2);
+            cursorCtx.stroke();
+          }
+        } else {
+          cursorCtx.globalAlpha = 0.55;
+          cursorCtx.lineCap = "butt";
+          for (let i = 1; i < trail.length; i++) {
+            var t = trail[i], p = trail[i-1];
+            cursorCtx.lineWidth = 0.6 + t.life * 1.2;
+            cursorCtx.beginPath();
+            cursorCtx.moveTo(p.x, p.y);
+            cursorCtx.lineTo(t.x, t.y);
+            cursorCtx.stroke();
+          }
+        }
+        cursorCtx.globalAlpha = 1;
       }
     }
 
     for (let i = cursorParticles.length - 1; i >= 0; i--) {
-      const p = cursorParticles[i];
-
-      if (p.mode === "classic") {
-        p.x += p.vx; p.y += p.vy;
-        p.vy += 0.05;
-        p.vx *= 0.992; p.vy *= 0.992;
-        p.life -= p.ring ? 0.052 : p.burstGlow ? 0.045 : 0.016;
-      } else if (p.mode === "ribbon") {
-        p.x += p.vx; p.y += p.vy;
-        if (p.ring || p.burstGlow || p.ribbonPulse) {
-          p.vx *= 0.95; p.vy = (p.vy - 0.06) * 0.95;
-        }
-        p.wave = (p.wave || 0) + 0.24;
-        p.x += Math.sin(p.wave) * 1.0 * (p.ribbonSide || 1);
-        p.y += Math.cos(p.wave) * 0.2;
-        p.vx *= p.ring ? 1 : 0.984; p.vy *= p.ring ? 1 : 0.984;
-        p.r *= p.ring ? 1.1 : p.ribbonPulse ? 1.055 : 0.993;
-        p.life -= p.decay || 0.03;
-      } else if (p.mode === "spark") {
-        p.x += p.vx; p.y += p.vy;
-        if (p.sparkFlash || p.sparkRay || p.burstGlow) {
-          p.vx *= 0.93; p.vy = (p.vy - 0.04) * 0.93;
-        }
-        p.vx *= p.sparkRay ? 0.965 : 0.978;
-        p.vy *= p.sparkRay ? 0.965 : 0.978;
-        p.r *= p.sparkFlash ? 1.05 : p.burstGlow ? 1.06 : 0.98;
-        p.life -= p.decay || 0.045;
-      } else if (p.mode === "comet") {
-        p.x += p.vx; p.y += p.vy;
-        if (p.ring || p.burstGlow) {
-          p.vx *= 0.92; p.vy = (p.vy - 0.05) * 0.92;
-        }
-        p.vx *= p.ring ? 1 : 0.996; p.vy *= p.ring ? 1 : 0.996;
-        p.r *= p.ring ? 1.09 : p.burstGlow ? 1.07 : 0.994;
-        p.life -= p.decay || 0.02;
-      }
-
+      var p = cursorParticles[i];
+      p.x += p.vx; p.y += p.vy;
+      if (p.bounce && p.y + p.r > h) { p.y = h - p.r; p.vy *= -0.5; p.vx *= 0.7; }
+      p.life -= p.decay;
       if (p.life <= 0) { cursorParticles.splice(i, 1); continue; }
+      var alpha = p.life * 0.55;
 
-      // ========== 经典：圆点 + 光环 + 柔光晕 ==========
-      if (p.mode === "classic") {
-        if (p.ring) {
-          cursorCtx.strokeStyle = p.color;
-          cursorCtx.globalAlpha = p.life * 0.28;
-          cursorCtx.lineWidth = 2.4;
-          cursorCtx.beginPath();
-          cursorCtx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
-          cursorCtx.stroke();
-          cursorCtx.globalAlpha = 1;
-          p.r *= 1.09;
-          continue;
-        }
-        if (p.burstGlow) {
-          const g = cursorCtx.createRadialGradient(p.x, p.y, 0, p.x, p.y, p.r);
-          g.addColorStop(0, `${p.color}ee`); g.addColorStop(0.4, `${p.color}66`); g.addColorStop(1, `${p.color}00`);
-          cursorCtx.fillStyle = g;
-          cursorCtx.globalAlpha = p.life * 0.34;
-          cursorCtx.beginPath(); cursorCtx.arc(p.x, p.y, p.r, 0, Math.PI * 2); cursorCtx.fill();
-          cursorCtx.globalAlpha = 1;
-          continue;
-        }
+      if (p.ring) {
+        cursorCtx.strokeStyle = p.color;
+        cursorCtx.globalAlpha = alpha * 0.4;
+        cursorCtx.lineWidth = 1.5;
         cursorCtx.beginPath();
         cursorCtx.arc(p.x, p.y, p.r * p.life, 0, Math.PI * 2);
-        cursorCtx.fillStyle = p.color;
-        cursorCtx.globalAlpha = p.life * 0.58;
-        cursorCtx.fill();
-        cursorCtx.globalAlpha = 1;
-        continue;
-      }
-
-      // ========== 丝带：环形 + 波纹脉冲 + 光点 ==========
-      if (p.mode === "ribbon") {
-        if (p.ring) {
-          cursorCtx.strokeStyle = p.color;
-          cursorCtx.globalAlpha = p.life * 0.24;
-          cursorCtx.lineWidth = 2;
-          cursorCtx.beginPath(); cursorCtx.arc(p.x, p.y, p.r, 0, Math.PI * 2); cursorCtx.stroke();
-          continue;
-        }
-        if (p.ribbonPulse) {
-          cursorCtx.strokeStyle = p.color;
-          cursorCtx.globalAlpha = p.life * 0.28;
-          cursorCtx.lineWidth = 2.4;
-          cursorCtx.beginPath();
-          cursorCtx.moveTo(p.x - p.r * 1.5, p.y - 5);
-          cursorCtx.bezierCurveTo(p.x - p.r * 0.4, p.y - p.r * 0.9, p.x + p.r * 0.4, p.y + p.r * 0.9, p.x + p.r * 1.5, p.y + 5);
-          cursorCtx.stroke();
-          cursorCtx.moveTo(p.x - p.r * 1.5, p.y + 5);
-          cursorCtx.bezierCurveTo(p.x - p.r * 0.4, p.y + p.r * 0.9, p.x + p.r * 0.4, p.y - p.r * 0.9, p.x + p.r * 1.5, p.y - 5);
-          cursorCtx.stroke();
-          cursorCtx.globalAlpha = 1;
-          p.r *= 1.06;
-          continue;
-        }
-        // ribbon trail point
-        const rg = cursorCtx.createRadialGradient(p.x, p.y, 0, p.x, p.y, Math.max(1, p.r));
-        rg.addColorStop(0, `${p.color}ee`); rg.addColorStop(0.35, `${p.color}66`); rg.addColorStop(1, `${p.color}00`);
-        cursorCtx.fillStyle = rg;
-        cursorCtx.globalAlpha = Math.min(0.35, p.life * 0.28);
-        cursorCtx.beginPath(); cursorCtx.arc(p.x, p.y, Math.max(1, p.r), 0, Math.PI * 2); cursorCtx.fill();
-        cursorCtx.globalAlpha = 1;
-        continue;
-      }
-
-      // ========== 星尘：十字闪光 + 射线 + 星形光晕 ==========
-      if (p.mode === "spark") {
-        if (p.sparkFlash) {
-          cursorCtx.strokeStyle = p.color;
-          cursorCtx.globalAlpha = p.life * 0.65;
-          cursorCtx.lineWidth = 1.4;
-          cursorCtx.beginPath();
-          for (let j = 0; j < 4; j++) {
-            const a = (Math.PI / 4) * j;
-            cursorCtx.moveTo(p.x - Math.cos(a) * p.r * 2, p.y - Math.sin(a) * p.r * 2);
-            cursorCtx.lineTo(p.x + Math.cos(a) * p.r * 2, p.y + Math.sin(a) * p.r * 2);
-          }
-          cursorCtx.stroke();
-          cursorCtx.globalAlpha = 1;
-          p.r *= 1.05;
-          continue;
-        }
-        if (p.sparkRay) {
-          cursorCtx.strokeStyle = p.color;
-          cursorCtx.globalAlpha = p.life * 0.58;
-          cursorCtx.lineWidth = 1;
-          cursorCtx.beginPath();
-          cursorCtx.moveTo(p.x, p.y);
-          cursorCtx.lineTo(p.x - p.vx * 3, p.y - p.vy * 3);
-          cursorCtx.stroke();
-          cursorCtx.globalAlpha = 1;
-          continue;
-        }
-        if (p.burstGlow) {
-          const g = cursorCtx.createRadialGradient(p.x, p.y, 0, p.x, p.y, p.r);
-          g.addColorStop(0, `${p.color}ee`); g.addColorStop(0.4, `${p.color}66`); g.addColorStop(1, `${p.color}00`);
-          cursorCtx.fillStyle = g;
-          cursorCtx.globalAlpha = p.life * 0.42;
-          cursorCtx.beginPath(); cursorCtx.arc(p.x, p.y, p.r, 0, Math.PI * 2); cursorCtx.fill();
-          cursorCtx.globalAlpha = 1;
-          continue;
-        }
-        // moving spark: tiny cross
-        cursorCtx.strokeStyle = p.color;
-        cursorCtx.globalAlpha = p.life * 0.62;
-        cursorCtx.lineWidth = 1.1;
-        cursorCtx.beginPath();
-        cursorCtx.moveTo(p.x - p.r * 1.8, p.y); cursorCtx.lineTo(p.x + p.r * 1.8, p.y);
-        cursorCtx.moveTo(p.x, p.y - p.r * 1.8); cursorCtx.lineTo(p.x, p.y + p.r * 1.8);
         cursorCtx.stroke();
+      } else if (p.ripple) {
+        var rr = p.r / p.life;
+        cursorCtx.strokeStyle = p.color;
+        cursorCtx.globalAlpha = alpha * 0.5;
+        cursorCtx.lineWidth = 2.5;
         cursorCtx.beginPath();
-        cursorCtx.arc(p.x, p.y, Math.max(0.6, p.r * 0.5), 0, Math.PI * 2);
-        cursorCtx.fillStyle = p.color;
-        cursorCtx.globalAlpha = p.life * 0.44;
+        cursorCtx.arc(p.x, p.y, rr, 0, Math.PI * 2);
+        cursorCtx.stroke();
+      } else if (p.stroke) {
+        var ex = p.x + Math.cos(p.angle) * p.r * p.life;
+        var ey = p.y + Math.sin(p.angle) * p.r * p.life;
+        cursorCtx.strokeStyle = p.color;
+        cursorCtx.globalAlpha = alpha * 0.5;
+        cursorCtx.lineWidth = Math.max(1, p.life * 5);
+        cursorCtx.lineCap = "round";
+        cursorCtx.beginPath();
+        cursorCtx.moveTo(p.x, p.y);
+        cursorCtx.lineTo(ex, ey);
+        cursorCtx.stroke();
+      } else if (p.bloom) {
+        var br = p.r / p.life;
+        var grad = cursorCtx.createRadialGradient(p.x, p.y, br * 0.1, p.x, p.y, br);
+        grad.addColorStop(0, p.color);
+        grad.addColorStop(0.6, p.color);
+        grad.addColorStop(1, "transparent");
+        cursorCtx.fillStyle = grad;
+        cursorCtx.globalAlpha = alpha * 0.4;
+        cursorCtx.beginPath();
+        cursorCtx.arc(p.x, p.y, br, 0, Math.PI * 2);
         cursorCtx.fill();
-        cursorCtx.globalAlpha = 1;
-        continue;
-      }
-
-      // ========== 彗尾：粗头 + 光晕 + 大粒圆 ==========
-      if (p.mode === "comet") {
-        if (p.ring) {
-          cursorCtx.strokeStyle = p.color;
-          cursorCtx.globalAlpha = p.life * 0.18;
-          cursorCtx.lineWidth = 2;
-          cursorCtx.beginPath(); cursorCtx.arc(p.x, p.y, p.r, 0, Math.PI * 2); cursorCtx.stroke();
-          continue;
-        }
-        if (p.burstGlow) {
-          const g = cursorCtx.createRadialGradient(p.x, p.y, 0, p.x, p.y, p.r);
-          g.addColorStop(0, `${p.color}ee`); g.addColorStop(0.38, `${p.color}66`); g.addColorStop(1, `${p.color}00`);
-          cursorCtx.fillStyle = g;
-          cursorCtx.globalAlpha = p.life * 0.44;
-          cursorCtx.beginPath(); cursorCtx.arc(p.x, p.y, p.r, 0, Math.PI * 2); cursorCtx.fill();
-          cursorCtx.globalAlpha = 1;
-          continue;
-        }
-        const cg = cursorCtx.createRadialGradient(p.x, p.y, 0, p.x, p.y, Math.max(1, p.r));
-        cg.addColorStop(0, `${p.color}${p.head ? "ff" : "cc"}`);
-        cg.addColorStop(0.3, `${p.color}aa`);
-        cg.addColorStop(1, `${p.color}00`);
-        cursorCtx.fillStyle = cg;
-        cursorCtx.globalAlpha = Math.min(0.42, p.life * 0.35);
-        cursorCtx.beginPath(); cursorCtx.arc(p.x, p.y, Math.max(1, p.r), 0, Math.PI * 2); cursorCtx.fill();
-        cursorCtx.globalAlpha = 1;
-        continue;
+      } else {
+        cursorCtx.fillStyle = p.color;
+        cursorCtx.globalAlpha = alpha;
+        cursorCtx.beginPath();
+        cursorCtx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+        cursorCtx.fill();
       }
     }
-    cursorCtx.globalCompositeOperation = "source-over";
-    if (trailNodes.length > 36) trailNodes.splice(0, trailNodes.length - 36);
-    const cap = mode === "classic" ? 420 : 200;
-    if (cursorParticles.length > cap) cursorParticles.splice(0, cursorParticles.length - cap);
+    cursorCtx.globalAlpha = 1;
+    if (cursorParticles.length > 500) cursorParticles.splice(0, cursorParticles.length - 500);
     cursorAnimId = requestAnimationFrame(animate);
-  }
-  animate();
+  })();
 }
-
 function stopCursorParticles() {
   if (cursorAnimId) {
     cancelAnimationFrame(cursorAnimId);
@@ -4690,3 +4609,130 @@ document.addEventListener("keydown", async (e) => {
   showTip()
   startRotation()
 })()
+
+// --- 聊天 ---
+var chatPanel = document.getElementById("chatPanel")
+var chatList = document.getElementById("chatList")
+var chatInput = document.getElementById("chatInput")
+var chatSendBtn = document.getElementById("chatSendBtn")
+var chatCloseBtn = document.getElementById("chatCloseBtn")
+var chatLastId = 0
+
+// 拖动
+// 恢复上次尺寸位置
+var chatSaved = localStorage.getItem("lan_chat_layout")
+if (chatSaved) {
+  try {
+    var s = JSON.parse(chatSaved)
+    chatPanel.style.right = "auto"; chatPanel.style.bottom = "auto"
+    chatPanel.style.left = s.l + "px"; chatPanel.style.top = s.t + "px"
+    chatPanel.style.width = s.w + "px"; chatPanel.style.height = s.h + "px"
+  } catch(e) {}
+}
+
+function chatSaveLayout() {
+  var r = chatPanel.getBoundingClientRect()
+  localStorage.setItem("lan_chat_layout", JSON.stringify({ l: r.left, t: r.top, w: r.width, h: r.height }))
+}
+
+var chatHead = chatPanel ? chatPanel.querySelector(".chat-head") : null
+var dragOffX = 0, dragOffY = 0, dragging = false, dragH = 0
+if (chatHead) {
+  chatHead.addEventListener("mousedown", function(e) {
+    dragging = true
+    var r = chatPanel.getBoundingClientRect()
+    dragOffX = e.clientX - r.left; dragOffY = e.clientY - r.top; dragH = r.height
+    chatPanel.style.transition = "none"; chatPanel.style.userSelect = "none"
+    chatPanel.style.right = "auto"; chatPanel.style.bottom = "auto"
+    chatPanel.style.height = dragH + "px"
+  })
+  document.addEventListener("mousemove", function(e) {
+    if (!dragging) return
+    chatPanel.style.left = (e.clientX - dragOffX) + "px"
+    chatPanel.style.top = (e.clientY - dragOffY) + "px"
+  })
+  document.addEventListener("mouseup", function() {
+    if (dragging) { dragging = false; chatPanel.style.transition = ""; chatPanel.style.userSelect = ""; chatSaveLayout() }
+  })
+  chatHead.style.cursor = "move"
+}
+
+var resizeHandle = null; var resizing = false, resizeH = 0, resizeW = 0, resizeY = 0, resizeX = 0, resizeL = 0, resizeT = 0, resizeDir = ""
+var dirs = [
+  {e:"nw",c:"nwse-resize",t:0,l:0},{e:"n",c:"ns-resize",t:0,l:14,r:14},
+  {e:"ne",c:"nesw-resize",t:0,r:0},{e:"w",c:"ew-resize",t:14,b:14,l:0},
+  {e:"e",c:"ew-resize",t:14,b:14,r:0},{e:"sw",c:"nesw-resize",b:0,l:0},
+  {e:"s",c:"ns-resize",b:0,l:14,r:14},{e:"se",c:"nwse-resize",b:0,r:0}
+]
+dirs.forEach(function(d) {
+  var h = document.createElement("div")
+  var css = "position:absolute;"
+  if (d.l != null) css += "left:" + d.l + "px;"; else if (d.r != null) css += "right:" + d.r + "px;"
+  if (d.t != null) css += "top:" + d.t + "px;"; else if (d.b != null) css += "bottom:" + d.b + "px;"
+  css += d.l == null && d.r == null ? "width:100%;height:14px;" : d.t == null && d.b == null ? "width:14px;height:100%;" : "width:14px;height:14px;"
+  css += "cursor:" + d.c + ";z-index:10"
+  h.style.cssText = css
+  h.addEventListener("mousedown", function(e) {
+    e.stopPropagation(); resizing = true; resizeDir = d.e
+    var r = chatPanel.getBoundingClientRect()
+    resizeY = e.clientY; resizeX = e.clientX; resizeH = r.height; resizeW = r.width; resizeL = r.left; resizeT = r.top
+    chatPanel.style.transition = "none"; chatPanel.style.userSelect = "none"
+    chatPanel.style.right = "auto"; chatPanel.style.bottom = "auto"
+    chatPanel.style.left = resizeL + "px"; chatPanel.style.top = resizeT + "px"
+    chatPanel.style.width = resizeW + "px"; chatPanel.style.height = resizeH + "px"
+  })
+  chatPanel.appendChild(h)
+})
+document.addEventListener("mousemove", function(e) {
+  if (!resizing) return
+  var dy = e.clientY - resizeY, dx = e.clientX - resizeX
+  if (resizeDir.indexOf("s") >= 0) chatPanel.style.height = Math.max(200, resizeH + dy) + "px"
+  if (resizeDir.indexOf("n") >= 0) { var nh = Math.max(200, resizeH - dy); chatPanel.style.top = (resizeT + resizeH - nh) + "px"; chatPanel.style.height = nh + "px" }
+  if (resizeDir.indexOf("e") >= 0) chatPanel.style.width = Math.max(300, resizeW + dx) + "px"
+  if (resizeDir.indexOf("w") >= 0) { var nw = Math.max(300, resizeW - dx); chatPanel.style.left = (resizeL + resizeW - nw) + "px"; chatPanel.style.width = nw + "px" }
+})
+document.addEventListener("mouseup", function() {
+  if (resizing) { resizing = false; chatPanel.style.transition = ""; chatPanel.style.userSelect = ""; chatSaveLayout() }
+})
+
+function chatRender(msgs) {
+  if (!msgs || !msgs.length) return
+  msgs.forEach(function(m) {
+    var div = document.createElement("div")
+    div.className = "chat-msg"
+    div.innerHTML = '<span class="chat-user">' + escapeHtml(m.user) + '</span><span class="chat-time">' + escapeHtml(m.time) + '</span><span class="chat-text">' + escapeHtml(m.text) + '</span>'
+    chatList.appendChild(div)
+  })
+  chatList.scrollTop = chatList.scrollHeight
+}
+
+async function chatFetch() {
+  try {
+    var r = await fetch("/api/chat/messages?since=" + chatLastId)
+    var d = await r.json()
+    if (d && d.length) { chatRender(d); chatLastId = d[d.length - 1].id }
+  } catch(e) {}
+}
+setInterval(chatFetch, 1000)
+chatFetch()
+
+async function chatSend() {
+  var text = chatInput.value.trim()
+  if (!text) return
+  chatInput.value = ""
+  try {
+    await fetch("/api/chat/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Device-Name": encodeURIComponent(state.nickname || "匿名") },
+      body: JSON.stringify({ text: text })
+    })
+    chatFetch()
+  } catch(e) {}
+}
+if (chatSendBtn) chatSendBtn.addEventListener("click", chatSend)
+if (chatInput) chatInput.addEventListener("keydown", function(e) { if (e.key === "Enter") { e.preventDefault(); chatSend() } })
+if (chatCloseBtn) chatCloseBtn.addEventListener("click", function() { chatPanel.classList.add("is-hidden") })
+document.addEventListener("keydown", function(e) {
+  if (e.ctrlKey && !e.shiftKey && e.key === "ArrowUp") { e.preventDefault(); chatPanel.classList.toggle("is-hidden") }
+  if (e.key === "Escape") chatPanel.classList.add("is-hidden")
+})

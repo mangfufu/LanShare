@@ -1,0 +1,232 @@
+/* ============================================================
+   LanShare 工具页皮肤（音频处理 / 视频截帧 / 图片模糊）
+   在工具自身的 styles.css 之后加载，高优先级覆盖。
+   - body[data-ui-style="classic"]   经典（不加载任何覆盖）
+   - body[data-ui-style="editorial"] 墨韵：暖纸 + 墨色，编辑文档风
+   data-ui-style 与颜色变量由父页面同步（MutationObserver）。
+   ============================================================ */
+
+body[data-ui-style="editorial"] {
+  --f-body: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --f-display: "Noto Serif SC", "Songti SC", "SimSun", serif;
+  --f-mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-family: var(--f-body);
+  background: var(--bg);
+}
+
+/* ── 面板：发丝线 + 纸面 ───────────────────── */
+body[data-ui-style="editorial"] .panel {
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+body[data-ui-style="editorial"] .panel-head {
+  border-bottom: 1px solid var(--line-soft);
+  padding-bottom: 10px;
+}
+body[data-ui-style="editorial"] .panel-head h2 {
+  font-family: var(--f-display);
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+body[data-ui-style="editorial"] .panel-head h2::before {
+  content: "§ ";
+  color: var(--muted);
+  font-weight: 400;
+}
+
+/* ── 按钮：直角发丝线 ─────────────────────── */
+body[data-ui-style="editorial"] .button,
+body[data-ui-style="editorial"] .mini-tool-button {
+  border: 1px solid var(--text);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  font-weight: 500;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+body[data-ui-style="editorial"] .button:hover,
+body[data-ui-style="editorial"] .mini-tool-button:hover {
+  transform: none;
+  background: var(--text);
+  color: var(--bg);
+}
+body[data-ui-style="editorial"] .button.primary { background: var(--text); color: var(--bg); }
+body[data-ui-style="editorial"] .button.primary:hover { background: var(--accent); border-color: var(--accent); color: #fff; }
+body[data-ui-style="editorial"] .button.ghost {
+  border-color: var(--line);
+  background: transparent;
+  color: var(--ink-soft);
+}
+body[data-ui-style="editorial"] .button.ghost:hover { border-color: var(--text); color: var(--text); background: transparent; }
+body[data-ui-style="editorial"] .button.ghost.is-active,
+body[data-ui-style="editorial"] .button.ghost.active-tool {
+  background: transparent;
+  color: var(--text);
+  font-weight: 700;
+  border-color: var(--text);
+  box-shadow: inset 0 -2px 0 var(--text);
+}
+body[data-ui-style="editorial"] .mini-tool-button {
+  font-size: 12px;
+  padding: 5px 10px;
+  border-color: var(--line);
+  color: var(--ink-soft);
+}
+body[data-ui-style="editorial"] .mini-tool-button:hover { border-color: var(--text); color: var(--text); background: transparent; }
+body[data-ui-style="editorial"] .button:disabled,
+body[data-ui-style="editorial"] .mini-tool-button:disabled { box-shadow: none; }
+
+/* ── 上传区 / 拖拽区 ─────────────────────── */
+body[data-ui-style="editorial"] .upload-box,
+body[data-ui-style="editorial"] .drop-zone {
+  border: 1px dashed color-mix(in srgb, var(--muted) 55%, transparent);
+  border-radius: 2px;
+  background: transparent;
+  transition: border-color 140ms ease, background 140ms ease;
+}
+body[data-ui-style="editorial"] .upload-box:hover,
+body[data-ui-style="editorial"] .upload-box.is-dragging,
+body[data-ui-style="editorial"] .drop-zone:hover,
+body[data-ui-style="editorial"] .drop-zone.active {
+  border-color: var(--text);
+  background: var(--panel-hover);
+}
+body[data-ui-style="editorial"] .upload-box span,
+body[data-ui-style="editorial"] .drop-title {
+  font-family: var(--f-display);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+/* ── 表单控件 ────────────────────────────── */
+body[data-ui-style="editorial"] input[type="text"],
+body[data-ui-style="editorial"] input[type="number"],
+body[data-ui-style="editorial"] select {
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  background: var(--panel);
+  color: var(--text);
+  transition: border-color 140ms ease;
+}
+body[data-ui-style="editorial"] input[type="text"]:focus,
+body[data-ui-style="editorial"] input[type="number"]:focus,
+body[data-ui-style="editorial"] select:focus {
+  border-color: var(--text);
+  box-shadow: none;
+  outline: none;
+}
+body[data-ui-style="editorial"] input[type="range"] { accent-color: var(--accent); }
+body[data-ui-style="editorial"] .label { letter-spacing: 0.08em; }
+
+/* ── 列表项 ──────────────────────────────── */
+body[data-ui-style="editorial"] .file-item,
+body[data-ui-style="editorial"] .merge-item,
+body[data-ui-style="editorial"] .video-item,
+body[data-ui-style="editorial"] .marker-item {
+  border: 1px solid var(--line-soft);
+  border-radius: 2px;
+  background: transparent;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+body[data-ui-style="editorial"] .file-item:hover,
+body[data-ui-style="editorial"] .merge-item:hover,
+body[data-ui-style="editorial"] .video-item:hover,
+body[data-ui-style="editorial"] .marker-item:hover {
+  background: var(--panel-hover);
+  border-color: var(--line);
+}
+body[data-ui-style="editorial"] .video-item.selected,
+body[data-ui-style="editorial"] .video-item.active {
+  border-color: var(--text);
+  box-shadow: inset 2px 0 0 var(--text);
+}
+body[data-ui-style="editorial"] .file-list,
+body[data-ui-style="editorial"] .merge-list,
+body[data-ui-style="editorial"] .video-list,
+body[data-ui-style="editorial"] .marker-list { scrollbar-width: thin; }
+body[data-ui-style="editorial"] .empty-state { color: var(--muted); }
+
+/* ── 音频编辑区 ──────────────────────────── */
+body[data-ui-style="editorial"] .dual-slider-track {
+  border-radius: 0;
+  background: color-mix(in srgb, var(--muted) 16%, transparent);
+}
+body[data-ui-style="editorial"] .dual-slider-fill { background: color-mix(in srgb, var(--accent) 55%, transparent); }
+body[data-ui-style="editorial"] .dual-slider-progress { background: color-mix(in srgb, var(--accent) 26%, transparent); }
+body[data-ui-style="editorial"] .play-head { background: var(--text); }
+body[data-ui-style="editorial"] .dual-slider-range::-webkit-slider-thumb {
+  border: 1px solid var(--text);
+  border-radius: 0;
+  background: var(--panel);
+}
+body[data-ui-style="editorial"] .dual-slider-range::-moz-range-thumb {
+  border: 1px solid var(--text);
+  border-radius: 0;
+  background: var(--panel);
+}
+body[data-ui-style="editorial"] .play-btn {
+  border: 1px solid var(--text);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  transition: background 120ms ease, color 120ms ease;
+}
+body[data-ui-style="editorial"] .play-btn:hover { background: var(--text); color: var(--bg); }
+body[data-ui-style="editorial"] .time-display,
+body[data-ui-style="editorial"] .time-row,
+body[data-ui-style="editorial"] #speedValue {
+  font-family: var(--f-mono);
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+body[data-ui-style="editorial"] .video-preview { border-radius: 2px; border: 1px solid var(--line); }
+
+/* ── 视频截帧区 ──────────────────────────── */
+body[data-ui-style="editorial"] .video-wrap,
+body[data-ui-style="editorial"] .canvas-wrap {
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  background: #000;
+}
+body[data-ui-style="editorial"] .meta-text { font-family: var(--f-mono); font-size: 11px; letter-spacing: 0.04em; }
+body[data-ui-style="editorial"] .marker-jump { font-family: var(--f-mono); }
+
+/* ── 通知与状态 ──────────────────────────── */
+body[data-ui-style="editorial"] .notice {
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  background: var(--panel);
+  box-shadow: none;
+}
+body[data-ui-style="editorial"] .status {
+  font-family: var(--f-mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+/* ── 复选框（视频/标记列表内） ─────────────── */
+body[data-ui-style="editorial"] .video-item-check,
+body[data-ui-style="editorial"] .marker-check { accent-color: var(--text); }
+
+/* ── 滚动条 ──────────────────────────────── */
+body[data-ui-style="editorial"] .app-shell::-webkit-scrollbar,
+body[data-ui-style="editorial"] .workspace-left::-webkit-scrollbar,
+body[data-ui-style="editorial"] .file-list::-webkit-scrollbar,
+body[data-ui-style="editorial"] .merge-list::-webkit-scrollbar,
+body[data-ui-style="editorial"] .video-list::-webkit-scrollbar,
+body[data-ui-style="editorial"] .marker-list::-webkit-scrollbar { width: 5px; }
+body[data-ui-style="editorial"] .app-shell::-webkit-scrollbar-thumb,
+body[data-ui-style="editorial"] .workspace-left::-webkit-scrollbar-thumb,
+body[data-ui-style="editorial"] .file-list::-webkit-scrollbar-thumb,
+body[data-ui-style="editorial"] .merge-list::-webkit-scrollbar-thumb,
+body[data-ui-style="editorial"] .video-list::-webkit-scrollbar-thumb,
+body[data-ui-style="editorial"] .marker-list::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border-radius: 0;
+}

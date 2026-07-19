@@ -1813,7 +1813,46 @@ async function createBatchDownload(paths) {
   return { ...registerBatchDownload(entries, skipped), skipped };
 }
 
+// --- 摸鱼板 ---
+const moyuMessages = [];
+const moyuClients = [];
+let moyuNextId = 1;
+const MOYU_MAX = 1000;
+
+function moyuBroadcast(msg) {
+  moyuClients.forEach(function(c) {
+    try { c.write("data: " + JSON.stringify(msg) + "\n\n") } catch(e) {}
+  })
+}
+
 async function handleApi(req, res, url) {
+  if (req.method === "POST" && url.pathname === "/api/chat/send") {
+    const body = parseJson(await readRequestBody(req));
+    const text = String(body.text || "").trim().slice(0, 500);
+    if (!text) return sendJson(res, 400, { error: "不能为空" });
+    const user = decodeURIComponent((req.headers["x-device-name"] || "").toString()).slice(0, 20) || "匿名";
+    const msg = { id: moyuNextId++, user, text, time: new Date().toLocaleTimeString("zh-CN", { hour12: false }) };
+    moyuMessages.push(msg);
+    if (moyuMessages.length > MOYU_MAX) moyuMessages.splice(0, moyuMessages.length - MOYU_MAX);
+    moyuBroadcast(msg);
+    return sendJson(res, 200, { id: msg.id, time: msg.time });
+  }
+  if (req.method === "GET" && url.pathname === "/api/chat/stream") {
+    res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "Connection": "keep-alive" });
+    res.write("data: " + JSON.stringify([]) + "\n\n");
+    moyuClients.push(res);
+    req.on("close", function() {
+      var idx = moyuClients.indexOf(res);
+      if (idx >= 0) moyuClients.splice(idx, 1);
+    });
+    return;
+  }
+  if (req.method === "GET" && url.pathname === "/api/chat/messages") {
+    const since = parseInt(url.searchParams.get("since") || "0");
+    const result = moyuMessages.filter(m => m.id > since);
+    return sendJson(res, 200, result);
+  }
+
   if (req.method === "GET" && url.pathname === "/api/list") {
     try {
       const dir = safeRelative(url.searchParams.get("dir"));

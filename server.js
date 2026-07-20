@@ -1829,13 +1829,27 @@ async function handleApi(req, res, url) {
   if (req.method === "POST" && url.pathname === "/api/chat/send") {
     const body = parseJson(await readRequestBody(req));
     const text = String(body.text || "").trim().slice(0, 500);
-    if (!text) return sendJson(res, 400, { error: "不能为空" });
+    if (!text) { sendJson(res, 400, { error: "不能为空" }); return true; }
     const user = decodeURIComponent((req.headers["x-device-name"] || "").toString()).slice(0, 20) || "匿名";
     const msg = { id: moyuNextId++, user, text, time: new Date().toLocaleTimeString("zh-CN", { hour12: false }) };
     moyuMessages.push(msg);
     if (moyuMessages.length > MOYU_MAX) moyuMessages.splice(0, moyuMessages.length - MOYU_MAX);
     moyuBroadcast(msg);
-    return sendJson(res, 200, { id: msg.id, time: msg.time });
+    sendJson(res, 200, { id: msg.id, time: msg.time });
+    return true;
+  }
+  if (req.method === "POST" && url.pathname === "/api/chat/clear") {
+    const ip = getClientIp(req);
+    if (ip !== "127.0.0.1" && ip !== "::1" && ip !== "::ffff:127.0.0.1") {
+      sendJson(res, 403, { error: "仅本地可清除" }); return true;
+    }
+    moyuMessages.length = 0;
+    var nextId = moyuNextId;
+    // 存入清除标记，轮询客户端会自动清空
+    var clearMsg = { id: moyuNextId++, user: "", text: "", time: "", clear: true };
+    moyuMessages.push(clearMsg);
+    sendJson(res, 200, { ok: true, nextId: nextId });
+    return true;
   }
   if (req.method === "GET" && url.pathname === "/api/chat/stream") {
     res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "Connection": "keep-alive" });
@@ -1845,12 +1859,13 @@ async function handleApi(req, res, url) {
       var idx = moyuClients.indexOf(res);
       if (idx >= 0) moyuClients.splice(idx, 1);
     });
-    return;
+    return true;
   }
   if (req.method === "GET" && url.pathname === "/api/chat/messages") {
     const since = parseInt(url.searchParams.get("since") || "0");
     const result = moyuMessages.filter(m => m.id > since);
-    return sendJson(res, 200, result);
+    sendJson(res, 200, result);
+    return true;
   }
 
   if (req.method === "GET" && url.pathname === "/api/list") {
@@ -2508,3 +2523,4 @@ start().catch((error) => {
   console.error(error);
   process.exit(1);
 });
+

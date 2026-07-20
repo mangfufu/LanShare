@@ -821,6 +821,34 @@ body[data-ui-style="editorial"] .chat-msg .chat-text {
   color: var(--text);
   word-break: break-all;
 }
+body[data-ui-style="editorial"] .chat-clear-tip {
+  text-align: center;
+  padding: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+body[data-ui-style="editorial"] .chat-msg.chat-sys {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  margin: 8px 0;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--muted) 8%, transparent);
+  font-size: 12px;
+  color: var(--muted);
+  justify-content: center;
+}
+body[data-ui-style="editorial"] .chat-msg.chat-sys .chat-sys-dismiss {
+  cursor: pointer;
+  opacity: 0.4;
+  font-size: 11px;
+  line-height: 1;
+  user-select: none;
+}
+body[data-ui-style="editorial"] .chat-msg.chat-sys .chat-sys-dismiss:hover {
+  opacity: 0.8;
+}
 body[data-ui-style="editorial"] .chat-input-row {
   display: flex;
   border-top: 1px solid var(--text);

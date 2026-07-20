@@ -15,7 +15,7 @@
     <div class="version-badge">
       <span id="nicknameDisplay" class="nickname" title="点击修改昵称">设置昵称</span>
       <span class="sep">·</span>
-      v3.0.0
+      v3.1.0
     </div>
 
     <div id="floatControl" class="float-control is-hidden">
@@ -206,7 +206,9 @@
     <aside id="chatPanel" class="chat-panel is-hidden">
       <div class="chat-head">
         <span class="chat-title">聊天</span>
-        <button id="chatCloseBtn" class="button ghost" type="button">✕</button>
+        <div style="flex:1"></div>
+        <button id="chatClearBtn" class="button ghost" type="button" style="font-size:11px;padding:4px 8px;opacity:0.4" title="清除聊天记录">清</button>
+        <button id="chatCloseBtn" class="button ghost" type="button" style="font-size:11px;padding:4px 8px;opacity:0.5">✕</button>
       </div>
       <div id="chatList" class="chat-list"></div>
       <div class="chat-input-row">

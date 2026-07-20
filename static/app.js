@@ -1289,10 +1289,15 @@ function clampColumnWidth(key, width) {
   // 计算可用最大宽度：容器可视宽度 - 其他可调列的最小宽度 - 固定列宽度
   const tableWrap = fileTable ? fileTable.closest(".table-wrap") : null
   const containerWidth = tableWrap ? tableWrap.clientWidth : window.innerWidth
-  const otherMinWidth = Object.entries(RESIZABLE_TABLE_COLUMNS).reduce((sum, [k, c]) => {
-    return sum + (k === key ? 0 : c.min)
-  }, FIXED_TABLE_COLUMN_WIDTH)
-  const dynamicMax = Math.max(config.min, containerWidth - otherMinWidth - 40)
+  // 其他列的实际宽度（防止已扩大的列占用操作栏空间）
+  var otherWidth = FIXED_TABLE_COLUMN_WIDTH
+  var widths = getSavedColumnWidths()
+  for (var k in RESIZABLE_TABLE_COLUMNS) {
+    if (k === key) continue
+    var w = Number(widths[k]) || RESIZABLE_TABLE_COLUMNS[k].defaultWidth
+    otherWidth += Math.max(RESIZABLE_TABLE_COLUMNS[k].min, Math.min(RESIZABLE_TABLE_COLUMNS[k].max, w))
+  }
+  const dynamicMax = Math.max(config.min, containerWidth - otherWidth - 40)
   return Math.max(config.min, Math.min(dynamicMax, Math.round(width)));
 }
 
@@ -4698,9 +4703,29 @@ document.addEventListener("mouseup", function() {
 function chatRender(msgs) {
   if (!msgs || !msgs.length) return
   msgs.forEach(function(m) {
+    // 收到清除标记时清理本地列表
+    if (m.clear) {
+      chatList.querySelectorAll(".chat-msg").forEach(function(el) { el.remove() })
+      chatLastId = 0
+      // 移除旧通知，显示新通知
+      var oldTip = chatList.querySelector(".chat-clear-tip")
+      if (oldTip) oldTip.remove()
+      var tip2 = document.createElement("div")
+      tip2.className = "chat-clear-tip"
+      tip2.textContent = "聊天记录已清除"
+      tip2.addEventListener("click", function() { tip2.remove() })
+      chatList.appendChild(tip2)
+      return
+    }
     var div = document.createElement("div")
     div.className = "chat-msg"
-    div.innerHTML = '<span class="chat-user">' + escapeHtml(m.user) + '</span><span class="chat-time">' + escapeHtml(m.time) + '</span><span class="chat-text">' + escapeHtml(m.text) + '</span>'
+    if (m.system) {
+      div.className = "chat-msg chat-sys"
+      div.innerHTML = '<span class="chat-text">' + escapeHtml(m.text) + '</span><span class="chat-sys-dismiss">✕</span>'
+      div.querySelector(".chat-sys-dismiss").addEventListener("click", function() { div.remove() })
+    } else {
+      div.innerHTML = '<span class="chat-user">' + escapeHtml(m.user) + '</span><span class="chat-time">' + escapeHtml(m.time) + '</span><span class="chat-text">' + escapeHtml(m.text) + '</span>'
+    }
     chatList.appendChild(div)
   })
   chatList.scrollTop = chatList.scrollHeight
@@ -4732,6 +4757,24 @@ async function chatSend() {
 if (chatSendBtn) chatSendBtn.addEventListener("click", chatSend)
 if (chatInput) chatInput.addEventListener("keydown", function(e) { if (e.key === "Enter") { e.preventDefault(); chatSend() } })
 if (chatCloseBtn) chatCloseBtn.addEventListener("click", function() { chatPanel.classList.add("is-hidden") })
+var chatClearBtn = document.getElementById("chatClearBtn")
+if (chatClearBtn) {
+  chatClearBtn.addEventListener("click", async function() {
+    var r = await fetch("/api/chat/clear", { method: "POST" })
+    var d = await r.json()
+    if (d.ok) {
+      chatList.querySelectorAll(".chat-msg").forEach(function(el) { el.remove() })
+      chatLastId = d.nextId - 1
+      var tip = document.createElement("div")
+      tip.className = "chat-clear-tip"
+      tip.textContent = "聊天记录已清除"
+      tip.addEventListener("click", function() { tip.remove() })
+      chatList.appendChild(tip)
+    }
+  })
+  // 仅本地显示清除按钮
+  if (location.hostname !== "127.0.0.1" && location.hostname !== "localhost") chatClearBtn.style.display = "none"
+}
 var chatTripleCount = 0, chatTripleTimer = null
 document.addEventListener("keydown", function(e) {
   if (e.ctrlKey && !e.shiftKey && e.key === "ArrowUp") {
@@ -4741,7 +4784,9 @@ document.addEventListener("keydown", function(e) {
       if (chatTripleCount >= 3) {
         chatTripleCount = 0
         chatPanel.classList.remove("is-hidden")
+        chatList.scrollTop = chatList.scrollHeight
         if (chatInput) chatInput.focus()
+        chatFetch()
       }
       clearTimeout(chatTripleTimer)
       chatTripleTimer = setTimeout(function() { chatTripleCount = 0 }, 2000)

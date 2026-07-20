@@ -4707,13 +4707,21 @@ function chatRender(msgs) {
     if (m.clear) {
       chatList.querySelectorAll(".chat-msg").forEach(function(el) { el.remove() })
       chatLastId = 0
+      // 已叉掉的不再显示
+      var dismissed = JSON.parse(localStorage.getItem("lan_chat_clear_dismiss") || "[]")
+      if (dismissed.indexOf(m.id) !== -1) return
       // 移除旧通知，显示新通知
       var oldTip = chatList.querySelector(".chat-clear-tip")
       if (oldTip) oldTip.remove()
       var tip2 = document.createElement("div")
       tip2.className = "chat-clear-tip"
       tip2.textContent = "聊天记录已清除"
-      tip2.addEventListener("click", function() { tip2.remove() })
+      tip2.addEventListener("click", function() {
+        tip2.remove()
+        var ds = JSON.parse(localStorage.getItem("lan_chat_clear_dismiss") || "[]")
+        ds.push(m.id)
+        localStorage.setItem("lan_chat_clear_dismiss", JSON.stringify(ds))
+      })
       chatList.appendChild(tip2)
       return
     }

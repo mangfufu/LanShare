@@ -4732,7 +4732,22 @@ async function chatSend() {
 if (chatSendBtn) chatSendBtn.addEventListener("click", chatSend)
 if (chatInput) chatInput.addEventListener("keydown", function(e) { if (e.key === "Enter") { e.preventDefault(); chatSend() } })
 if (chatCloseBtn) chatCloseBtn.addEventListener("click", function() { chatPanel.classList.add("is-hidden") })
+var chatTripleCount = 0, chatTripleTimer = null
 document.addEventListener("keydown", function(e) {
-  if (e.ctrlKey && !e.shiftKey && e.key === "ArrowUp") { e.preventDefault(); chatPanel.classList.toggle("is-hidden") }
+  if (e.ctrlKey && !e.shiftKey && e.key === "ArrowUp") {
+    e.preventDefault()
+    if (chatPanel.classList.contains("is-hidden")) {
+      chatTripleCount++
+      if (chatTripleCount >= 3) {
+        chatTripleCount = 0
+        chatPanel.classList.remove("is-hidden")
+        if (chatInput) chatInput.focus()
+      }
+      clearTimeout(chatTripleTimer)
+      chatTripleTimer = setTimeout(function() { chatTripleCount = 0 }, 2000)
+    } else {
+      chatPanel.classList.add("is-hidden")
+    }
+  }
   if (e.key === "Escape") chatPanel.classList.add("is-hidden")
 })

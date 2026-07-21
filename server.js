@@ -1137,9 +1137,11 @@ function generateVideoThumb(job) {
   });
 }
 
-async function handleThumbnail(res, url) {
+async function handleThumbnail(res, url, req) {
   const q = safeRelative(url.searchParams.get("path") || "");
-  const fullPath = resolveInsideRoot(q);
+  const root = (req && req._nsfwMode) ? NSFW_DIR : ROOT_DIR;
+  const fullPath = path.resolve(root, q);
+  if (fullPath !== root && !fullPath.startsWith(root + path.sep)) throw new Error("路径越界");
   const stat = await fsp.stat(fullPath);
   if (!stat.isFile()) {
     throw new Error("仅支持文件缩略图");
@@ -1392,7 +1394,8 @@ async function listDirectory(relativeDir, offset, limit, rootOverride) {
 
 const MAX_SEARCH_RESULTS = 200;
 
-async function searchShared(query) {
+async function searchShared(query, rootOverride) {
+  const root = rootOverride || ROOT_DIR;
   const keyword = query.trim().toLowerCase();
   if (!keyword) return { items: [], stoppedEarly: false, total: 0 };
 
@@ -1405,7 +1408,8 @@ async function searchShared(query) {
       return;
     }
 
-    const dirPath = resolveInsideRoot(dirRelative);
+    const dirPath = path.resolve(root, dirRelative);
+    if (dirPath !== root && !dirPath.startsWith(root + path.sep)) return;
     let items;
     try {
       items = await fsp.readdir(dirPath, { withFileTypes: true });
@@ -1424,7 +1428,8 @@ async function searchShared(query) {
 
       if (item.name.toLowerCase().includes(keyword)) {
         try {
-          const childPath = resolveInsideRoot(childRelative);
+          const childPath = path.resolve(root, childRelative);
+          if (childPath !== root && !childPath.startsWith(root + path.sep)) continue;
           const stat = await fsp.stat(childPath);
           results.push({
             name: item.name,
@@ -1933,7 +1938,7 @@ async function handleApi(req, res, url) {
   if (req.method === "GET" && url.pathname === "/api/search") {
     try {
       const query = String(url.searchParams.get("q") || "");
-      const result = await searchShared(query);
+      const result = await searchShared(query, req._nsfwMode ? NSFW_DIR : null);
       sendJson(res, 200, result);
     } catch (error) {
       sendJson(res, 400, { error: error.message });
@@ -2548,7 +2553,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && url.pathname === "/download") return void await streamFile(req, res, url, true);
     if (req.method === "GET" && url.pathname === "/api/thumb") {
       try {
-        await handleThumbnail(res, url);
+        await handleThumbnail(res, url, req);
       } catch (e) {
         sendText(res, 400, e.message || "thumb error");
       }

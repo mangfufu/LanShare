@@ -940,7 +940,8 @@ function buildThumbnail(item, searchDir) {
     }
   } else if (item.previewType === "image") {
     const img = document.createElement("img");
-    img.dataset.src = `/api/thumb?path=${encodeURIComponent(item.path)}&w=200`;
+    var thumbBase = "/api/thumb?path=" + encodeURIComponent(item.path) + "&w=200" + (state.nsfwMode ? "&nsfw=1" : "")
+    img.dataset.src = thumbBase;
     img.alt = item.name;
     img.loading = "lazy";
     img.decoding = "async";
@@ -948,7 +949,8 @@ function buildThumbnail(item, searchDir) {
     observeLazyThumbnail(img);
   } else if (item.previewType === "video") {
     const img = document.createElement("img");
-    img.dataset.src = `/api/thumb?path=${encodeURIComponent(item.path)}&w=200`;
+    var thumbBase2 = "/api/thumb?path=" + encodeURIComponent(item.path) + "&w=200" + (state.nsfwMode ? "&nsfw=1" : "")
+    img.dataset.src = thumbBase2;
     img.dataset.thumbType = "video";
     img.alt = item.name;
     img.loading = "lazy";
@@ -1879,7 +1881,7 @@ document.addEventListener("contextmenu", function(e) {
     }
     menuItems.push({ label: "下载", action: function() {
       var a = document.createElement("a")
-      a.href = "/download?path=" + encodeURIComponent(item.path)
+      a.href = "/download?path=" + encodeURIComponent(item.path) + (state.nsfwMode ? "&nsfw=1" : "")
       a.click()
     }})
     menuItems.push({ sep: true })
@@ -2250,7 +2252,7 @@ function createActions(item) {
     const downloadLink = document.createElement("a");
     downloadLink.className = "link-button";
     downloadLink.textContent = "下载";
-    downloadLink.href = `/download?path=${encodeURIComponent(item.path)}`;
+    downloadLink.href = `/download?path=${encodeURIComponent(item.path)}${state.nsfwMode ? "&nsfw=1" : ""}`;
     actions.appendChild(downloadLink);
   }
 
@@ -2579,7 +2581,8 @@ async function pollFolderSizes() {
   for (const itemPath of paths) params.append("path", itemPath);
 
   try {
-    const res = await fetch(`/api/folder-sizes?${params.toString()}`, { cache: "no-store" });
+    var fsUrl = "/api/folder-sizes?" + params.toString() + (state.nsfwMode ? "&nsfw=1" : "")
+    const res = await fetch(fsUrl, { cache: "no-store" });
     const data = await res.json();
     if (!res.ok || requestDir !== state.currentDir) return;
     if (mergeFolderSizeResults(data.items)) {
@@ -3725,7 +3728,8 @@ async function performSearch(query) {
   state.searchTimeout = setTimeout(async () => {
     state.searchTimeout = null;
     try {
-      const res = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
+      var sUrl = "/api/search?q=" + encodeURIComponent(query) + (state.nsfwMode ? "&nsfw=1" : "")
+      const res = await fetch(sUrl);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "搜索失败");
       state.searchResults = data.items || [];

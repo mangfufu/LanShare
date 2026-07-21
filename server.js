@@ -32,6 +32,19 @@ const archiver = require("archiver");
 let sharp;
 try { sharp = require("sharp"); } catch { console.error("错误: sharp 未安装"); process.exit(1); }
 const TMP_DIR = path.join(__dirname, "thumb_cache");
+const NSFW_DIR = path.resolve(process.env.NSFW_DIR || path.join(__dirname, "shared_NSFW"));
+const NSFW_PASSWORD_FILE = path.join(__dirname, "nsfw_password.txt");
+let nsfwPassword = "";
+async function loadNsfwPassword() {
+  try { nsfwPassword = (await fsp.readFile(NSFW_PASSWORD_FILE, "utf8")).trim(); } catch { nsfwPassword = ""; }
+}
+// 每个请求设置 NSFW 模式标记
+function setNsfwMode(req) {
+  try {
+    req._nsfwMode = (new URL(req.url, "http://localhost")).searchParams.get("nsfw") === "1";
+  } catch(e) { req._nsfwMode = false; }
+}
+function _root(req) { return (req && req._nsfwMode) ? NSFW_DIR : ROOT_DIR; }
 
 const HOST = process.env.HOST || "0.0.0.0";
 const PORT = Number(process.env.PORT || 8080);
@@ -196,9 +209,14 @@ function safeRelative(input) {
   return normalized === "." ? "" : normalized;
 }
 
-function resolveInsideRoot(relativePath) {
-  const fullPath = path.resolve(ROOT_DIR, relativePath);
-  if (fullPath !== ROOT_DIR && !fullPath.startsWith(`${ROOT_DIR}${path.sep}`)) {
+function nsfwRoot(req) {
+  var useNSFW = req && req._nsfwMode;
+  return useNSFW ? NSFW_DIR : ROOT_DIR;
+}
+function resolveInsideRoot(relativePath, req) {
+  const root = (req && req._nsfwMode) ? NSFW_DIR : ROOT_DIR;
+  const fullPath = path.resolve(root, relativePath);
+  if (fullPath !== root && !fullPath.startsWith(`${root}${path.sep}`)) {
     throw new Error("路径越界");
   }
   return fullPath;
@@ -460,9 +478,11 @@ async function readFolderSizeStatus(relativePath) {
   return { path: key, ...getFolderSizeInfo(key, stat) };
 }
 
-async function buildListItem(item, normalizedDir) {
+async function buildListItem(item, normalizedDir, rootOverride) {
+  const root = rootOverride || ROOT_DIR;
   const childRelative = safeRelative(path.posix.join(normalizedDir, item.name));
-  const childPath = resolveInsideRoot(childRelative);
+  const childPath = path.resolve(root, childRelative);
+  if (childPath !== root && !childPath.startsWith(root + path.sep)) throw new Error("路径越界");
   const stat = await fsp.stat(childPath);
   const previewType = item.isDirectory() ? "none" : getPreviewType(item.name);
   const result = {
@@ -612,13 +632,15 @@ async function collectUploadConflicts(dir, entries) {
   return [...conflictMap.values()];
 }
 
-async function ensureUploadParentDirectories(fileRelative, overwriteExisting) {
+async function ensureUploadParentDirectories(fileRelative, overwriteExisting, rootOverride) {
+  var root = rootOverride || ROOT_DIR;
   const segments = fileRelative.split("/").filter(Boolean);
   let currentRelative = "";
 
   for (const segment of segments.slice(0, -1)) {
     currentRelative = safeRelative(path.posix.join(currentRelative, segment));
-    const currentPath = resolveInsideRoot(currentRelative);
+    const currentPath = path.resolve(root, currentRelative);
+    if (currentPath !== root && !currentPath.startsWith(root + path.sep)) throw new Error("路径越界");
     const currentStat = await fsp.stat(toFsPath(currentPath)).catch(() => null);
 
     if (!currentStat) {
@@ -634,7 +656,7 @@ async function ensureUploadParentDirectories(fileRelative, overwriteExisting) {
     }
 
     await cleanupThumbCacheForPath(currentPath, currentStat);
-    await moveToRecycle(currentRelative);
+    await moveToRecycle(currentRelative, root);
     await ensureDir(currentPath);
   }
 }
@@ -1185,7 +1207,8 @@ async function writeBackupFile(batchId, relativePath, data) {
   await fsp.writeFile(backupPath, data);
 }
 
-async function handleStreamingUpload(req) {
+async function handleStreamingUpload(req, rootDir) {
+  var root = rootDir || ROOT_DIR;
   return new Promise((resolve, reject) => {
     const busboy = Busboy({
       headers: req.headers,
@@ -1249,7 +1272,8 @@ async function handleStreamingUpload(req) {
       let backupPath;
       try {
         fileRelative = getUploadTargetRelative(dir, relativeNameRaw);
-        filePath = resolveInsideRoot(fileRelative);
+        filePath = path.resolve(root, fileRelative);
+        if (filePath !== root && !filePath.startsWith(root + path.sep)) throw new Error("路径越界");
         backupPath = path.join(BACKUP_DIR, backupBatchId, fileRelative);
       } catch (error) {
         fileStream.resume();
@@ -1258,7 +1282,7 @@ async function handleStreamingUpload(req) {
       }
 
       const task = (async () => {
-        await ensureUploadParentDirectories(fileRelative, overwriteExisting);
+        await ensureUploadParentDirectories(fileRelative, overwriteExisting, root);
         const existingStat = await fsp.stat(toFsPath(filePath)).catch(() => null);
         if (existingStat) {
           const conflict = makeConflict(fileRelative, existingStat);
@@ -1266,7 +1290,7 @@ async function handleStreamingUpload(req) {
             throw createConflictError([conflict], "存在同名项目，请确认是否覆盖");
           }
           await cleanupThumbCacheForPath(filePath, existingStat);
-          await moveToRecycle(fileRelative);
+          await moveToRecycle(fileRelative, root);
         }
         await ensureDir(path.dirname(filePath));
         // 只写 shared 文件，不等待备份
@@ -1349,8 +1373,10 @@ async function handleStreamingUpload(req) {
   });
 }
 
-async function listDirectory(relativeDir, offset, limit) {
-  const dirPath = resolveInsideRoot(relativeDir);
+async function listDirectory(relativeDir, offset, limit, rootOverride) {
+  const root = rootOverride || ROOT_DIR;
+  const dirPath = path.resolve(root, relativeDir);
+  if (dirPath !== root && !dirPath.startsWith(root + path.sep)) throw new Error("路径越界");
   const items = await fsp.readdir(dirPath, { withFileTypes: true });
   const filtered = items.filter(i => !i.name.startsWith("."));
   const sorted = filtered.sort((a, b) => {
@@ -1360,7 +1386,7 @@ async function listDirectory(relativeDir, offset, limit) {
   const total = sorted.length;
   const page = offset !== undefined ? sorted.slice(offset, offset + (limit || 50)) : sorted;
   const normalizedDir = relativeDir.replaceAll("\\", "/");
-  var pageResults = await Promise.all(page.map((item) => buildListItem(item, normalizedDir)));
+  var pageResults = await Promise.all(page.map((item) => buildListItem(item, normalizedDir, root)));
   return { items: pageResults, total };
 }
 
@@ -1426,8 +1452,10 @@ async function searchShared(query) {
   return { items: results, stoppedEarly, total: results.length };
 }
 
-async function moveToRecycle(relativePath) {
-  const sourcePath = resolveInsideRoot(relativePath);
+async function moveToRecycle(relativePath, rootOverride) {
+  const root = rootOverride || ROOT_DIR;
+  const sourcePath = path.resolve(root, relativePath);
+  if (sourcePath !== root && !sourcePath.startsWith(root + path.sep)) throw new Error("路径越界");
   const stat = await fsp.stat(sourcePath);
   const id = `${makeTimestampId()}_${crypto.randomUUID()}`;
   const entryDir = path.join(RECYCLE_DIR, id);
@@ -1512,10 +1540,12 @@ async function collectMoveConflicts(paths, targetDir) {
   return [...conflictMap.values()];
 }
 
-async function moveItems(paths, targetDir, options = {}) {
+async function moveItems(paths, targetDir, options = {}, rootOverride) {
+  const root = rootOverride || ROOT_DIR;
   const overwriteExisting = Boolean(options.overwrite);
   const safeTargetDir = safeRelative(targetDir);
-  const targetDirPath = resolveInsideRoot(safeTargetDir);
+  const targetDirPath = path.resolve(root, safeTargetDir);
+  if (targetDirPath !== root && !targetDirPath.startsWith(root + path.sep)) throw new Error("路径越界");
   const targetStat = await fsp.stat(targetDirPath).catch(() => null);
   if (!targetStat || !targetStat.isDirectory()) {
     throw new Error("目标文件夹不存在");
@@ -1542,14 +1572,16 @@ async function moveItems(paths, targetDir, options = {}) {
   const conflicts = [];
   for (const sourceRelative of sourceRelatives) {
 
-    const sourcePath = resolveInsideRoot(sourceRelative);
+    const sourcePath = path.resolve(root, sourceRelative);
+    if (sourcePath !== root && !sourcePath.startsWith(root + path.sep)) throw new Error("路径越界");
     const sourceStat = await fsp.stat(sourcePath).catch(() => null);
     if (!sourceStat) {
       throw new Error(`源项目不存在：${sourceRelative}`);
     }
     const sourceName = path.posix.basename(sourceRelative);
     const destinationRelative = safeRelative(path.posix.join(safeTargetDir, sourceName));
-    const destinationPath = resolveInsideRoot(destinationRelative);
+    const destinationPath = path.resolve(root, destinationRelative);
+    if (destinationPath !== root && !destinationPath.startsWith(root + path.sep)) throw new Error("路径越界");
 
     if (sourceRelative === destinationRelative) {
       continue;
@@ -1582,7 +1614,7 @@ async function moveItems(paths, targetDir, options = {}) {
       await cleanupThumbCacheForPath(item.sourcePath, item.sourceStat);
       if (item.existingDestination) {
         await cleanupThumbCacheForPath(item.destinationPath, item.existingDestination);
-        await moveToRecycle(item.destinationRelative);
+        await moveToRecycle(item.destinationRelative, root);
       }
       await fsp.rename(item.sourcePath, item.destinationPath);
       invalidateFolderSizeCacheForPath(item.sourceRelative);
@@ -1599,9 +1631,11 @@ async function moveItems(paths, targetDir, options = {}) {
   return moved;
 }
 
-async function copyItems(paths, targetDir) {
+async function copyItems(paths, targetDir, rootOverride) {
+  const root = rootOverride || ROOT_DIR;
   const safeTargetDir = safeRelative(targetDir);
-  const targetDirPath = resolveInsideRoot(safeTargetDir);
+  const targetDirPath = path.resolve(root, safeTargetDir);
+  if (targetDirPath !== root && !targetDirPath.startsWith(root + path.sep)) throw new Error("路径越界");
   const targetStat = await fsp.stat(targetDirPath).catch(() => null);
   if (!targetStat || !targetStat.isDirectory()) {
     throw new Error("目标文件夹不存在");
@@ -1614,11 +1648,13 @@ async function copyItems(paths, targetDir) {
       throw new Error("不能复制 shared 根目录");
     }
 
-    const sourcePath = resolveInsideRoot(sourceRelative);
+    const sourcePath = path.resolve(root, sourceRelative);
+    if (sourcePath !== root && !sourcePath.startsWith(root + path.sep)) throw new Error("路径越界");
     const sourceName = path.posix.basename(sourceRelative);
     let destName = sourceName;
     let destRelative = safeRelative(path.posix.join(safeTargetDir, destName));
-    let destPath = resolveInsideRoot(destRelative);
+    let destPath = path.resolve(root, destRelative);
+    if (destPath !== root && !destPath.startsWith(root + path.sep)) throw new Error("路径越界");
 
     // 如果目标已存在，添加 _副本 后缀
     let counter = 1;
@@ -1627,7 +1663,8 @@ async function copyItems(paths, targetDir) {
       const base = path.posix.basename(sourceName, ext);
       destName = `${base}_副本${counter > 1 ? counter : ""}${ext}`;
       destRelative = safeRelative(path.posix.join(safeTargetDir, destName));
-      destPath = resolveInsideRoot(destRelative);
+      destPath = path.resolve(root, destRelative);
+      if (destPath !== root && !destPath.startsWith(root + path.sep)) throw new Error("路径越界");
       counter++;
     }
 
@@ -1873,7 +1910,8 @@ async function handleApi(req, res, url) {
       const dir = safeRelative(url.searchParams.get("dir"));
       const offset = Math.max(0, Number(url.searchParams.get("offset")) || 0);
       const limit = Math.min(200, Math.max(1, Number(url.searchParams.get("limit")) || 50));
-      const result = await listDirectory(dir, offset, limit);
+      const rootOverride = req._nsfwMode ? NSFW_DIR : null;
+      const result = await listDirectory(dir, offset, limit, rootOverride);
       sendJson(res, 200, { currentDir: dir, ...result });
     } catch (error) {
       sendJson(res, 400, { error: error.message });
@@ -1942,6 +1980,97 @@ async function handleApi(req, res, url) {
     return true
   }
 
+  if (req.method === "POST" && url.pathname === "/api/nsfw/setpwd") {
+    const ip = getClientIp(req);
+    if (ip !== "127.0.0.1" && ip !== "::1" && ip !== "::ffff:127.0.0.1") {
+      sendJson(res, 403, { error: "仅本机可修改密码" }); return true;
+    }
+    const body = parseJson(await readRequestBody(req));
+    var newPwd = String(body.password || "").trim();
+    if (newPwd.length < 1) { sendJson(res, 400, { error: "密码不能为空" }); return true; }
+    if (newPwd.length > 50) { sendJson(res, 400, { error: "密码太长" }); return true; }
+    await fsp.writeFile(NSFW_PASSWORD_FILE, newPwd, "utf8");
+    nsfwPassword = newPwd;
+    sendJson(res, 200, { ok: true });
+    return true;
+  }
+  if (req.method === "POST" && url.pathname === "/api/nsfw/auth") {
+    const body = parseJson(await readRequestBody(req));
+    if (body.password === nsfwPassword) {
+      sendJson(res, 200, { ok: true });
+    } else {
+      sendJson(res, 403, { error: "密码错误" });
+    }
+    return true;
+  }
+  // NSFW 列表（复用 getPreviewType/buildListItem，指向 NSFW_DIR）
+  if (req.method === "GET" && url.pathname === "/api/nsfw/list") {
+    try {
+      const dir = safeRelative(url.searchParams.get("dir") || "");
+      const dirPath = path.resolve(NSFW_DIR, dir);
+      if (dirPath !== NSFW_DIR && !dirPath.startsWith(NSFW_DIR + path.sep)) throw new Error("路径越界");
+      const entries = await fsp.readdir(dirPath, { withFileTypes: true });
+      const filtered = entries.filter(function(i) { return !i.name.startsWith(".") });
+      const sorted = filtered.sort(function(a, b) {
+        if (a.isDirectory() !== b.isDirectory()) return a.isDirectory() ? -1 : 1;
+        return a.name.localeCompare(b.name, "zh-CN");
+      });
+      const items = await Promise.all(sorted.map(async function(entry) {
+        var stat;
+        try { stat = await fsp.stat(path.join(dirPath, entry.name)); } catch { stat = { mtime: new Date(), size: 0 }; }
+        var name = entry.name;
+        return {
+          name: name,
+          path: (dir ? dir + "/" : "") + name,
+          type: entry.isDirectory() ? "directory" : "file",
+          previewType: entry.isDirectory() ? "none" : getPreviewType(name),
+          size: entry.isDirectory() ? null : stat.size,
+          updatedAt: stat.mtime.toISOString()
+        };
+      }));
+      sendJson(res, 200, { items: items, total: items.length, currentDir: dir });
+    } catch (error) {
+      sendJson(res, 400, { error: error.message });
+    }
+    return true;
+  }
+  // NSFW 文件下载/预览
+  if (req.method === "GET" && url.pathname === "/nsfw/file") {
+    try {
+      const relativePath = safeRelative(url.searchParams.get("path"));
+      const fullPath = path.resolve(NSFW_DIR, relativePath);
+      if (fullPath !== NSFW_DIR && !fullPath.startsWith(NSFW_DIR + path.sep)) throw new Error("路径越界");
+      const stat = await fsp.stat(fullPath);
+      if (!stat.isFile()) { sendText(res, 400, "仅支持文件"); return true; }
+      const mimeType = getMimeType(fullPath);
+      res.writeHead(200, { "Content-Type": mimeType, "Content-Length": stat.size, "Accept-Ranges": "bytes" });
+      await pipeFileToResponse(res, fullPath);
+    } catch (error) {
+      sendText(res, 400, error.message);
+    }
+    return true;
+  }
+  if (req.method === "POST" && url.pathname === "/api/nsfw/upload") {
+    try {
+      const Busboy = require("busboy");
+      const busboy = Busboy({ headers: req.headers, limits: { fileSize: MAX_FILE_SIZE, files: 1000 } });
+      var uploadDir = ""
+      busboy.on("field", function(name, val) { if (name === "dir") uploadDir = String(val).replace(/\.\./g, "") })
+      busboy.on("file", function(fieldname, stream, info) {
+        var fileName = info.filename
+        if (!fileName) { stream.resume(); return }
+        var targetDir = path.resolve(NSFW_DIR, uploadDir)
+        if (!targetDir.startsWith(NSFW_DIR)) { stream.resume(); return }
+        var filePath = path.join(targetDir, fileName)
+        var ws = fs.createWriteStream(filePath)
+        stream.pipe(ws)
+      })
+      busboy.on("finish", function() { sendJson(res, 200, { ok: true }) })
+      req.pipe(busboy)
+    } catch (error) { sendJson(res, 400, { error: error.message }) }
+    return true;
+  }
+
   if (req.method === "GET" && url.pathname === "/api/logs") {
     sendJson(res, 200, { entries: [...logBuffer] });
     return true;
@@ -1973,7 +2102,7 @@ async function handleApi(req, res, url) {
       if (!name) throw new Error("文件夹名称不能为空");
       if (isInvalidFileName(name)) throw new Error("文件夹名称包含非法字符");
       const targetRelative = safeRelative(path.posix.join(parentDir, name));
-      await ensureDir(resolveInsideRoot(targetRelative));
+      await ensureDir(resolveInsideRoot(targetRelative, req));
       invalidateFolderSizeCacheForPath(targetRelative);
       logAction(getDeviceName(req), getClientIp(req), "创建文件夹", path.posix.join(parentDir, name));
       sendJson(res, 200, { ok: true, path: targetRelative });
@@ -1992,7 +2121,7 @@ async function handleApi(req, res, url) {
       if (!name) throw new Error("项目名称不能为空");
       if (isInvalidFileName(name)) throw new Error("项目名称包含非法字符");
       const projectPath = safeRelative(path.posix.join(parentDir, name));
-      const projectFull = resolveInsideRoot(projectPath);
+      const projectFull = resolveInsideRoot(projectPath, req);
 
       // 中文数字映射
       // 资产子文件夹
@@ -2008,11 +2137,11 @@ async function handleApi(req, res, url) {
       const txtFiles = [];
       for (let i = 0; i < episodes; i++) {
         const epNum = String(i + 1).padStart(2, "0");
-        const epName = `第${i + 1}集`;
+        const epName = `第${epNum}集`;
         const epDir = path.join(projectFull, "视频", epName);
         dirs.push(epDir);
-        // 补镜头目录
-        const buDir = path.join(epDir, `${epName}补`);
+        // 补充镜头目录
+        const buDir = path.join(epDir, `${epName}补充镜头`);
         dirs.push(buDir);
         txtFiles.push(path.join(buDir, `${epNum}-001-01-b1.txt`));
         // 粗剪素材目录
@@ -2054,7 +2183,7 @@ async function handleApi(req, res, url) {
       const deletedNames = [];
       for (const item of paths) {
         try {
-          const fullPath = resolveInsideRoot(safeRelative(item));
+          const fullPath = resolveInsideRoot(safeRelative(item), req);
           const stat = await fsp.stat(fullPath);
           if (stat.isDirectory()) {
             deletedNames.push(...await collectDirFileNames(fullPath));
@@ -2066,7 +2195,7 @@ async function handleApi(req, res, url) {
       }
       const deleted = [];
       for (const item of paths) {
-        deleted.push(await moveToRecycle(item));
+        deleted.push(await moveToRecycle(item, req._nsfwMode ? NSFW_DIR : null));
       }
       const itemNames = deleted.map(d => `${d.name}${d.itemType === "directory" ? " (文件夹)" : ""}`);
       const detail = paths.length === 1 ? itemNames[0] : `${paths.length} 项`;
@@ -2086,10 +2215,10 @@ async function handleApi(req, res, url) {
       if (!sourceRelative) throw new Error("不允许重命名 shared 根目录");
       if (!newName) throw new Error("新名称不能为空");
       if (isInvalidFileName(newName)) throw new Error("新名称包含非法字符");
-      const sourcePath = resolveInsideRoot(sourceRelative);
+      const sourcePath = resolveInsideRoot(sourceRelative, req);
       const parentRelative = path.posix.dirname(sourceRelative);
       const targetRelative = safeRelative(path.posix.join(parentRelative === "." ? "" : parentRelative, newName));
-      const targetPath = resolveInsideRoot(targetRelative);
+      const targetPath = resolveInsideRoot(targetRelative, req);
       if (sourceRelative === targetRelative) throw new Error("新名称不能与原名称相同");
       const sourceStat = await fsp.stat(toFsPath(sourcePath));
       try {
@@ -2115,7 +2244,7 @@ async function handleApi(req, res, url) {
       const body = parseJson(await readRequestBody(req));
       const paths = (Array.isArray(body.paths) ? body.paths : [body.path]).map((item) => safeRelative(item)).filter(Boolean);
       if (paths.length === 0) throw new Error("没有可移动的项目");
-      const moved = await moveItems(paths, body.targetDir, { overwrite: body.overwrite === true });
+      const moved = await moveItems(paths, body.targetDir, { overwrite: body.overwrite === true }, req._nsfwMode ? NSFW_DIR : null);
       const movedNames = moved.map(m => m.from.split("/").pop());
       logAction(getDeviceName(req), getClientIp(req), "移动", `${paths.length} 项 → /${body.targetDir || ""}`, movedNames);
       sendJson(res, 200, { ok: true, moved });
@@ -2130,7 +2259,7 @@ async function handleApi(req, res, url) {
       const body = parseJson(await readRequestBody(req));
       const paths = (Array.isArray(body.paths) ? body.paths : [body.path]).map((item) => safeRelative(item)).filter(Boolean);
       if (paths.length === 0) throw new Error("没有可复制的项目");
-      const copied = await copyItems(paths, body.targetDir);
+      const copied = await copyItems(paths, body.targetDir, req._nsfwMode ? NSFW_DIR : null);
       const copiedNames = copied.map(m => m.from.split("/").pop());
       logAction(getDeviceName(req), getClientIp(req), "复制", `${paths.length} 项 → /${body.targetDir || ""}`, copiedNames);
       sendJson(res, 200, { ok: true, copied: copied.length });
@@ -2166,7 +2295,7 @@ async function handleApi(req, res, url) {
       if (!contentType.toLowerCase().startsWith("multipart/form-data")) {
         throw new Error("上传请求格式错误");
       }
-      const result = await handleStreamingUpload(req);
+      const result = await handleStreamingUpload(req, req._nsfwMode ? NSFW_DIR : null);
       const names = result.uploadedNames || [];
       const detail = names.length === 1 ? names[0] : `${result.uploaded} 项`;
       logAction(getDeviceName(req), getClientIp(req), "上传", detail, names);
@@ -2267,7 +2396,7 @@ async function handleApi(req, res, url) {
     try {
       const body = parseJson(await readRequestBody(req));
       const dir = safeRelative(body.path || "");
-      const fullPath = resolveInsideRoot(dir);
+      const fullPath = resolveInsideRoot(dir, req);
       const stat = await fsp.stat(fullPath);
       if (!stat.isDirectory()) throw new Error("只能设置目录状态");
       var status = String(body.status || "not_started").trim()
@@ -2290,7 +2419,9 @@ async function handleApi(req, res, url) {
 async function streamFile(req, res, url, download) {
   try {
     const relativePath = safeRelative(url.searchParams.get("path"));
-    const fullPath = resolveInsideRoot(relativePath);
+    const root = nsfwRoot(req);
+    const fullPath = path.resolve(root, relativePath);
+    if (fullPath !== root && !fullPath.startsWith(root + path.sep)) throw new Error("路径越界");
     const stat = await fsp.stat(fullPath);
     if (!stat.isFile()) {
       sendText(res, 400, "仅支持文件访问");
@@ -2410,6 +2541,7 @@ async function streamBatchDownload(res, url) {
 
 const server = http.createServer(async (req, res) => {
   res.on("error", () => {});
+  setNsfwMode(req);
   const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
   try {
     if (await handleApi(req, res, url)) return;
@@ -2490,6 +2622,8 @@ async function start() {
   await ensureDir(RECYCLE_DIR);
   await ensureDir(LOG_DIR);
   await ensureDir(TMP_DIR);
+  await ensureDir(NSFW_DIR);
+  await loadNsfwPassword();
   await loadFolderSizeCache();
   await restoreLogBuffer();
   await cleanupExpiredRecycleEntries();

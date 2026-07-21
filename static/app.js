@@ -224,6 +224,10 @@ async function apiFetch(url, options = {}) {
   const headers = new Headers(options.headers || {});
   headers.set("X-CSRF-Token", csrfToken);
   if (state.nickname) headers.set("X-Device-Name", encodeURIComponent(state.nickname));
+  // NSFW 模式下追加参数
+  if (state.nsfwMode) {
+    url += (url.indexOf("?") === -1 ? "?" : "&") + "nsfw=1"
+  }
   const res = await fetch(url, { ...options, headers });
   if (res.ok && (options.method === "POST" || options.method === undefined)) pollLogs();
   return res;
@@ -632,6 +636,11 @@ function formatItemSize(item) {
   return "-";
 }
 
+function fileUrl(path) {
+  var u = "/file?path=" + encodeURIComponent(path)
+  if (state.nsfwMode) u += "&nsfw=1"
+  return u
+}
 function getFileType(item) {
   if (item.type === "directory") return "文件夹";
   const name = item.name || "";
@@ -802,7 +811,7 @@ function renderBreadcrumb() {
   const rootButton = document.createElement("button");
   rootButton.type = "button";
   rootButton.className = "crumb";
-  rootButton.textContent = "shared";
+  rootButton.textContent = state.nsfwMode ? "shared_NSFW" : "shared";
   rootButton.onclick = () => loadDir("");
   // 面包屑拖拽支持
   rootButton.addEventListener("dragover", (e) => {
@@ -992,7 +1001,7 @@ function openPreview(item) {
     return;
   }
   if (item.previewType === "none") {
-    window.open(`/file?path=${encodeURIComponent(item.path)}`, "_blank", "noopener");
+    window.open(fileUrl(item.path), "_blank", "noopener");
     return;
   }
 
@@ -1005,7 +1014,7 @@ function openPreview(item) {
 
 function showPreviewItem(item) {
   previewTitle.textContent = item.name;
-  const src = `/file?path=${encodeURIComponent(item.path)}`;
+  const src = fileUrl(item.path);
   const currentType = previewBody.dataset.previewType;
 
   if (currentType === item.previewType) {
@@ -2008,7 +2017,7 @@ function renderMoveBreadcrumb() {
   const rootButton = document.createElement("button");
   rootButton.type = "button";
   rootButton.className = "crumb";
-  rootButton.textContent = "shared";
+  rootButton.textContent = state.nsfwMode ? "shared_NSFW" : "shared";
   rootButton.onclick = () => loadMoveDialogDir("");
   moveDialogBreadcrumb.appendChild(rootButton);
 
@@ -2413,7 +2422,7 @@ function renderGrid(items) {
   } else if (!items.length && !state.currentDir) {
     const empty = document.createElement("div");
     empty.className = "grid-empty";
-    empty.textContent = "共享目录为空，先上传文件、上传文件夹，或新建文件夹。";
+    empty.textContent = (state.nsfwMode ? "shared_NSFW" : "共享") + "目录为空，先上传文件、上传文件夹，或新建文件夹。";
     gridView.appendChild(empty);
   } else if (!items.length) {
     const empty = document.createElement("div");
@@ -2500,7 +2509,7 @@ function renderRows(items) {
 
   if (!items.length && !state.currentDir) {
     const tr = document.createElement("tr");
-    tr.innerHTML = '<td colspan="5" class="empty">共享目录为空，先上传文件、上传文件夹，或新建文件夹。</td>';
+    tr.innerHTML = '<td colspan="5" class="empty">' + (state.nsfwMode ? "shared_NSFW" : "共享") + '目录为空，先上传文件、上传文件夹，或新建文件夹。</td>';
     tableBody.appendChild(tr);
   } else if (!items.length && state.searchQuery) {
     const tr = document.createElement("tr");
@@ -2602,7 +2611,9 @@ async function loadDir(dir) {
   state.loadingMore = false;
   let res, data;
   try {
-    res = await fetch(`/api/list?dir=${encodeURIComponent(dir)}&offset=0&limit=50`, { signal });
+    var listUrl = `/api/list?dir=${encodeURIComponent(dir)}&offset=0&limit=50`
+    if (state.nsfwMode) listUrl += "&nsfw=1"
+    res = await fetch(listUrl, { signal });
     data = await res.json();
   } catch (e) {
     if (e.name === "AbortError") return;
@@ -2638,7 +2649,9 @@ async function loadMore() {
   const el = document.querySelector(state.viewMode === "grid" ? "#gridView" : "#tableView");
   if (el) { const p = el.parentElement; if (p) p.style.paddingBottom = "40px"; }
   try {
-    const res = await fetch(`/api/list?dir=${encodeURIComponent(state.currentDir)}&offset=${state.fileOffset}&limit=50`);
+    var loadMoreUrl = "/api/list?dir=" + encodeURIComponent(state.currentDir) + "&offset=" + state.fileOffset + "&limit=50"
+    if (state.nsfwMode) loadMoreUrl += "&nsfw=1"
+    const res = await fetch(loadMoreUrl);
     const data = await res.json();
     if (res.ok && data.items) {
       state.currentItems.push(...data.items);
@@ -2958,7 +2971,7 @@ async function uploadEntries(fileEntries, label = "文件") {
     result = await new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     task.xhr = xhr;
-    xhr.open("POST", "/api/upload");
+    xhr.open("POST", "/api/upload" + (state.nsfwMode ? "?nsfw=1" : ""));
     xhr.setRequestHeader("X-CSRF-Token", state.csrfToken);
     if (state.nickname) xhr.setRequestHeader("X-Device-Name", encodeURIComponent(state.nickname));
 
@@ -4804,3 +4817,54 @@ document.addEventListener("keydown", function(e) {
   }
   if (e.key === "Escape") chatPanel.classList.add("is-hidden")
 })
+
+// ========== 海外剧 ==========
+state.nsfwMode = false
+var nsfwBar = document.getElementById("nsfwBar")
+var nsfwInput = document.getElementById("nsfwInput")
+
+if (nsfwBar) {
+  nsfwBar.addEventListener("click", function() {
+    state.nsfwMode = false
+    nsfwInput.style.display = ""
+    nsfwBar.style.display = "none"
+    loadDir("")
+  })
+}
+
+if (nsfwInput && (location.hostname === "127.0.0.1" || location.hostname === "localhost")) {
+  var _nsfwSet = document.createElement("button")
+  _nsfwSet.className = "nsfw-act"
+  _nsfwSet.textContent = "密"
+  _nsfwSet.title = "修改密码"
+  _nsfwSet.addEventListener("click", function() {
+    var p = prompt("输入新密码")
+    if (!p) return
+    fetch("/api/nsfw/setpwd", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password: p }) })
+      .then(function(r) { return r.json() })
+      .then(function(d) { showMessage(d.ok ? "密码已修改" : (d.error || "失败"), d.ok ? "info" : "error") })
+  })
+  nsfwInput.parentNode.insertBefore(_nsfwSet, nsfwInput.nextSibling)
+}
+
+if (nsfwInput) {
+  nsfwInput.addEventListener("keydown", function(e) {
+    if (e.key !== "Enter") return
+    var _v = this.value
+    fetch("/api/nsfw/auth", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password: _v })
+    }).then(function(r) { return r.json() }).then(function(d) {
+      if (d.ok) {
+        nsfwInput.value = ""
+        nsfwInput.style.display = "none"
+        state.nsfwMode = true
+        if (nsfwBar) nsfwBar.style.display = ""
+        document.body.classList.add("nsfw-active")
+        loadDir("")
+      } else {
+        showMessage("密码错误", "error")
+      }
+    })
+  })
+}

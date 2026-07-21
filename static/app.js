@@ -3861,6 +3861,14 @@ document.body.dataset.uiStyle = "editorial";
 applyThemePos(state.themePos);
 initBackground();
 setViewMode(state.viewMode);
+// 恢复 NSFW 模式
+if (sessionStorage.getItem("nsfw_authed") === "1") {
+  state.nsfwMode = true
+  var _ni = document.getElementById("nsfwInput")
+  var _nb = document.getElementById("nsfwBar")
+  if (_ni) _ni.style.display = "none"
+  if (_nb) _nb.style.display = ""
+}
 const savedDir = localStorage.getItem(CURRENT_DIR_KEY) || "";
 loadDir(savedDir);
 setupScrollPagination();
@@ -4819,32 +4827,42 @@ document.addEventListener("keydown", function(e) {
 })
 
 // ========== 海外剧 ==========
-state.nsfwMode = false
+if (typeof state.nsfwMode === "undefined") state.nsfwMode = false
 var nsfwBar = document.getElementById("nsfwBar")
 var nsfwInput = document.getElementById("nsfwInput")
+var _nsfwSet = null
 
 if (nsfwBar) {
   nsfwBar.addEventListener("click", function() {
     state.nsfwMode = false
+    sessionStorage.removeItem("nsfw_authed")
     nsfwInput.style.display = ""
     nsfwBar.style.display = "none"
+    if (_nsfwSet) _nsfwSet.style.display = ""
     loadDir("")
   })
 }
 
 if (nsfwInput && (location.hostname === "127.0.0.1" || location.hostname === "localhost")) {
-  var _nsfwSet = document.createElement("button")
+  _nsfwSet = document.createElement("button")
   _nsfwSet.className = "nsfw-act"
   _nsfwSet.textContent = "密"
   _nsfwSet.title = "修改密码"
   _nsfwSet.addEventListener("click", function() {
-    var p = prompt("输入新密码")
-    if (!p) return
-    fetch("/api/nsfw/setpwd", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password: p }) })
-      .then(function(r) { return r.json() })
-      .then(function(d) { showMessage(d.ok ? "密码已修改" : (d.error || "失败"), d.ok ? "info" : "error") })
+    openInputDialog({
+      title: "修改密码",
+      label: "输入新密码",
+      confirmText: "修改",
+      validate: function(v) { return v.trim() ? "" : "密码不能为空" }
+    }).then(function(p) {
+      if (!p) return
+      return fetch("/api/nsfw/setpwd", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password: p }) })
+        .then(function(r) { return r.json() })
+        .then(function(d) { showMessage(d.ok ? "密码已修改" : (d.error || "失败"), d.ok ? "info" : "error") })
+    })
   })
   nsfwInput.parentNode.insertBefore(_nsfwSet, nsfwInput.nextSibling)
+  if (state.nsfwMode) _nsfwSet.style.display = "none"
 }
 
 if (nsfwInput) {
@@ -4859,8 +4877,9 @@ if (nsfwInput) {
         nsfwInput.value = ""
         nsfwInput.style.display = "none"
         state.nsfwMode = true
+        sessionStorage.setItem("nsfw_authed", "1")
         if (nsfwBar) nsfwBar.style.display = ""
-        document.body.classList.add("nsfw-active")
+        if (_nsfwSet) _nsfwSet.style.display = "none"
         loadDir("")
       } else {
         showMessage("密码错误", "error")

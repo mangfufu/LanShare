@@ -602,7 +602,8 @@ function getUploadTargetRelative(dir, relativeNameRaw) {
   return safeRelative(path.posix.join(safeDir, uploadRelative));
 }
 
-async function collectUploadConflicts(dir, entries) {
+async function collectUploadConflicts(dir, entries, rootOverride) {
+  const root = rootOverride || ROOT_DIR;
   const safeDir = safeRelative(dir);
   const conflictMap = new Map();
   const uploadEntries = Array.isArray(entries) ? entries : [];
@@ -614,7 +615,8 @@ async function collectUploadConflicts(dir, entries) {
 
     for (const segment of segments.slice(0, -1)) {
       currentDir = safeRelative(path.posix.join(currentDir, segment));
-      const currentPath = resolveInsideRoot(currentDir);
+      const currentPath = path.resolve(root, currentDir);
+      if (currentPath !== root && !currentPath.startsWith(root + path.sep)) continue;
       const currentStat = await fsp.stat(toFsPath(currentPath)).catch(() => null);
       if (currentStat && !currentStat.isDirectory()) {
         conflictMap.set(currentDir, makeConflict(currentDir, currentStat));
@@ -622,7 +624,8 @@ async function collectUploadConflicts(dir, entries) {
     }
 
     const targetRelative = safeRelative(path.posix.join(safeDir, uploadRelative));
-    const targetPath = resolveInsideRoot(targetRelative);
+    const targetPath = path.resolve(root, targetRelative);
+    if (targetPath !== root && !targetPath.startsWith(root + path.sep)) continue;
     const targetStat = await fsp.stat(toFsPath(targetPath)).catch(() => null);
     if (targetStat) {
       conflictMap.set(targetRelative, makeConflict(targetRelative, targetStat));
@@ -1486,9 +1489,11 @@ async function moveToRecycle(relativePath, rootOverride) {
   return meta;
 }
 
-async function collectMoveConflicts(paths, targetDir) {
+async function collectMoveConflicts(paths, targetDir, rootOverride) {
+  const root = rootOverride || ROOT_DIR;
   const safeTargetDir = safeRelative(targetDir);
-  const targetDirPath = resolveInsideRoot(safeTargetDir);
+  const targetDirPath = path.resolve(root, safeTargetDir);
+  if (targetDirPath !== root && !targetDirPath.startsWith(root + path.sep)) throw new Error("路径越界");
   const targetStat = await fsp.stat(targetDirPath).catch(() => null);
   if (!targetStat || !targetStat.isDirectory()) {
     throw new Error("目标文件夹不存在");
@@ -1513,7 +1518,8 @@ async function collectMoveConflicts(paths, targetDir) {
   const destinationSet = new Set();
   const conflictMap = new Map();
   for (const sourceRelative of sourceRelatives) {
-    const sourcePath = resolveInsideRoot(sourceRelative);
+    const sourcePath = path.resolve(root, sourceRelative);
+    if (sourcePath !== root && !sourcePath.startsWith(root + path.sep)) continue;
     const sourceStat = await fsp.stat(sourcePath).catch(() => null);
     if (!sourceStat) {
       throw new Error(`源项目不存在：${sourceRelative}`);
@@ -1521,7 +1527,8 @@ async function collectMoveConflicts(paths, targetDir) {
 
     const sourceName = path.posix.basename(sourceRelative);
     const destinationRelative = safeRelative(path.posix.join(safeTargetDir, sourceName));
-    const destinationPath = resolveInsideRoot(destinationRelative);
+    const destinationPath = path.resolve(root, destinationRelative);
+    if (destinationPath !== root && !destinationPath.startsWith(root + path.sep)) continue;
 
     if (sourceRelative === destinationRelative) {
       continue;
@@ -2279,11 +2286,12 @@ async function handleApi(req, res, url) {
       const body = parseJson(await readRequestBody(req));
       const operation = String(body.operation || "");
       let conflicts = [];
+      var chkRoot = req._nsfwMode ? NSFW_DIR : null
       if (operation === "upload") {
-        conflicts = await collectUploadConflicts(body.dir, body.entries);
+        conflicts = await collectUploadConflicts(body.dir, body.entries, chkRoot);
       } else if (operation === "move") {
         const paths = (Array.isArray(body.paths) ? body.paths : [body.path]).map((item) => safeRelative(item)).filter(Boolean);
-        conflicts = await collectMoveConflicts(paths, body.targetDir);
+        conflicts = await collectMoveConflicts(paths, body.targetDir, chkRoot);
       } else {
         throw new Error("未知的冲突检查类型");
       }

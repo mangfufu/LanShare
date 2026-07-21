@@ -107,6 +107,7 @@ body {
   display: flex;
   align-items: center;
   gap: 4px;
+  pointer-events: auto;
 }
 .version-badge {
   position: fixed;
@@ -964,9 +965,7 @@ tr:last-child td { border-bottom: none; }
 }
 
 .drag-over {
-  outline: 2px dashed var(--accent);
-  outline-offset: -2px;
-  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
 .drag-cancel-zone {

@@ -322,8 +322,24 @@ body[data-ui-style="editorial"] .filter-opt:hover { background: var(--panel-hove
 body[data-ui-style="editorial"] .filter-opt.active { font-weight: 700; background: color-mix(in srgb, var(--accent) 12%, transparent); }
 /* 操作列按钮统一基线对齐 */
 body[data-ui-style="editorial"] .op-cell .link-button,
-body[data-ui-style="editorial"] .op-cell .status-badge.link-button {
+body[data-ui-style="editorial"] .op-cell .status-badge.link-button,
+body[data-ui-style="editorial"] .grid-card > .grid-actions .link-button {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: var(--file-action-height);
+  min-height: var(--file-action-height);
+  padding: 0 8px;
+  font-family: var(--f-display);
+  font-size: var(--file-meta-font-size);
+  font-weight: 400;
+  line-height: 1;
   vertical-align: middle;
+}
+body[data-ui-style="editorial"] .op-cell .grid-actions > *,
+body[data-ui-style="editorial"] .grid-card > .grid-actions > * {
+  flex: 0 0 auto;
 }
 body[data-ui-style="editorial"] .status-badge.link-button {
   -webkit-appearance: none;
@@ -333,15 +349,40 @@ body[data-ui-style="editorial"] .status-badge.link-button {
   border-radius: 0;
   background: transparent;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5'%3E%3Cpath d='M0 0l4 5 4-5z' fill='%2357503f'/%3E%3C/svg%3E");
+  background-image: none;
   background-repeat: no-repeat;
   background-position: right 4px center;
-  padding: 8px 20px 6px 8px;
+  position: relative;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  flex: 0 0 auto;
+  height: var(--file-action-height);
+  min-height: var(--file-action-height);
+  min-width: 78px;
+  padding: 0 10px;
+  font-family: var(--f-display);
   line-height: 1;
-  font-size: 12.5px;
+  font-size: var(--file-meta-font-size);
   font-weight: 400;
   color: var(--muted);
   cursor: pointer;
   transition: border-color 120ms ease, color 120ms ease;
+}
+body[data-ui-style="editorial"] .status-badge.link-button::after {
+  content: "";
+  position: static;
+  display: block;
+  flex: 0 0 auto;
+  width: 0;
+  height: 0;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 5px solid currentColor;
+  transform: none;
+  pointer-events: none;
 }
 body[data-ui-style="editorial"] .status-badge.link-button:hover {
   color: var(--text);
@@ -367,19 +408,22 @@ body[data-ui-style="editorial"] .status-badge-menu {
   border-radius: 2px;
   background: var(--panel);
   box-shadow: 0 4px 12px rgba(0,0,0,.08);
+  font-family: var(--f-display);
   overflow: hidden;
 }
 body[data-ui-style="editorial"] .status-badge-opt {
-  display: block;
+  display: flex;
+  align-items: center;
   width: 100%;
+  min-height: var(--file-action-height);
   border: none;
   border-bottom: 1px solid var(--line);
   background: transparent;
   color: var(--text);
   font: inherit;
-  font-size: 12px;
+  font-size: var(--file-meta-font-size);
   text-align: left;
-  padding: 6px 12px;
+  padding: 0 12px;
   cursor: pointer;
 }
 body[data-ui-style="editorial"] .status-badge-opt:last-child { border-bottom: none; }
@@ -407,9 +451,11 @@ body[data-ui-style="editorial"] th {
   background: transparent;
   font-size: 11px;
   font-weight: 500;
+  line-height: 1.4;
   letter-spacing: 0.22em;
   color: var(--muted);
-  padding-top: 16px;
+  padding-top: 12px;
+  padding-bottom: 12px;
 }
 body[data-ui-style="editorial"] td {
   border-bottom: 1px solid var(--line-soft);
@@ -435,10 +481,23 @@ body[data-ui-style="editorial"] .grid-card.is-in-progress {
   background: color-mix(in srgb, var(--s-blue) 8%, transparent);
 }
 body[data-ui-style="editorial"] .size-cell,
-body[data-ui-style="editorial"] .time-cell {
-  font-family: var(--f-mono);
-  font-size: 12px;
+body[data-ui-style="editorial"] .born-cell,
+body[data-ui-style="editorial"] .time-cell,
+body[data-ui-style="editorial"] .type-cell,
+body[data-ui-style="editorial"] .op-cell {
+  font-family: var(--f-display);
+  font-size: var(--file-meta-font-size);
+  font-weight: 400;
+  line-height: var(--file-meta-line-height);
   color: var(--ink-soft);
+}
+body[data-ui-style="editorial"] .grid-meta {
+  font-family: var(--f-display);
+}
+body[data-ui-style="editorial"] .grid-meta > div {
+  font-size: var(--file-meta-font-size);
+  font-weight: 400;
+  line-height: var(--file-meta-line-height);
 }
 
 /* 文件名片段 */

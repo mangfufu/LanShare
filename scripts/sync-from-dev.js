@@ -104,6 +104,7 @@ function withProductionPort(serverSource) {
 function withProductionIndexHtml(indexSource) {
   const replaced = indexSource
     .replace("<title>局域网文件服务器（测试版）</title>", "<title>局域网文件服务器</title>")
+    .replace(/\s*<span class="test-badge">test_version<\/span>/, "")
     .replace(/(>\s*v\d+\.\d+\.\d+)\s+test_version(\s*<)/, "$1$2");
 
   if (replaced === indexSource) {
@@ -141,13 +142,20 @@ async function syncStaticFiles() {
   await writeFile(path.join(githubDir, "static", "index.html"), productionIndex, "dev/static/index.html(正式版)");
 }
 
-async function syncProductionExtras(targetDir, options = {}) {
+async function syncProductionExtras(targetDir) {
   await ensureRequiredPath(targetDir, "同步目标目录");
   await copyDir(path.join(prodDir, "scripts"), path.join(targetDir, "scripts"));
 
-  if (options.github) {
-    await copyFile(path.join(prodDir, "package.json"), path.join(targetDir, "package.json"));
-    await copyFile(path.join(prodDir, "CHANGELOG.md"), path.join(targetDir, "CHANGELOG.md"));
+  const extraFiles = [
+    "package.json",
+    "package-lock.json",
+    "README.md",
+    "CLAUDE.md",
+    "CHANGELOG.md",
+    "交接文档.md"
+  ];
+  for (const fileName of extraFiles) {
+    await copyFile(path.join(prodDir, fileName), path.join(targetDir, fileName));
   }
 }
 
@@ -161,7 +169,7 @@ async function main() {
   await syncServerFiles();
   await syncStaticFiles();
   await syncProductionExtras(lanShareDir);
-  await syncProductionExtras(githubDir, { github: true });
+  await syncProductionExtras(githubDir);
 
   console.log(dryRun ? "预览同步完成，不写入文件。" : "同步完成。");
   for (const item of copied) {

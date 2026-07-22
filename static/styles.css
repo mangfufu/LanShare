@@ -16,6 +16,9 @@
   --overlay: rgba(255, 255, 255, 0.95);
   --thumb-bg: linear-gradient(135deg, #e5e7eb, #d1d5db);
   --thumb-text: #374151;
+  --file-meta-font-size: 13px;
+  --file-meta-line-height: 1.5;
+  --file-action-height: 30px;
   --dialog-backdrop: rgba(0, 0, 0, 0.4);
   --floating-bg: #1f2937;
   --floating-text: #fff;
@@ -746,6 +749,7 @@ td {
   padding: 12px 14px;
   border-bottom: 1px solid color-mix(in srgb, var(--line) 62%, transparent);
   vertical-align: middle;
+  font-size: 13px;
 }
 
 th:last-child,
@@ -761,6 +765,7 @@ td:nth-last-child(2) {
 th {
   position: relative;
   font-size: 13px;
+  font-weight: 600;
   color: var(--muted);
   background: var(--panel-soft);
   text-align: center;
@@ -852,29 +857,56 @@ body.is-column-resizing * {
 
 .size-cell,
 .time-cell,
+.born-cell,
+.type-cell,
 th[data-sort="size"],
-th[data-sort="date"] {
+th[data-sort="born"],
+th[data-sort="date"],
+th:nth-child(5) {
   text-align: center;
   white-space: nowrap;
+  font-size: var(--file-meta-font-size);
+  font-weight: 400;
+  line-height: var(--file-meta-line-height);
+  color: var(--muted);
 }
 
-.type-cell,
-th:nth-child(4),
-.op-cell,
-th:nth-child(5) {
+.op-cell {
   text-align: center;
 }
 
 .op-cell .grid-actions {
+  align-items: center;
   justify-content: center;
   flex-wrap: nowrap;
   gap: 4px;
 }
 
 .op-cell .link-button,
-.op-cell .status-badge.link-button {
-  padding: 7px 8px;
-  font-size: 13px;
+.op-cell .status-badge.link-button,
+.grid-card > .grid-actions .link-button {
+  box-sizing: border-box;
+  height: var(--file-action-height);
+  min-height: var(--file-action-height);
+  padding: 0 8px;
+  font-size: var(--file-meta-font-size);
+  font-weight: 400;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  vertical-align: middle;
+}
+.op-cell .status-badge.link-button,
+.grid-card > .grid-actions .status-badge.link-button {
+  padding-right: 20px;
+}
+.col-born { width: 150px; }
+.grid-meta > div {
+  font-size: var(--file-meta-font-size);
+  font-weight: 400;
+  color: var(--muted);
+  line-height: var(--file-meta-line-height);
 }
 
 .sort-th {

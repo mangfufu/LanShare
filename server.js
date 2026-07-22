@@ -50,12 +50,25 @@ const HOST = process.env.HOST || "0.0.0.0";
 const PORT = Number(process.env.PORT || 8080);
 const ROOT_DIR = path.resolve(process.env.SHARED_DIR || path.join(__dirname, "shared"));
 const BACKUP_DIR = path.resolve(process.env.BACKUP_DIR || path.join(__dirname, "backup"));
+const DAILY_BACKUP_DIR = path.join(BACKUP_DIR, "daily");
 const RECYCLE_DIR = path.resolve(process.env.RECYCLE_DIR || path.join(__dirname, "recycle_bin"));
-const LOG_DIR = path.join(__dirname, "logs");
+const LOG_DIR = path.resolve(process.env.LOG_DIR || path.join(__dirname, "logs"));
 const STATIC_DIR = path.join(__dirname, "static");
 const FOLDER_SIZE_CACHE_FILE = path.join(__dirname, "folder_size_cache.json");
 const MAX_BODY_SIZE = 2 * 1024 * 1024 * 1024;
 const MAX_FILE_SIZE = Number(process.env.MAX_FILE_SIZE || 8 * 1024 * 1024 * 1024);
+
+const PER_UPLOAD_BACKUP_ENABLED = process.env.PER_UPLOAD_BACKUP_ENABLED === "1";
+const DAILY_BACKUP_ENABLED = process.env.DAILY_BACKUP_ENABLED !== "0";
+const configuredDailyBackupHour = Number(process.env.DAILY_BACKUP_HOUR);
+const configuredDailyBackupMinute = Number(process.env.DAILY_BACKUP_MINUTE);
+const DAILY_BACKUP_HOUR = Number.isInteger(configuredDailyBackupHour) && configuredDailyBackupHour >= 0 && configuredDailyBackupHour <= 23
+  ? configuredDailyBackupHour
+  : 23;
+const DAILY_BACKUP_MINUTE = Number.isInteger(configuredDailyBackupMinute) && configuredDailyBackupMinute >= 0 && configuredDailyBackupMinute <= 59
+  ? configuredDailyBackupMinute
+  : 55;
+const DAILY_BACKUP_RUN_ON_START = process.env.DAILY_BACKUP_RUN_ON_START === "1";
 const BATCH_DOWNLOAD_TTL_MS = 30 * 60 * 1000;
 const RECYCLE_RETENTION_DAYS = Number(process.env.RECYCLE_RETENTION_DAYS || 7);
 const RECYCLE_CLEANUP_INTERVAL_MS = Number(process.env.RECYCLE_CLEANUP_INTERVAL_MS || 60 * 60 * 1000);
@@ -80,6 +93,8 @@ const folderSizeQueue = [];
 const queuedFolderSizePaths = new Set();
 let activeFolderSizeJobs = 0;
 let folderSizeCacheSaveTimer = null;
+let dailyBackupTimer = null;
+let dailyBackupRunning = false;
 const CSRF_TOKEN = crypto.randomBytes(32).toString("hex");
 const PROTECTED_POST_PATHS = new Set([
   "/api/mkdir",
@@ -500,7 +515,8 @@ async function buildListItem(item, normalizedDir, rootOverride) {
     type: item.isDirectory() ? "directory" : "file",
     previewType,
     size: item.isDirectory() ? null : stat.size,
-    updatedAt: stat.mtime.toISOString()
+    updatedAt: stat.mtime.toISOString(),
+    bornAt: stat.birthtime.toISOString()
   };
   if (item.isDirectory()) {
     var sizeKey = rootOverride ? "nsfw:" + childRelative : childRelative;
@@ -1222,6 +1238,226 @@ async function writeBackupFile(batchId, relativePath, data) {
   await fsp.writeFile(backupPath, data);
 }
 
+function makeDailySnapshotId(now = new Date()) {
+  const yyyy = String(now.getFullYear());
+  const mm = String(now.getMonth() + 1).padStart(2, "0");
+  const dd = String(now.getDate()).padStart(2, "0");
+  const hh = String(now.getHours()).padStart(2, "0");
+  const mi = String(now.getMinutes()).padStart(2, "0");
+  const ss = String(now.getSeconds()).padStart(2, "0");
+  const ms = String(now.getMilliseconds()).padStart(3, "0");
+  return `${yyyy}-${mm}-${dd}_${hh}${mi}${ss}_${ms}`;
+}
+
+function makeBackupManifestKey(sourceName, relativePath) {
+  const normalized = String(relativePath || "").replaceAll("\\", "/");
+  return normalized ? `${sourceName}/${normalized}` : sourceName;
+}
+
+function isSameBackupFileState(previousState, stat) {
+  return previousState
+    && Number(previousState.size) === stat.size
+    && Number(previousState.mtimeMs) === Math.trunc(stat.mtimeMs);
+}
+
+async function readDailyBackupManifest(snapshotDir) {
+  if (!snapshotDir) return { files: {} };
+  try {
+    const manifest = JSON.parse(await fsp.readFile(path.join(snapshotDir, ".snapshot.json"), "utf8"));
+    return manifest && manifest.files && typeof manifest.files === "object" ? manifest : { files: {} };
+  } catch {
+    return { files: {} };
+  }
+}
+
+async function findLatestDailySnapshot() {
+  const entries = await fsp.readdir(DAILY_BACKUP_DIR, { withFileTypes: true }).catch(() => []);
+  const names = entries
+    .filter((entry) => entry.isDirectory() && /^\d{4}-\d{2}-\d{2}_\d{6}_\d{3}$/.test(entry.name))
+    .map((entry) => entry.name)
+    .sort()
+    .reverse();
+  return names.length > 0 ? path.join(DAILY_BACKUP_DIR, names[0]) : "";
+}
+
+async function copyStableBackupFile(sourcePath, targetPath, initialStat) {
+  await fsp.copyFile(sourcePath, targetPath);
+  const finalStat = await fsp.stat(sourcePath);
+  const unchanged = finalStat.size === initialStat.size
+    && Math.trunc(finalStat.mtimeMs) === Math.trunc(initialStat.mtimeMs);
+  if (!unchanged) {
+    await fsp.unlink(targetPath).catch(() => {});
+    const error = new Error("文件在备份过程中仍被写入，已留待下次备份");
+    error.code = "BACKUP_SOURCE_CHANGED";
+    throw error;
+  }
+  await fsp.utimes(targetPath, initialStat.atime, initialStat.mtime).catch(() => {});
+}
+
+async function backupDailyDirectory(options, relativeDir = "") {
+  const { sourceName, sourceRoot, snapshotDir, previousSnapshotDir, previousFiles, nextFiles, summary } = options;
+  const sourceDir = path.join(sourceRoot, relativeDir);
+  const targetDir = path.join(snapshotDir, sourceName, relativeDir);
+  await ensureDir(targetDir);
+
+  let entries;
+  try {
+    entries = await fsp.readdir(sourceDir, { withFileTypes: true });
+  } catch (error) {
+    summary.skipped += 1;
+    summary.errors.push(`${makeBackupManifestKey(sourceName, relativeDir)}: ${error.message}`);
+    return;
+  }
+
+  for (const entry of entries) {
+    const relativePath = relativeDir ? path.join(relativeDir, entry.name) : entry.name;
+    if (entry.isDirectory()) {
+      await backupDailyDirectory(options, relativePath);
+      continue;
+    }
+    if (!entry.isFile()) {
+      summary.skipped += 1;
+      summary.errors.push(`${makeBackupManifestKey(sourceName, relativePath)}: 已跳过非普通文件`);
+      continue;
+    }
+
+    const sourcePath = path.join(sourceRoot, relativePath);
+    const targetPath = path.join(snapshotDir, sourceName, relativePath);
+    const manifestKey = makeBackupManifestKey(sourceName, relativePath);
+    try {
+      const stat = await fsp.stat(sourcePath);
+      await ensureDir(path.dirname(targetPath));
+      const previousState = previousFiles[manifestKey];
+      const previousPath = previousSnapshotDir ? path.join(previousSnapshotDir, sourceName, relativePath) : "";
+      let linked = false;
+
+      if (previousPath && isSameBackupFileState(previousState, stat)) {
+        const previousStat = await fsp.stat(previousPath).catch(() => null);
+        if (previousStat && previousStat.isFile() && previousStat.size === stat.size) {
+          try {
+            await fsp.link(previousPath, targetPath);
+            linked = true;
+            summary.linked += 1;
+          } catch {
+            linked = false;
+          }
+        }
+      }
+
+      if (!linked) {
+        await copyStableBackupFile(sourcePath, targetPath, stat);
+        summary.copied += 1;
+        summary.copiedBytes += stat.size;
+      }
+
+      nextFiles[manifestKey] = {
+        size: stat.size,
+        mtimeMs: Math.trunc(stat.mtimeMs)
+      };
+      summary.files += 1;
+    } catch (error) {
+      summary.skipped += 1;
+      summary.errors.push(`${manifestKey}: ${error.message}`);
+    }
+  }
+}
+
+function assertDailyBackupLayout() {
+  for (const sourceRoot of [ROOT_DIR, NSFW_DIR]) {
+    if (isPathInsideOrEqual(sourceRoot, DAILY_BACKUP_DIR) || isPathInsideOrEqual(DAILY_BACKUP_DIR, sourceRoot)) {
+      throw new Error(`每日备份目录不能与共享目录互相包含: ${sourceRoot}`);
+    }
+  }
+}
+
+async function createDailyBackupSnapshot() {
+  if (dailyBackupRunning) {
+    return { skipped: true, reason: "已有每日备份正在运行" };
+  }
+  dailyBackupRunning = true;
+  const startedAt = new Date();
+  const snapshotId = makeDailySnapshotId(startedAt);
+  const snapshotDir = path.join(DAILY_BACKUP_DIR, snapshotId);
+  const tempDir = path.join(DAILY_BACKUP_DIR, `.${snapshotId}.in-progress-${crypto.randomUUID()}`);
+  try {
+    assertDailyBackupLayout();
+    await ensureDir(DAILY_BACKUP_DIR);
+    const previousSnapshotDir = await findLatestDailySnapshot();
+    const previousManifest = await readDailyBackupManifest(previousSnapshotDir);
+    const nextFiles = {};
+    const summary = { files: 0, copied: 0, linked: 0, skipped: 0, copiedBytes: 0, errors: [] };
+    await ensureDir(tempDir);
+
+    for (const source of [
+      { sourceName: "shared", sourceRoot: ROOT_DIR },
+      { sourceName: "shared_NSFW", sourceRoot: NSFW_DIR }
+    ]) {
+      await backupDailyDirectory({
+        ...source,
+        snapshotDir: tempDir,
+        previousSnapshotDir,
+        previousFiles: previousManifest.files || {},
+        nextFiles,
+        summary
+      });
+    }
+
+    const manifest = {
+      version: 1,
+      snapshotId,
+      createdAt: new Date().toISOString(),
+      previousSnapshot: previousSnapshotDir ? path.basename(previousSnapshotDir) : null,
+      complete: summary.errors.length === 0,
+      summary: {
+        files: summary.files,
+        copied: summary.copied,
+        linked: summary.linked,
+        skipped: summary.skipped,
+        copiedBytes: summary.copiedBytes
+      },
+      errors: summary.errors.slice(0, 200),
+      files: nextFiles
+    };
+    await fsp.writeFile(path.join(tempDir, ".snapshot.json"), JSON.stringify(manifest, null, 2), "utf8");
+    await fsp.rename(tempDir, snapshotDir);
+
+    const detail = `${snapshotId}：${summary.files} 个文件，新增占用 ${summary.copied} 个，硬链接复用 ${summary.linked} 个，跳过 ${summary.skipped} 个`;
+    console.log(`每日备份完成: ${detail}`);
+    logAction("系统", "127.0.0.1", "每日备份", detail);
+    return { snapshotId, snapshotDir, ...summary };
+  } catch (error) {
+    await fsp.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+    console.error(`每日备份失败: ${error.message}`);
+    throw error;
+  } finally {
+    dailyBackupRunning = false;
+  }
+}
+
+function getNextDailyBackupTime(now = new Date()) {
+  const next = new Date(now);
+  next.setHours(DAILY_BACKUP_HOUR, DAILY_BACKUP_MINUTE, 0, 0);
+  if (next <= now) next.setDate(next.getDate() + 1);
+  return next;
+}
+
+function scheduleDailyBackup() {
+  if (!DAILY_BACKUP_ENABLED) {
+    console.log("每日备份: 已关闭");
+    return;
+  }
+  const next = getNextDailyBackupTime();
+  const delay = Math.max(1000, next.getTime() - Date.now());
+  if (dailyBackupTimer) clearTimeout(dailyBackupTimer);
+  dailyBackupTimer = setTimeout(async () => {
+    try {
+      await createDailyBackupSnapshot();
+    } catch {}
+    scheduleDailyBackup();
+  }, delay);
+  console.log(`每日备份: 下一次 ${next.toLocaleString("zh-CN", { hour12: false })}`);
+}
+
 async function handleStreamingUpload(req, rootDir) {
   var root = rootDir || ROOT_DIR;
   return new Promise((resolve, reject) => {
@@ -1241,7 +1477,7 @@ async function handleStreamingUpload(req, rootDir) {
     let fileIndex = 0;
     let uploadedCount = 0;
     const uploadedNames = [];
-    const backupBatchId = makeTimestampId();
+    const backupBatchId = PER_UPLOAD_BACKUP_ENABLED ? makeTimestampId() : null;
     let aborted = false;
 
     const fail = (error) => {
@@ -1289,7 +1525,7 @@ async function handleStreamingUpload(req, rootDir) {
         fileRelative = getUploadTargetRelative(dir, relativeNameRaw);
         filePath = path.resolve(root, fileRelative);
         if (filePath !== root && !filePath.startsWith(root + path.sep)) throw new Error("路径越界");
-        backupPath = path.join(BACKUP_DIR, backupBatchId, fileRelative);
+        backupPath = backupBatchId ? path.join(BACKUP_DIR, backupBatchId, fileRelative) : "";
       } catch (error) {
         fileStream.resume();
         fail(error);
@@ -1354,15 +1590,17 @@ async function handleStreamingUpload(req, rootDir) {
           throw error;
         }
 
-        // 后台异步备份，不阻塞上传响应
-        (async () => {
-          try {
-            await ensureDir(path.dirname(backupPath));
-            await fsp.copyFile(filePath, backupPath);
-          } catch (err) {
-            console.error(`文件备份失败 ${filePath}: ${err.message}`);
-          }
-        })();
+        // 兼容旧模式；默认关闭逐次上传备份，改由每日增量快照统一处理。
+        if (backupPath) {
+          (async () => {
+            try {
+              await ensureDir(path.dirname(backupPath));
+              await fsp.copyFile(filePath, backupPath);
+            } catch (err) {
+              console.error(`文件备份失败 ${filePath}: ${err.message}`);
+            }
+          })();
+        }
       })();
 
       fileTasks.push(task);
@@ -2650,6 +2888,7 @@ async function restoreLogBuffer() {
 async function start() {
   await ensureDir(ROOT_DIR);
   await ensureDir(BACKUP_DIR);
+  await ensureDir(DAILY_BACKUP_DIR);
   await ensureDir(RECYCLE_DIR);
   await ensureDir(LOG_DIR);
   await ensureDir(TMP_DIR);
@@ -2673,6 +2912,10 @@ async function start() {
       });
     }, THUMB_CACHE_CLEANUP_INTERVAL_MS);
   }
+  scheduleDailyBackup();
+  if (DAILY_BACKUP_ENABLED && DAILY_BACKUP_RUN_ON_START) {
+    createDailyBackupSnapshot().catch(() => {});
+  }
   server.listen(PORT, HOST, () => {
     console.log(`共享目录: ${ROOT_DIR}`);
     console.log(`备份目录: ${BACKUP_DIR}`);
@@ -2688,4 +2931,3 @@ start().catch((error) => {
   console.error(error);
   process.exit(1);
 });
-

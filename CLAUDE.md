@@ -33,7 +33,8 @@ static/
       app.js
       styles.css
 shared/                # Uploaded files live here
-backup/                # Backup copies of uploads (hard link,不占额外空间)
+shared_NSFW/           # Password-entry overseas-drama files
+backup/daily/          # Daily incremental snapshots and .snapshot.json manifests
 recycle_bin/           # Deleted files before permanent removal
 logs/                  # Daily log files (YYYY-MM-DD.log)
 ```
@@ -47,8 +48,8 @@ Mirror of production with port 8082. Used for testing changes before syncing to 
 | 端口 | 8080 | 8082 |
 | 浏览器标签页标题 | 局域网文件服务器 | 局域网文件服务器（测试版） |
 | 版本号 | 与 dev 保持一致 | 与正式版保持一致 |
-| shared 目录 | `D:\share_web\shared\` | `D:\share_web\dev\shared\` |
-| ROOT_DIR 基准 | `__dirname`（D:\share_web） | `__dirname`（D:\share_web\dev） |
+| shared 目录 | `<项目目录>\shared\` | `<项目目录>\dev\shared\` |
+| ROOT_DIR 基准 | 正式版 `__dirname` | dev 版 `__dirname` |
 
 ### Backup copies
 - `LanShare/` - Local backup (no git)
@@ -79,7 +80,9 @@ Tools run in iframes, inheriting theme CSS variables from parent via MutationObs
 - **CSRF**: Token generated per server startup, fetched by frontend via `/api/security`
 - **Path safety**: `safeRelative()` normalizes paths, `resolveInsideRoot()` prevents directory traversal
 - **Recycle bin**: Items are `rename`-ed to `recycle_bin/<uuid>/` with a `meta.json`
-- **Backup**: Uses `fs.copyFile` (not hard link). 备份到backup/批次ID/目录镜像/文件名
+- **Daily backup**: Defaults to 23:55. The first snapshot copies all files; later snapshots hard-link unchanged files from the previous snapshot and copy only new/changed files.
+- **Per-upload backup**: Disabled by default. Set `PER_UPLOAD_BACKUP_ENABLED=1` only for temporary legacy compatibility.
+- **Backup scope**: Each daily snapshot includes both `shared` and `shared_NSFW` and writes `.snapshot.json`.
 - **Tool iframes**: Audio/Video tools use `crypto.randomUUID()` polyfill (`generateId()`) for iframe compatibility
 - **Thumbnail**: Uses ffmpeg with `-analyzeduration 100M -probesize 50M` to handle moov atom at end of MP4 files
 - **File stream**: No slot limit (removed 48-concurrent limit). Direct streaming via `pipeFileToResponse()`
@@ -91,44 +94,24 @@ Tools run in iframes, inheriting theme CSS variables from parent via MutationObs
 2. 测试确认无问题后，**必须经用户确认**才能同步到正式版
 3. 正式版验证通过后，**必须经用户确认**才能同步到 `LanShare/`、`github/` 和 GitHub
 
-### 版本同步流程（每次修改完成后自动执行，不需要用户提醒）
+### 版本同步流程
 
-1. 更新版本号（`package.json`、`static/index.html`、`dev/static/index.html`、`CHANGELOG.md`）
-2. 复制 dev → 正式版：
-   - `cp dev/server.js server.js`（正式版端口改回 8080）
-   - `cp dev/static/app.js static/app.js`
-   - `cp dev/static/styles.css static/styles.css`
-   - `cp dev/static/index.html static/index.html`（去掉「测试版」标题）
-   - `cp -r dev/static/tools static/tools`
-3. 复制正式版 → `LanShare/` 和 `github/`
-4. `cd github && git add -A && git commit -m "v版本号: 描述" && git push origin main`
-5. 验证所有版本号一致
+1. 更新 `package.json`、`dev/package.json`、`dev/static/index.html`、`CHANGELOG.md` 和相关文档中的版本号
+2. 经用户确认后运行 `npm run sync`
+3. 同步脚本自动把 dev 端口 8082 改为正式版 8080，并移除正式版标题与版本徽标中的测试标记
+4. 同步正式版代码、静态资源、脚本、`package.json`、README、CLAUDE、CHANGELOG 和交接文档到 `LanShare/`、`github/`
+5. 语法检查并验证所有版本号、端口和测试标记一致
+6. Git commit/push 是独立外部操作，只有用户明确要求推送时才执行
 
 ### 同步命令
 
 ```powershell
-# dev → 正式版
-cp dev/server.js server.js
-cp dev/static/app.js static/app.js
-cp dev/static/styles.css static/styles.css
-cp dev/static/index.html static/index.html
-cp -r dev/static/tools static/tools
-# 然后手动修改 server.js 端口为 8080，index.html 去掉"测试版"
-
-# 正式版 → LanShare/
-cp server.js LanShare/
-cp -r static/ LanShare/
-
-# 正式版 → github/
-cp server.js github/
-cp package.json github/
-cp CHANGELOG.md github/
-cp -r static/* github/static/
-cd github && git add -A && git commit -m "v版本号" && git push origin main
+npm run sync -- --dry-run  # 只预览，不写文件
+npm run sync              # 经用户确认后执行本地同步
 ```
 
 ### 版本号更新
-每次同步前，更新 `package.json`、`static/index.html`、`CHANGELOG.md` 中的版本号。
+每次同步前，更新正式版与 dev 的 `package.json`、dev 版 `static/index.html`、`CHANGELOG.md` 和交接文档中的版本号；正式版 `static/index.html` 由同步脚本生成。
 
 ## Style Notes
 - 2-space indentation in JavaScript

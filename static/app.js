@@ -1256,13 +1256,14 @@ function loadWasmPlayer(videoEl, fileUrl, fileName) {
 }
 
 const RESIZABLE_TABLE_COLUMNS = {
-  name: { selector: ".col-name", min: 320, max: 1000, defaultWidth: 360 },
-  size: { selector: ".col-size", min: 90, max: 260, defaultWidth: 120 },
-  date: { selector: ".col-time", min: 150, max: 380, defaultWidth: 180 }
+  name: { selector: ".col-name", min: 280, max: 1000, defaultWidth: 320 },
+  size: { selector: ".col-size", min: 80, max: 200, defaultWidth: 100 },
+  born: { selector: ".col-born", min: 120, max: 280, defaultWidth: 150 },
+  date: { selector: ".col-time", min: 120, max: 280, defaultWidth: 150 }
 };
 
+const SORT_LABELS = { name: "名称", size: "大小", born: "上传时间", date: "修改时间" };
 const FIXED_TABLE_COLUMN_WIDTH = 96 + 310;
-const SORT_LABELS = { name: "名称", size: "大小", date: "修改时间" };
 
 function ensureSortHeaderContent(th) {
   let label = th.querySelector(".sort-label");
@@ -1678,6 +1679,8 @@ function sortItems(items) {
       const sa = a.folderSize != null ? a.folderSize : (a.size || 0);
       const sb = b.folderSize != null ? b.folderSize : (b.size || 0);
       cmp = sa - sb;
+    } else if (sortKey === "born") {
+      cmp = String(a.bornAt || "").localeCompare(String(b.bornAt || ""));
     } else if (sortKey === "date") {
       cmp = String(a.updatedAt || "").localeCompare(String(b.updatedAt || ""));
     }
@@ -2402,6 +2405,7 @@ function createGridCard(item) {
   meta.innerHTML = `
     <div class="grid-type">${getFileType(item)}</div>
     <div class="grid-size">${formatItemSize(item)}</div>
+    <div class="grid-born">${item.bornAt ? new Date(item.bornAt).toLocaleString("zh-CN") : ""}</div>
     <div class="grid-time">${new Date(item.updatedAt).toLocaleString("zh-CN")}</div>
   `;
   card.appendChild(meta);
@@ -2454,6 +2458,7 @@ function renderRows(items) {
     tr.querySelector(".name-cell").appendChild(wrap);
     tr.querySelector(".type-cell").textContent = getFileType(item);
     tr.querySelector(".size-cell").textContent = formatItemSize(item);
+    tr.querySelector(".born-cell").textContent = item.bornAt ? new Date(item.bornAt).toLocaleString("zh-CN") : "";
     tr.querySelector(".time-cell").textContent = new Date(item.updatedAt).toLocaleString("zh-CN");
     tr.__itemData = item;
     if (item.status === "completed") tr.classList.add("is-completed");
@@ -2511,15 +2516,15 @@ function renderRows(items) {
 
   if (!items.length && !state.currentDir) {
     const tr = document.createElement("tr");
-    tr.innerHTML = '<td colspan="5" class="empty">' + (state.nsfwMode ? "shared_NSFW" : "共享") + '目录为空，先上传文件、上传文件夹，或新建文件夹。</td>';
+    tr.innerHTML = '<td colspan="6" class="empty">' + (state.nsfwMode ? "shared_NSFW" : "共享") + '目录为空，先上传文件、上传文件夹，或新建文件夹。</td>';
     tableBody.appendChild(tr);
   } else if (!items.length && state.searchQuery) {
     const tr = document.createElement("tr");
-    tr.innerHTML = '<td colspan="5" class="empty">没有匹配的项目。</td>';
+    tr.innerHTML = '<td colspan="6" class="empty">没有匹配的项目。</td>';
     tableBody.appendChild(tr);
   } else if (!items.length) {
     const tr = document.createElement("tr");
-    tr.innerHTML = '<td colspan="5" class="empty">当前目录为空。</td>';
+    tr.innerHTML = '<td colspan="6" class="empty">当前目录为空。</td>';
     tableBody.appendChild(tr);
   }
 }

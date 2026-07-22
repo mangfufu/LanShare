@@ -508,6 +508,11 @@ h1 { margin: 0; font-size: clamp(28px, 4vw, 44px); }
 .breadcrumb .crumb.is-search:hover {
   transform: none;
 }
+.breadcrumb .crumb.drag-over {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: currentColor;
+}
 .breadcrumb .sep {
   color: var(--muted);
   font-size: 13px;

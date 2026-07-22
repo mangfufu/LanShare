@@ -365,8 +365,9 @@ function removeFolderSizeCacheKey(key) {
   return false;
 }
 
-function invalidateFolderSizeCacheForPath(relativePath) {
-  const key = safeRelative(relativePath);
+function invalidateFolderSizeCacheForPath(relativePath, nsfw) {
+  var key = safeRelative(relativePath);
+  if (nsfw) key = "nsfw:" + key;
   let changed = false;
 
   if (!key) {
@@ -418,22 +419,27 @@ function processFolderSizeQueue() {
 }
 
 async function calculateFolderSizeJob(relativePath) {
-  const key = safeRelative(relativePath);
-  const dirPath = resolveInsideRoot(key);
+  var key = safeRelative(relativePath);
+  var isNsfw = false;
+  if (key.startsWith("nsfw:")) { key = key.slice(5); isNsfw = true; }
+  var root = isNsfw ? NSFW_DIR : ROOT_DIR;
+  const dirPath = path.resolve(root, key);
+  if (dirPath !== root && !dirPath.startsWith(root + path.sep)) return;
+  var cacheKey = isNsfw ? "nsfw:" + key : key;
   const beforeStat = await fsp.stat(toFsPath(dirPath)).catch(() => null);
   if (!beforeStat || !beforeStat.isDirectory()) {
-    if (folderSizeCache.delete(key)) scheduleFolderSizeCacheSave();
+    if (folderSizeCache.delete(cacheKey)) scheduleFolderSizeCacheSave();
     return;
   }
 
   const size = await getDirSize(dirPath, 1);
   const currentStat = await fsp.stat(toFsPath(dirPath)).catch(() => null);
   if (!currentStat || !currentStat.isDirectory()) {
-    if (folderSizeCache.delete(key)) scheduleFolderSizeCacheSave();
+    if (folderSizeCache.delete(cacheKey)) scheduleFolderSizeCacheSave();
     return;
   }
 
-  folderSizeCache.set(key, {
+  folderSizeCache.set(cacheKey, {
     size,
     dirMtimeMs: currentStat.mtimeMs,
     scannedAt: Date.now()
@@ -468,14 +474,17 @@ function getFolderSizeInfo(relativePath, stat) {
   };
 }
 
-async function readFolderSizeStatus(relativePath) {
+async function readFolderSizeStatus(relativePath, rootOverride) {
+  const root = rootOverride || ROOT_DIR;
   const key = safeRelative(relativePath);
-  const fullPath = resolveInsideRoot(key);
+  const fullPath = path.resolve(root, key);
+  if (fullPath !== root && !fullPath.startsWith(root + path.sep)) return { path: key, folderSize: null, folderSizeStatus: "missing", folderSizeCachedAt: null };
   const stat = await fsp.stat(toFsPath(fullPath)).catch(() => null);
   if (!stat || !stat.isDirectory()) {
     return { path: key, folderSize: null, folderSizeStatus: "missing", folderSizeCachedAt: null };
   }
-  return { path: key, ...getFolderSizeInfo(key, stat) };
+  var cacheKey = rootOverride ? "nsfw:" + key : key;
+  return { path: key, ...getFolderSizeInfo(cacheKey, stat) };
 }
 
 async function buildListItem(item, normalizedDir, rootOverride) {
@@ -494,7 +503,8 @@ async function buildListItem(item, normalizedDir, rootOverride) {
     updatedAt: stat.mtime.toISOString()
   };
   if (item.isDirectory()) {
-    Object.assign(result, getFolderSizeInfo(childRelative, stat));
+    var sizeKey = rootOverride ? "nsfw:" + childRelative : childRelative;
+    Object.assign(result, getFolderSizeInfo(sizeKey, stat));
     // 读取项目状态：completed / in_progress / not_started
     var status = "not_started"
     try {
@@ -930,7 +940,7 @@ async function cleanupThumbCacheForPath(fullPath, stat) {
 
 async function verifyThumbSource(meta) {
   const fullPath = path.resolve(String(meta.fullPath || ""));
-  if (!isPathInsideOrEqual(ROOT_DIR, fullPath)) return false;
+  if (!isPathInsideOrEqual(ROOT_DIR, fullPath) && !isPathInsideOrEqual(NSFW_DIR, fullPath)) return false;
   const stat = await fsp.stat(toFsPath(fullPath)).catch(() => null);
   if (!stat || !stat.isFile()) return false;
   return isSameThumbSource(stat, meta);
@@ -1330,7 +1340,7 @@ async function handleStreamingUpload(req, rootDir) {
               uploadedCount += 1;
               const segments = relativeNameRaw.split("/");
               uploadedNames.push(segments[segments.length - 1]);
-              invalidateFolderSizeCacheForPath(fileRelative);
+              invalidateFolderSizeCacheForPath(fileRelative, root !== ROOT_DIR);
               resolveFile();
             });
 
@@ -1476,14 +1486,15 @@ async function moveToRecycle(relativePath, rootOverride) {
     console.error(`删除失败: ${err.message} (${storedName})`);
     throw new Error("无法删除：文件正在被使用，请稍后重试。");
   }
-  invalidateFolderSizeCacheForPath(relativePath);
+  invalidateFolderSizeCacheForPath(relativePath, !!rootOverride);
   const meta = {
     id,
     name: storedName,
     originalPath: relativePath,
     itemType: stat.isDirectory() ? "directory" : "file",
     deletedAt: new Date().toISOString(),
-    storedName
+    storedName,
+    _nsfw: !!rootOverride
   };
   await fsp.writeFile(path.join(entryDir, "meta.json"), JSON.stringify(meta, null, 2), "utf8");
   return meta;
@@ -1629,8 +1640,9 @@ async function moveItems(paths, targetDir, options = {}, rootOverride) {
         await moveToRecycle(item.destinationRelative, root);
       }
       await fsp.rename(item.sourcePath, item.destinationPath);
-      invalidateFolderSizeCacheForPath(item.sourceRelative);
-      invalidateFolderSizeCacheForPath(item.destinationRelative);
+      var nsfwFlag = root !== ROOT_DIR;
+      invalidateFolderSizeCacheForPath(item.sourceRelative, nsfwFlag);
+      invalidateFolderSizeCacheForPath(item.destinationRelative, nsfwFlag);
     } catch (err) {
       if (err.code === "EEXIST") {
         throw createConflictError([makeConflict(item.destinationRelative, item.existingDestination)]);
@@ -1681,7 +1693,7 @@ async function copyItems(paths, targetDir, rootOverride) {
     }
 
     await fsp.cp(sourcePath, destPath, { recursive: true });
-    invalidateFolderSizeCacheForPath(destRelative);
+    invalidateFolderSizeCacheForPath(destRelative, root !== ROOT_DIR);
     copied.push({ from: sourceRelative, to: destRelative });
   }
 
@@ -1737,7 +1749,9 @@ async function restoreRecycleEntry(id) {
   const meta = JSON.parse(await fsp.readFile(path.join(entryDir, "meta.json"), "utf8"));
   const sourcePath = resolveRecycleStoredPath(entryDir, meta.storedName);
   const targetRelative = safeRelative(meta.originalPath);
-  const targetPath = resolveInsideRoot(targetRelative);
+  const root = meta._nsfw ? NSFW_DIR : ROOT_DIR;
+  const targetPath = path.resolve(root, targetRelative);
+  if (targetPath !== root && !targetPath.startsWith(root + path.sep)) throw new Error("路径越界");
   try {
     await fsp.access(targetPath);
     throw new Error("原位置已有同名文件或文件夹，无法恢复");
@@ -1747,7 +1761,7 @@ async function restoreRecycleEntry(id) {
   await ensureDir(path.dirname(targetPath));
   await fsp.rename(sourcePath, targetPath);
   await fsp.rm(entryDir, { recursive: true, force: true });
-  invalidateFolderSizeCacheForPath(targetRelative);
+  invalidateFolderSizeCacheForPath(targetRelative, meta._nsfw);
 }
 
 async function permanentlyDeleteRecycleEntry(id) {
@@ -1797,7 +1811,8 @@ function makeBatchDownloadFileName() {
   return `${String.fromCharCode(25209, 37327, 19979, 36733)}_${makeTimestampId()}.zip`;
 }
 
-async function collectBatchDownloadEntries(paths) {
+async function collectBatchDownloadEntries(paths, rootOverride) {
+  const root = rootOverride || ROOT_DIR;
   const entries = [];
   const skipped = [];
 
@@ -1805,7 +1820,8 @@ async function collectBatchDownloadEntries(paths) {
     const relativePath = safeRelative(item);
     if (!relativePath) continue;
 
-    const fullPath = resolveInsideRoot(relativePath);
+    const fullPath = path.resolve(root, relativePath);
+    if (fullPath !== root && !fullPath.startsWith(root + path.sep)) { skipped.push(relativePath); continue; }
     try {
       const stat = await fsp.stat(fullPath);
       entries.push({
@@ -1854,11 +1870,11 @@ function registerBatchDownload(entries, skipped) {
   return { token, fileName };
 }
 
-async function createBatchDownload(paths) {
+async function createBatchDownload(paths, rootOverride) {
   if (paths.length === 0) {
     throw new Error("没有可下载的目标");
   }
-  const { entries, skipped } = await collectBatchDownloadEntries(paths);
+  const { entries, skipped } = await collectBatchDownloadEntries(paths, rootOverride);
   return { ...registerBatchDownload(entries, skipped), skipped };
 }
 
@@ -1934,7 +1950,8 @@ async function handleApi(req, res, url) {
   if (req.method === "GET" && url.pathname === "/api/folder-sizes") {
     try {
       const paths = url.searchParams.getAll("path").slice(0, 200);
-      const items = await Promise.all(paths.map((item) => readFolderSizeStatus(item)));
+      var fsRoot = req._nsfwMode ? NSFW_DIR : null;
+      const items = await Promise.all(paths.map((item) => readFolderSizeStatus(item, fsRoot)));
       sendJson(res, 200, { items });
     } catch (error) {
       sendJson(res, 400, { error: error.message });
@@ -1966,6 +1983,7 @@ async function handleApi(req, res, url) {
   // 已完成项目列表
   if (req.method === "GET" && url.pathname === "/api/completed-projects") {
     try {
+      var cpRoot = req._nsfwMode ? NSFW_DIR : ROOT_DIR
       var projects = []
       async function scan(dir) {
         var entries
@@ -1977,14 +1995,14 @@ async function handleApi(req, res, url) {
           var status = null
           try { status = (await fsp.readFile(path.join(full, ".status"), "utf8")).trim() } catch {}
           if (status === "completed") {
-            var relativePath = path.relative(ROOT_DIR, full).replace(/\\/g, "/")
+            var relativePath = path.relative(cpRoot, full).replace(/\\/g, "/")
             projects.push({ name: entry.name, path: relativePath })
           }
           // 递归扫描子目录
           await scan(full)
         }
       }
-      await scan(ROOT_DIR)
+      await scan(cpRoot)
       sendJson(res, 200, { items: projects })
     } catch (error) {
       sendJson(res, 500, { error: error.message })
@@ -2115,7 +2133,7 @@ async function handleApi(req, res, url) {
       if (isInvalidFileName(name)) throw new Error("文件夹名称包含非法字符");
       const targetRelative = safeRelative(path.posix.join(parentDir, name));
       await ensureDir(resolveInsideRoot(targetRelative, req));
-      invalidateFolderSizeCacheForPath(targetRelative);
+      invalidateFolderSizeCacheForPath(targetRelative, req._nsfwMode);
       logAction(getDeviceName(req), getClientIp(req), "创建文件夹", path.posix.join(parentDir, name));
       sendJson(res, 200, { ok: true, path: targetRelative });
     } catch (error) {
@@ -2177,7 +2195,7 @@ async function handleApi(req, res, url) {
       }
       // 标记为项目目录
       await fsp.writeFile(path.join(projectFull, ".project"), "").catch(() => {});
-      invalidateFolderSizeCacheForPath(projectPath);
+      invalidateFolderSizeCacheForPath(projectPath, req._nsfwMode);
       logAction(getDeviceName(req), getClientIp(req), "创建项目文件夹", projectPath);
       sendJson(res, 200, { ok: true, path: projectPath });
     } catch (error) {
@@ -2241,8 +2259,8 @@ async function handleApi(req, res, url) {
       }
       await cleanupThumbCacheForPath(sourcePath, sourceStat);
       await fsp.rename(sourcePath, targetPath);
-      invalidateFolderSizeCacheForPath(sourceRelative);
-      invalidateFolderSizeCacheForPath(targetRelative);
+      invalidateFolderSizeCacheForPath(sourceRelative, req._nsfwMode);
+      invalidateFolderSizeCacheForPath(targetRelative, req._nsfwMode);
       logAction(getDeviceName(req), getClientIp(req), "重命名", `${sourceRelative} → ${newName}`);
       sendJson(res, 200, { ok: true, oldPath: sourceRelative, newPath: targetRelative });
     } catch (error) {
@@ -2323,7 +2341,7 @@ async function handleApi(req, res, url) {
     try {
       const body = parseJson(await readRequestBody(req));
       const paths = (Array.isArray(body.paths) ? body.paths : []).map((item) => safeRelative(item)).filter(Boolean);
-      const data = await createBatchDownload(paths);
+      const data = await createBatchDownload(paths, req._nsfwMode ? NSFW_DIR : null);
       const downloadNames = (data.skipped || []).length > 0
         ? [`${paths.length} 项 (${data.skipped.length} 项已跳过)`]
         : paths.map(p => p.split("/").pop());

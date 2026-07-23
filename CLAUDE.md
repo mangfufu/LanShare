@@ -61,7 +61,7 @@ Mirror of production with port 8082. Used for testing changes before syncing to 
 
 ### Main Page (Tab-based)
 - **文件管理** (Files): Browse, upload, download, move, delete files
-- **音频处理** (Audio): Import audio/video, trim, speed, reverse, merge, export
+- **音频提取** (Audio): Import audio/video, trim, speed, reverse, merge, export
 - **视频截帧** (Video): Import videos, mark frames, export screenshots
 
 Tools run in iframes, inheriting theme CSS variables from parent via MutationObserver.

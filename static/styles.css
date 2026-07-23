@@ -316,7 +316,7 @@ h1 { margin: 0; font-size: clamp(28px, 4vw, 44px); }
 
 .panel { padding: 8px 12px; display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
 
-/* 工具页面面板（音频处理、视频截帧） */
+/* 工具页面面板（音频提取、视频截帧） */
 .tool-panel {
   padding: 0;
   overflow: hidden;

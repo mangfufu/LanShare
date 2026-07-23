@@ -48,7 +48,13 @@ body[data-ui-style="editorial"] .preview-dialog {
   -webkit-backdrop-filter: blur(6px);
 }
 body[data-ui-style="editorial"] .panel { padding: 0 4px; }
-body[data-ui-style="editorial"] .page { width: min(1280px, calc(100% - 72px)); margin: 8px auto; margin-left: 56px; min-width: 1060px; height: calc(100vh - 56px); }
+body[data-ui-style="editorial"] .page {
+  width: calc(100% - 88px);
+  max-width: none;
+  margin: 8px 32px 8px 56px;
+  min-width: 1060px;
+  height: calc(100vh - 56px);
+}
 
 /* 版本徽标（右上角） */
 
@@ -993,18 +999,40 @@ body[data-ui-style="editorial"] .chat-input-row { position: relative; z-index: 0
   display: none;
 }
 
-@media (min-width: 1740px) {
+@media (min-width: 1680px) {
+  body[data-ui-style="editorial"] {
+    --workspace-layout-left: clamp(52px, 3vw, 72px);
+    /* 右下角悬浮按钮距边 18px、宽 42px；再保留至少 16px 的视觉间隔。 */
+    --workspace-layout-right: clamp(76px, 4vw, 92px);
+    --workspace-layout-gap: clamp(18px, 1.2vw, 30px);
+    --workspace-rail-width: clamp(320px, 22vw, 520px);
+  }
+
+  body[data-ui-style="editorial"] .page {
+    width: calc(
+      100vw
+      - var(--workspace-layout-left)
+      - var(--workspace-layout-right)
+      - var(--workspace-layout-gap)
+      - var(--workspace-rail-width)
+    );
+    max-width: none;
+    margin-left: var(--workspace-layout-left);
+    margin-right: 0;
+  }
+
   body[data-ui-style="editorial"] .workspace-rail {
     position: fixed;
     top: 48px;
     bottom: 38px;
-    left: 1356px;
+    left: auto;
+    right: var(--workspace-layout-right);
     z-index: 40;
     display: grid;
     grid-template-rows: minmax(260px, 42%) minmax(300px, 1fr);
     gap: 18px;
-    width: min(420px, calc(100vw - 1428px));
-    min-width: 300px;
+    width: var(--workspace-rail-width);
+    min-width: 0;
     color: var(--text);
     font-family: var(--f-display);
   }
@@ -2076,13 +2104,64 @@ body[data-ui-style="editorial"] .forum-reply {
   color: var(--ink-soft);
   font-size: 11px;
   line-height: 1.55;
+  transition: background-color 160ms ease;
+}
+
+body[data-ui-style="editorial"] .forum-reply.is-referenced {
+  background: color-mix(in srgb, var(--collab-tone) 14%, transparent);
 }
 
 body[data-ui-style="editorial"] .forum-reply-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
   margin-bottom: 2px;
   color: var(--muted);
   font-family: var(--f-mono);
   font-size: 9px;
+}
+
+body[data-ui-style="editorial"] .forum-floor-reply-button,
+body[data-ui-style="editorial"] .forum-reply-reference,
+body[data-ui-style="editorial"] .forum-reply-target button {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+body[data-ui-style="editorial"] .forum-floor-reply-button {
+  flex: 0 0 auto;
+  padding: 1px 0 1px 8px;
+  font-size: 9px;
+}
+
+body[data-ui-style="editorial"] .forum-floor-reply-button:hover,
+body[data-ui-style="editorial"] .forum-floor-reply-button:focus-visible,
+body[data-ui-style="editorial"] .forum-reply-reference:hover,
+body[data-ui-style="editorial"] .forum-reply-reference:focus-visible {
+  color: var(--collab-tone);
+  outline: none;
+}
+
+body[data-ui-style="editorial"] .forum-reply-reference {
+  display: block;
+  max-width: 100%;
+  margin: 1px 0 3px;
+  padding: 1px 0;
+  overflow: hidden;
+  color: color-mix(in srgb, var(--collab-tone) 74%, var(--muted));
+  font-size: 9px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+body[data-ui-style="editorial"] .forum-reply-content {
+  overflow-wrap: anywhere;
 }
 
 body[data-ui-style="editorial"] .forum-reply-form {
@@ -2091,6 +2170,34 @@ body[data-ui-style="editorial"] .forum-reply-form {
   align-items: end;
   gap: 8px;
   margin-top: 9px;
+}
+
+body[data-ui-style="editorial"] .forum-reply-target {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+  padding: 3px 6px;
+  border-left: 2px solid color-mix(in srgb, var(--collab-tone) 65%, var(--line));
+  background: color-mix(in srgb, var(--collab-tone) 8%, transparent);
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.35;
+}
+
+body[data-ui-style="editorial"] .forum-reply-target span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+body[data-ui-style="editorial"] .forum-reply-target button {
+  flex: 0 0 auto;
+  padding: 0;
+  color: var(--danger);
+  font-size: 9px;
 }
 
 body[data-ui-style="editorial"] .forum-reply-form input {

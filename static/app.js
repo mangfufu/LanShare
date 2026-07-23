@@ -430,6 +430,15 @@ function hideDragCancelZone() {
   cancelZone.classList.add("is-hidden");
 }
 
+function finishInternalMoveDragUi() {
+  stopDragAutoScroll();
+  setDropActive(false);
+  hideDragCancelZone();
+  document.querySelectorAll(".drag-over").forEach((element) => {
+    element.classList.remove("drag-over");
+  });
+}
+
 function showDialog(dialog) {
   if (typeof dialog.showModal === "function") {
     try {
@@ -2087,6 +2096,7 @@ async function deleteItem(item) {
 }
 
 async function moveItems(paths, targetDir, forceOverwrite = false) {
+  finishInternalMoveDragUi();
   let overwriteExisting = forceOverwrite;
   if (!overwriteExisting) {
     try {
@@ -2135,6 +2145,10 @@ async function moveItems(paths, targetDir, forceOverwrite = false) {
   }
   if (!res.ok) {
     showMessage(data.error || "移动失败", "error");
+    return false;
+  }
+  if (!Array.isArray(data.moved) || data.moved.length === 0) {
+    showMessage("项目已在目标文件夹中，无需移动", "info");
     return false;
   }
   // 记录撤销信息
@@ -3430,7 +3444,7 @@ document.addEventListener("dragleave", (event) => {
 
 document.addEventListener("drop", async (event) => {
   if (_draggingChar) return;
-  stopDragAutoScroll();
+  finishInternalMoveDragUi();
   // 工具 iframe 区域由工具自身处理
   if (event.target.closest && event.target.closest("#tab-audio, #tab-video")) {
     setDropActive(false);
@@ -3438,18 +3452,12 @@ document.addEventListener("drop", async (event) => {
   }
   if (isInternalMoveDrag(event)) {
     event.preventDefault();
-    setDropActive(false);
-    hideDragCancelZone();
     return;
   }
   if (!isExternalFileDrag(event)) {
-    setDropActive(false);
-    hideDragCancelZone();
     return;
   }
   event.preventDefault();
-  setDropActive(false);
-  hideDragCancelZone();
   try {
     const entries = await entriesFromDataTransfer(event.dataTransfer);
     await uploadEntries(entries, "拖拽内容");
@@ -3459,8 +3467,7 @@ document.addEventListener("drop", async (event) => {
 });
 
 document.addEventListener("dragend", () => {
-  stopDragAutoScroll();
-  hideDragCancelZone();
+  finishInternalMoveDragUi();
 });
 
 // 取消区域拖拽支持
@@ -3480,8 +3487,7 @@ if (dragCancelZone) {
     if (!isInternalMoveDrag(e)) return;
     e.preventDefault();
     e.stopPropagation();
-    stopDragAutoScroll();
-    hideDragCancelZone();
+    finishInternalMoveDragUi();
     showMessage("已取消拖拽操作", "info");
   });
 }
@@ -4447,12 +4453,46 @@ function renderForumReplies(container, replies, {
   replies.forEach((reply) => {
     const item = document.createElement("div");
     item.className = "forum-reply";
+    item.dataset.replyId = String(reply.id);
     const meta = document.createElement("div");
     meta.className = "forum-reply-meta";
-    meta.textContent = `${reply.floorNumber}F · ${reply.author} · ${formatWorkspaceTime(reply.createdAt)}`;
+    const metaLabel = document.createElement("span");
+    metaLabel.textContent = `${reply.floorNumber}F · ${reply.author} · ${formatWorkspaceTime(reply.createdAt)}`;
+    const floorReplyButton = document.createElement("button");
+    floorReplyButton.type = "button";
+    floorReplyButton.className = "forum-floor-reply-button";
+    floorReplyButton.textContent = "回复";
+    floorReplyButton.setAttribute("aria-label", `回复 ${reply.floorNumber}F ${reply.author}`);
+    floorReplyButton.addEventListener("click", () => {
+      container.dispatchEvent(new CustomEvent("forum-reply-target", {
+        detail: {
+          id: Number(reply.id),
+          floorNumber: Number(reply.floorNumber),
+          author: String(reply.author || "匿名")
+        }
+      }));
+    });
+    meta.append(metaLabel, floorReplyButton);
+    let reference = null;
+    if (reply.parentReplyId && reply.replyToFloor) {
+      reference = document.createElement("button");
+      reference.type = "button";
+      reference.className = "forum-reply-reference";
+      reference.textContent = `回复 ${reply.replyToFloor}F · @${reply.replyToAuthor || "匿名"}`;
+      reference.addEventListener("click", () => {
+        const target = container.querySelector(`[data-reply-id="${Number(reply.parentReplyId)}"]`);
+        if (!target) return;
+        target.scrollIntoView({ block: "nearest", behavior: "smooth" });
+        target.classList.add("is-referenced");
+        setTimeout(() => target.classList.remove("is-referenced"), 1200);
+      });
+    }
     const content = document.createElement("div");
+    content.className = "forum-reply-content";
     content.textContent = reply.content;
-    item.append(meta, content);
+    item.appendChild(meta);
+    if (reference) item.appendChild(reference);
+    item.appendChild(content);
     container.appendChild(item);
   });
   const loadedCount = previousLoadedCount + replies.length;
@@ -4725,10 +4765,26 @@ function renderForumReactionControls(post, container) {
 function renderForumPosts() {
   if (!forumPostList) return;
   const preservedOpenPosts = new Map(
-    [...forumPostList.querySelectorAll("details[open][data-post-id]")].map((details) => [
-      Number(details.dataset.postId),
-      details.querySelector(".forum-reply-form input")?.value || ""
-    ])
+    [...forumPostList.querySelectorAll("details[open][data-post-id]")].map((details) => {
+      const replyForm = details.querySelector(".forum-reply-form");
+      const replies = details.querySelector(".forum-replies");
+      return [
+        Number(details.dataset.postId),
+        {
+          draft: replyForm?.querySelector("input")?.value || "",
+          loadedCount: replies?.dataset.loaded === "1"
+            ? Math.max(0, Number(replies.dataset.loadedCount) || 0)
+            : 0,
+          replyTarget: replyForm?.dataset.parentReplyId
+            ? {
+                id: Number(replyForm.dataset.parentReplyId),
+                floorNumber: Number(replyForm.dataset.replyToFloor),
+                author: replyForm.dataset.replyToAuthor || "匿名"
+              }
+            : null
+        }
+      ];
+    })
   );
   forumPostList.innerHTML = "";
   if (forumPostCount) forumPostCount.textContent = `${state.forumPosts.length} 帖`;
@@ -4843,28 +4899,69 @@ function renderForumPosts() {
     replyInput.maxLength = 500;
     replyInput.placeholder = "回复这条动态…";
     replyInput.setAttribute("aria-label", `回复：${post.title}`);
+    const replyTargetBar = document.createElement("div");
+    replyTargetBar.className = "forum-reply-target is-hidden";
+    const replyTargetLabel = document.createElement("span");
+    const clearReplyTargetButton = document.createElement("button");
+    clearReplyTargetButton.type = "button";
+    clearReplyTargetButton.textContent = "取消";
+    clearReplyTargetButton.setAttribute("aria-label", "取消楼层回复");
+    replyTargetBar.append(replyTargetLabel, clearReplyTargetButton);
     const replyButton = document.createElement("button");
     replyButton.type = "submit";
     replyButton.className = "workspace-text-button";
     replyButton.textContent = "回复";
-    replyForm.append(replyInput, replyButton);
+    const setReplyTarget = (target, { focus = true } = {}) => {
+      if (!target || !Number.isInteger(Number(target.id)) || Number(target.id) <= 0) {
+        delete replyForm.dataset.parentReplyId;
+        delete replyForm.dataset.replyToFloor;
+        delete replyForm.dataset.replyToAuthor;
+        replyTargetBar.classList.add("is-hidden");
+        replyTargetLabel.textContent = "";
+        replyInput.placeholder = "回复这条动态…";
+        return;
+      }
+      replyForm.dataset.parentReplyId = String(target.id);
+      replyForm.dataset.replyToFloor = String(target.floorNumber);
+      replyForm.dataset.replyToAuthor = String(target.author || "匿名");
+      replyTargetLabel.textContent = `回复 ${target.floorNumber}F · @${target.author || "匿名"}`;
+      replyTargetBar.classList.remove("is-hidden");
+      replyInput.placeholder = `回复 ${target.floorNumber}F…`;
+      if (focus) replyInput.focus();
+    };
+    replyForm._setReplyTarget = setReplyTarget;
+    clearReplyTargetButton.addEventListener("click", () => {
+      setReplyTarget(null);
+      replyInput.focus();
+    });
+    replies.addEventListener("forum-reply-target", (event) => setReplyTarget(event.detail));
+    replyForm.append(replyTargetBar, replyInput, replyButton);
     replyForm.addEventListener("submit", async (event) => {
       event.preventDefault();
       const replyText = replyInput.value.trim();
       if (!replyText) return;
+      const loadedCountBeforeReply = Math.max(0, Number(replies.dataset.loadedCount) || 0);
+      const totalBeforeReply = Math.max(0, Number(replies.dataset.total) || 0);
+      const wasFullyLoaded = replies.dataset.loaded === "1"
+        && loadedCountBeforeReply >= totalBeforeReply;
+      const parentReplyId = Number(replyForm.dataset.parentReplyId) || null;
       replyButton.disabled = true;
       try {
         const response = await apiFetch("/api/forum/replies", {
           method: "POST",
           headers: { "Content-Type": "application/json", "X-Device-Name": encodeURIComponent(state.nickname || "匿名") },
-          body: JSON.stringify({ postId: post.id, content: replyText })
+          body: JSON.stringify({ postId: post.id, parentReplyId, content: replyText })
         });
         const data = await parseJsonResponse(response);
         if (!response.ok) throw new Error(data.error || "回复失败");
         replyInput.value = "";
-        await loadForumReplies(post.id, replies);
-        replyCount.textContent = `${Number(post.replyCount || 0) + 1} 回复`;
         post.replyCount = Number(post.replyCount || 0) + 1;
+        const reloadLimit = wasFullyLoaded
+          ? Math.max(4, loadedCountBeforeReply + 1)
+          : Math.max(4, loadedCountBeforeReply);
+        await loadForumReplies(post.id, replies, { limit: reloadLimit });
+        replyCount.textContent = `${post.replyCount} 回复`;
+        setReplyTarget(null);
         markForumPostRepliesRead(post);
         replyIndicator.hidden = true;
         replyIndicator.title = `${post.replyCount} 条回复`;
@@ -4892,12 +4989,21 @@ function renderForumPosts() {
     fragment.appendChild(details);
   });
   forumPostList.appendChild(fragment);
-  for (const [postId, replyDraft] of preservedOpenPosts) {
+  for (const [postId, preserved] of preservedOpenPosts) {
     const details = forumPostList.querySelector(`details[data-post-id="${postId}"]`);
     if (!details) continue;
+    const replies = details.querySelector(".forum-replies");
+    if (replies && preserved.loadedCount > 0) replies.dataset.loaded = "1";
     details.open = true;
     const replyInput = details.querySelector(".forum-reply-form input");
-    if (replyInput) replyInput.value = replyDraft;
+    if (replyInput) replyInput.value = preserved.draft;
+    const replyForm = details.querySelector(".forum-reply-form");
+    if (preserved.replyTarget && replyForm?._setReplyTarget) {
+      replyForm._setReplyTarget(preserved.replyTarget, { focus: false });
+    }
+    if (replies && preserved.loadedCount > 0) {
+      loadForumReplies(postId, replies, { limit: Math.max(4, preserved.loadedCount) });
+    }
   }
   updateForumManagementUi();
 }

@@ -160,10 +160,12 @@ function initForumDatabase() {
     CREATE TABLE IF NOT EXISTS replies (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       post_id INTEGER NOT NULL,
+      parent_reply_id INTEGER,
       content TEXT NOT NULL,
       author TEXT NOT NULL,
       created_at INTEGER NOT NULL,
-      FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE
+      FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE,
+      FOREIGN KEY (parent_reply_id) REFERENCES replies(id) ON DELETE SET NULL
     );
     CREATE TABLE IF NOT EXISTS forum_reactions (
       post_id INTEGER NOT NULL,
@@ -189,6 +191,13 @@ function initForumDatabase() {
   if (!postColumns.some((column) => column.name === "owner_token")) {
     forumDb.exec("ALTER TABLE posts ADD COLUMN owner_token TEXT");
   }
+  const replyColumns = forumDb.prepare("PRAGMA table_info(replies)").all();
+  if (!replyColumns.some((column) => column.name === "parent_reply_id")) {
+    forumDb.exec(
+      "ALTER TABLE replies ADD COLUMN parent_reply_id INTEGER REFERENCES replies(id) ON DELETE SET NULL"
+    );
+  }
+  forumDb.exec("CREATE INDEX IF NOT EXISTS idx_replies_parent_reply_id ON replies(parent_reply_id)");
   return forumDb;
 }
 
@@ -2899,21 +2908,38 @@ async function handleApi(req, res, url) {
       ) || 0;
       const rows = database
         .prepare(`
-          SELECT id, post_id AS postId, content, author, created_at AS createdAt
-          FROM replies
-          WHERE post_id = ?
-          ORDER BY created_at, id
+          WITH numbered_replies AS (
+            SELECT
+              id,
+              post_id,
+              parent_reply_id,
+              content,
+              author,
+              created_at,
+              ROW_NUMBER() OVER (ORDER BY created_at, id) + 1 AS floor_number
+            FROM replies
+            WHERE post_id = ?
+          )
+          SELECT
+            reply.id,
+            reply.post_id AS postId,
+            reply.parent_reply_id AS parentReplyId,
+            reply.content,
+            reply.author,
+            reply.created_at AS createdAt,
+            reply.floor_number AS floorNumber,
+            parent.author AS replyToAuthor,
+            parent.floor_number AS replyToFloor
+          FROM numbered_replies reply
+          LEFT JOIN numbered_replies parent ON parent.id = reply.parent_reply_id
+          ORDER BY reply.created_at, reply.id
           LIMIT ? OFFSET ?
         `)
         .all(postId, limit, offset);
-      const replies = rows.map((reply, index) => ({
-        ...reply,
-        floorNumber: offset + index + 2
-      }));
       sendJson(res, 200, {
-        replies,
+        replies: rows,
         total,
-        hasMore: offset + replies.length < total
+        hasMore: offset + rows.length < total
       }, { "Cache-Control": "no-store" });
     } catch (error) {
       sendJson(res, 500, { error: error.message });
@@ -2925,21 +2951,47 @@ async function handleApi(req, res, url) {
     try {
       const body = parseJson(await readRequestBody(req));
       const postId = Number(body.postId);
+      const parentReplyId = body.parentReplyId == null || body.parentReplyId === ""
+        ? null
+        : Number(body.parentReplyId);
       const content = String(body.content || "").trim().slice(0, 500);
       if (!Number.isInteger(postId) || postId <= 0 || !content) {
         sendJson(res, 400, { error: "回复内容不能为空" });
         return true;
       }
-      const post = initForumDatabase().prepare("SELECT id FROM posts WHERE id = ?").get(postId);
+      if (parentReplyId !== null && (!Number.isInteger(parentReplyId) || parentReplyId <= 0)) {
+        sendJson(res, 400, { error: "回复楼层无效" });
+        return true;
+      }
+      const database = initForumDatabase();
+      const post = database.prepare("SELECT id FROM posts WHERE id = ?").get(postId);
       if (!post) {
         sendJson(res, 404, { error: "动态不存在" });
         return true;
       }
+      let parentReply = null;
+      if (parentReplyId !== null) {
+        parentReply = database
+          .prepare("SELECT id, author FROM replies WHERE id = ? AND post_id = ?")
+          .get(parentReplyId, postId);
+        if (!parentReply) {
+          sendJson(res, 404, { error: "要回复的楼层不存在" });
+          return true;
+        }
+      }
       const createdAt = Date.now();
-      const result = initForumDatabase()
-        .prepare("INSERT INTO replies (post_id, content, author, created_at) VALUES (?, ?, ?, ?)")
-        .run(postId, content, getForumAuthor(req), createdAt);
-      sendJson(res, 201, { id: Number(result.lastInsertRowid), createdAt });
+      const result = database
+        .prepare(`
+          INSERT INTO replies (post_id, parent_reply_id, content, author, created_at)
+          VALUES (?, ?, ?, ?, ?)
+        `)
+        .run(postId, parentReplyId, content, getForumAuthor(req), createdAt);
+      sendJson(res, 201, {
+        id: Number(result.lastInsertRowid),
+        createdAt,
+        parentReplyId,
+        replyToAuthor: parentReply ? parentReply.author : null
+      });
     } catch (error) {
       sendJson(res, 400, { error: error.message });
     }
@@ -3330,7 +3382,9 @@ async function handleApi(req, res, url) {
         }
       });
       const movedNames = moved.map(m => m.from.split("/").pop());
-      logAction(getDeviceName(req), getClientIp(req), "移动", `${paths.length} 项 → /${body.targetDir || ""}`, movedNames);
+      if (moved.length > 0) {
+        logAction(getDeviceName(req), getClientIp(req), "移动", `${moved.length} 项 → /${body.targetDir || ""}`, movedNames);
+      }
       sendJson(res, 200, { ok: true, moved });
     } catch (error) {
       sendJson(res, error.statusCode || 400, { error: error.message, conflicts: error.conflicts || [] });

@@ -1673,12 +1673,10 @@ body[data-ui-style="editorial"] .forum-floor-load-more {
   display: flex;
   align-items: flex-end;
   justify-content: center;
-  gap: 12px;
   margin-top: -26px;
   padding: 38px 10px 8px;
   color: var(--muted);
   font-family: var(--f-ui);
-  font-size: 10px;
   isolation: isolate;
 }
 
@@ -1703,7 +1701,69 @@ body[data-ui-style="editorial"] .forum-floor-load-more::before {
 body[data-ui-style="editorial"] .forum-floor-load-more-button {
   position: relative;
   z-index: 1;
+  min-height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  padding: 2px 1px;
+  border: 0;
+  border-bottom: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--f-ui);
+  line-height: 1;
+  cursor: pointer;
+  transition: border-color 120ms ease, color 120ms ease;
+}
+
+body[data-ui-style="editorial"] .forum-floor-load-more-count,
+body[data-ui-style="editorial"] .forum-floor-load-more-label {
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
+}
+
+body[data-ui-style="editorial"] .forum-floor-load-more-count {
+  font-family: var(--f-mono);
+  font-size: 9px;
+}
+
+body[data-ui-style="editorial"] .forum-floor-load-more-label {
+  position: relative;
+  padding-left: 10px;
   color: var(--ink);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+body[data-ui-style="editorial"] .forum-floor-load-more-label::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 1px;
+  height: 10px;
+  background: var(--line);
+  transform: translateY(-50%);
+}
+
+body[data-ui-style="editorial"] .forum-floor-load-more-button:hover,
+body[data-ui-style="editorial"] .forum-floor-load-more-button:focus-visible {
+  border-bottom-color: var(--collab-tone);
+  color: var(--ink-soft);
+  outline: none;
+}
+
+body[data-ui-style="editorial"] .forum-floor-load-more-button:hover .forum-floor-load-more-label,
+body[data-ui-style="editorial"] .forum-floor-load-more-button:focus-visible .forum-floor-load-more-label {
+  color: var(--collab-tone);
+}
+
+body[data-ui-style="editorial"] .forum-floor-load-more-button:disabled {
+  cursor: wait;
+  opacity: 0.58;
 }
 
 body[data-ui-style="editorial"] .forum-post.is-latest {

@@ -4503,17 +4503,21 @@ function renderForumReplies(container, replies, {
     loadMore.className = "forum-floor-load-more";
     const remaining = Math.max(0, total - loadedCount);
     const hint = document.createElement("span");
+    hint.className = "forum-floor-load-more-count";
     hint.textContent = remaining > 0 ? `还有 ${remaining} 楼` : "还有更多楼层";
     const button = document.createElement("button");
     button.type = "button";
-    button.className = "workspace-text-button forum-floor-load-more-button";
-    button.textContent = "加载更多";
+    button.className = "forum-floor-load-more-button";
+    const label = document.createElement("span");
+    label.className = "forum-floor-load-more-label";
+    label.textContent = "加载更多";
+    button.append(hint, label);
     button.addEventListener("click", async () => {
       button.disabled = true;
-      button.textContent = "加载中…";
+      label.textContent = "加载中…";
       await loadForumReplies(postId, container, { append: true, limit: 5 });
     });
-    loadMore.append(hint, button);
+    loadMore.appendChild(button);
     container.appendChild(loadMore);
   }
 }

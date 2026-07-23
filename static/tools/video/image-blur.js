@@ -205,8 +205,11 @@ function clearMask(recordHistory = false) {
 }
 
 function updateToolButtons() {
-  blurElements.drawModeButton.classList.toggle("active-tool", blurState.tool === "draw");
-  blurElements.eraseModeButton.classList.toggle("active-tool", blurState.tool === "erase");
+  const isDrawMode = blurState.tool === "draw";
+  blurElements.drawModeButton.classList.toggle("active-tool", isDrawMode);
+  blurElements.eraseModeButton.classList.toggle("active-tool", !isDrawMode);
+  blurElements.drawModeButton.setAttribute("aria-pressed", String(isDrawMode));
+  blurElements.eraseModeButton.setAttribute("aria-pressed", String(!isDrawMode));
 }
 
 function canvasPointFromEvent(event) {

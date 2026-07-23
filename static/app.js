@@ -8,6 +8,7 @@ const FLOAT_SIZE_KEY = "lan_file_server_float_size";
 const CURRENT_DIR_KEY = "lan_file_server_current_dir";
 const CURSOR_EFFECT_KEY = "lan_file_server_cursor_effect";
 const COLUMN_WIDTHS_KEY = "lan_file_server_column_widths";
+const FORUM_READ_REPLIES_KEY = "lan_file_server_forum_read_replies";
 const INTERNAL_DRAG_TYPE = "application/x-lanshare-paths";
 
 const state = {
@@ -48,8 +49,53 @@ const state = {
   sortAsc: true,
   filterStatus: "all", // all | completed | in_progress | not_started
   nsfwMode: false,
-  clipboard: { items: [], mode: null }
+  clipboard: { items: [], mode: null },
+  workspaceStatus: null,
+  forumPosts: [],
+  forumManageMode: false,
+  forumSelectedPostIds: new Set(),
+  inProgressProjects: [],
+  workspaceProjects: [],
+  workspaceProjectsLoaded: false
 };
+const FORUM_REACTION_EMOJIS = [
+  "😀", "😄", "😂", "🤣", "😊", "🥰",
+  "😍", "😅", "😭", "😢", "😮", "😱",
+  "😡", "🤬", "🤔", "🙄", "👍", "👎",
+  "👏", "🙏", "💪", "❤️", "💔", "🔥",
+  "🎉", "💯", "👀", "✅", "❌", "🤝"
+];
+
+let forumReadReplyCounts = {};
+try {
+  const savedForumReadReplyCounts = JSON.parse(localStorage.getItem(FORUM_READ_REPLIES_KEY) || "{}");
+  if (
+    savedForumReadReplyCounts
+    && typeof savedForumReadReplyCounts === "object"
+    && !Array.isArray(savedForumReadReplyCounts)
+  ) {
+    forumReadReplyCounts = savedForumReadReplyCounts;
+  }
+} catch {
+  forumReadReplyCounts = {};
+}
+
+function getForumReadReplyCount(postId) {
+  return Math.max(0, Number(forumReadReplyCounts[String(postId)]) || 0);
+}
+
+function hasUnreadForumReplies(post) {
+  return Number(post.replyCount || 0) > getForumReadReplyCount(post.id);
+}
+
+function markForumPostRepliesRead(post) {
+  forumReadReplyCounts[String(post.id)] = Math.max(0, Number(post.replyCount || 0));
+  try {
+    localStorage.setItem(FORUM_READ_REPLIES_KEY, JSON.stringify(forumReadReplyCounts));
+  } catch {
+    // 某些隐私或受限浏览环境可能禁用本地存储。
+  }
+}
 
 const tableBody = document.querySelector("#fileTableBody");
 const tableView = document.querySelector("#tableView");
@@ -94,6 +140,23 @@ const logToggleBtn = document.querySelector("#logToggleBtn");
 const logPanel = document.querySelector("#logPanel");
 const logList = document.querySelector("#logList");
 const closeLogBtn = document.querySelector("#closeLogBtn");
+const workspaceRail = document.querySelector("#workspaceRail");
+const workspaceModeLabel = document.querySelector("#workspaceModeLabel");
+const workspaceOverviewBody = document.querySelector("#workspaceOverviewBody");
+const forumComposeToggle = document.querySelector("#forumComposeToggle");
+const forumComposeForm = document.querySelector("#forumComposeForm");
+const forumPostTitle = document.querySelector("#forumPostTitle");
+const forumPostContent = document.querySelector("#forumPostContent");
+const forumComposeMessage = document.querySelector("#forumComposeMessage");
+const forumPostList = document.querySelector("#forumPostList");
+const forumPostCount = document.querySelector("#forumPostCount");
+const forumManageToggle = document.querySelector("#forumManageToggle");
+const forumBatchBar = document.querySelector("#forumBatchBar");
+const forumBatchCount = document.querySelector("#forumBatchCount");
+const forumSelectAllToggle = document.querySelector("#forumSelectAllToggle");
+const forumBatchCancel = document.querySelector("#forumBatchCancel");
+const forumBatchDelete = document.querySelector("#forumBatchDelete");
+let forumReactionPickerPortal = null;
 
 const moveDialog = document.createElement("dialog");
 moveDialog.className = "preview-dialog move-dialog";
@@ -244,6 +307,7 @@ function setNsfwModeUi(enabled) {
   if (input) input.style.display = state.nsfwMode ? "none" : "";
   if (bar) bar.style.display = state.nsfwMode ? "" : "none";
   if (typeof _nsfwSet !== "undefined" && _nsfwSet) _nsfwSet.style.display = state.nsfwMode ? "none" : "";
+  loadInProgressProjects();
 }
 
 async function restoreNsfwSession() {
@@ -544,6 +608,7 @@ function setUploadProgress(percent, text, options = {}) {
     uploadSpeedEl.textContent = options.speed;
     window._uploadSpeed = options.speed;
   }
+  renderWorkspaceOverview();
 }
 
 function formatSpeed(bytesPerSec) {
@@ -572,6 +637,7 @@ function resetUploadProgress() {
   if (uploadSpeedEl) uploadSpeedEl.textContent = "";
   uploadProgressPercent.textContent = "0%";
   uploadProgressFill.style.width = "0%";
+  renderWorkspaceOverview();
 }
 
 function createUploadTask(label, count) {
@@ -638,11 +704,12 @@ function renderUploadQueue() {
     row.appendChild(actions);
     uploadQueue.appendChild(row);
   }
+  renderWorkspaceOverview();
 }
 
 function formatSize(size) {
   if (size == null) return "-";
-  const units = ["B", "KB", "MB", "GB"];
+  const units = ["B", "KB", "MB", "GB", "TB"];
   let value = size;
   let unitIndex = 0;
   while (value >= 1024 && unitIndex < units.length - 1) {
@@ -650,6 +717,12 @@ function formatSize(size) {
     unitIndex += 1;
   }
   return `${value.toFixed(value >= 10 || unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
+}
+
+function formatWorkspaceActivitySize(bytes, complete) {
+  const value = Math.max(0, Number(bytes) || 0);
+  if (complete !== false) return formatSize(value);
+  return value > 0 ? `≥ ${formatSize(value)}` : "待累计";
 }
 
 function formatItemSize(item) {
@@ -820,6 +893,7 @@ function updateToolbarButtons() {
   for (const button of [selectAllBtn, invertBtn, moveBtn, downloadBtn, deleteBtn]) {
     selectionTools.appendChild(button);
   }
+  renderWorkspaceOverview();
 }
 
 function renderBreadcrumb() {
@@ -1456,6 +1530,8 @@ const THEME_COLORS = {
   "--text":         ["#1a1a1a", "#e2dcd4"],
   "--muted":        ["#6b7280", "#948c82"],
   "--accent":       ["#0d9488", "#d65a3a"],
+  "--accent-2":     ["#0d9488", "#c14c2e"],
+  "--accent-text":  ["#ffffff", "#141210"],
   "--floating-bg":  ["#1f2937", "#e2dcd4"],
   "--floating-text":["#ffffff", "#141210"]
 };
@@ -1470,8 +1546,10 @@ const STYLE_PALETTES = {
     "--panel-soft":   ["#c1c9b5", "#1c1a13"],
     "--line":         ["#b3bba9", "#3b362a"],
     "--text":         ["#20261d", "#e8e2d2"],
-    "--muted":        ["#636c5d", "#8d8571"],
-    "--accent":       ["#4a7c59", "#35a596"],
+    "--muted":        ["#4f5949", "#8d8571"],
+    "--accent":       ["#4a7c59", "#d65a3a"],
+    "--accent-2":     ["#315f40", "#b9472c"],
+    "--accent-text":  ["#ffffff", "#16140f"],
     "--floating-bg":  ["#20261d", "#e8e2d2"],
     "--floating-text":["#c8cfbe", "#16140f"],
     "--paper-deep":   ["#bcc4b0", "#1a1712"],
@@ -1480,6 +1558,8 @@ const STYLE_PALETTES = {
     "--s-blue":       ["#2f6db3", "#6aa3e0"],
     "--s-amber":      ["#a87b24", "#d3a04a"],
     "--s-green":      ["#3e7c4f", "#6fb585"],
+    "--workspace-tone":["#5f6468", "#aeb4b8"],
+    "--collab-tone":   ["#77736f", "#beb8b2"],
     "--danger":       ["#b23b3b", "#d96454"],
     "--success":      ["#3e7c4f", "#6fb585"]
   }
@@ -1502,6 +1582,8 @@ let appliedThemeKeys = [];
 function applyThemePos(pos) {
   state.themePos = pos;
   state.theme = pos < 50 ? "light" : "dark";
+  document.body.dataset.theme = state.theme;
+  document.body.style.colorScheme = state.theme;
   localStorage.setItem(THEME_POS_KEY, String(pos));
   localStorage.setItem(THEME_KEY, state.theme);
   const btn = document.querySelector("#themeToggleBtn");
@@ -1751,6 +1833,7 @@ function updateSortButtons() {
 }
 
 function renderCurrentDirectory() {
+  closeStatusMenus();
   updateFilterByDir()
   renderBreadcrumb();
   if (state.searchQuery) {
@@ -1974,6 +2057,8 @@ async function setItemStatus(item, status) {
       if (status === "completed") selEl.classList.add("is-completed")
     }
   }
+  renderWorkspaceOverview()
+  loadInProgressProjects()
 }
 
 var _statusLabels = { completed: "已完成", in_progress: "进行中", not_started: "待开始" }
@@ -2272,6 +2357,71 @@ async function downloadSelectedItems() {
   window.setTimeout(resetUploadProgress, 1200);
 }
 
+function positionStatusMenu(menu) {
+  var anchor = menu._statusAnchor;
+  if (!anchor || !anchor.isConnected) return;
+  var anchorRect = anchor.getBoundingClientRect();
+  var menuRect = menu.getBoundingClientRect();
+  var viewportGap = 8;
+  var anchorGap = 4;
+  var left = Math.max(viewportGap, Math.min(anchorRect.left, window.innerWidth - menuRect.width - viewportGap));
+  var top = anchorRect.bottom + anchorGap;
+  var topAbove = anchorRect.top - menuRect.height - anchorGap;
+  if (top + menuRect.height > window.innerHeight - viewportGap && topAbove >= viewportGap) {
+    top = topAbove;
+  } else {
+    top = Math.max(viewportGap, Math.min(top, window.innerHeight - menuRect.height - viewportGap));
+  }
+  menu.style.left = Math.round(left) + "px";
+  menu.style.top = Math.round(top) + "px";
+}
+
+function setStatusMenuOpen(menu, isOpen) {
+  var anchor = menu._statusAnchor;
+  if (isOpen) {
+    var owner = anchor ? anchor.closest(".op-cell, .grid-card") : null;
+    menu._statusOwner = owner;
+    if (owner) owner.classList.add("has-open-status-menu");
+    if (!menu._statusHome) menu._statusHome = menu.parentElement;
+    document.body.appendChild(menu);
+    menu.classList.add("is-status-portal");
+    menu.style.visibility = "hidden";
+    menu.classList.remove("is-hidden");
+    positionStatusMenu(menu);
+    menu.style.visibility = "";
+    return;
+  }
+
+  menu.classList.add("is-hidden");
+  if (menu._statusOwner) menu._statusOwner.classList.remove("has-open-status-menu");
+  menu._statusOwner = null;
+  menu.classList.remove("is-status-portal");
+  menu.style.removeProperty("left");
+  menu.style.removeProperty("top");
+  menu.style.removeProperty("visibility");
+  if (menu._statusHome && menu._statusHome.isConnected) {
+    menu._statusHome.appendChild(menu);
+  } else if (menu.parentElement === document.body) {
+    menu.remove();
+  }
+}
+
+function closeStatusMenus(exceptMenu) {
+  document.querySelectorAll(".status-badge-menu").forEach(function(menu) {
+    if (menu !== exceptMenu) setStatusMenuOpen(menu, false);
+  });
+}
+
+document.addEventListener("click", function() {
+  closeStatusMenus();
+});
+window.addEventListener("resize", function() {
+  closeStatusMenus();
+});
+document.addEventListener("scroll", function() {
+  closeStatusMenus();
+}, true);
+
 function createActions(item) {
   const actions = document.createElement("div");
   actions.className = "grid-actions";
@@ -2340,16 +2490,15 @@ function createActions(item) {
         setStatusBadgeColor(statusBtn, this.dataset.value);
         statusMenu.querySelectorAll(".status-badge-opt").forEach(function(o) { o.classList.remove("active"); });
         this.classList.add("active");
-        statusMenu.classList.add("is-hidden");
+        setStatusMenuOpen(statusMenu, false);
       });
       statusMenu.appendChild(optBtn);
     });
 
     statusBtn.addEventListener("click", function(e) {
       e.stopPropagation();
-      var allMenus = document.querySelectorAll(".status-badge-menu");
-      allMenus.forEach(function(m) { if (m !== statusMenu) m.classList.add("is-hidden"); });
-      statusMenu.classList.toggle("is-hidden");
+      closeStatusMenus(statusMenu);
+      setStatusMenuOpen(statusMenu, statusMenu.classList.contains("is-hidden"));
     });
 
     var wrap = document.createElement("span");
@@ -2357,6 +2506,8 @@ function createActions(item) {
     wrap.style.display = "inline-flex";
     wrap.appendChild(statusBtn);
     wrap.appendChild(statusMenu);
+    statusMenu._statusAnchor = statusBtn;
+    statusMenu._statusHome = wrap;
     actions.appendChild(wrap);
   }
 
@@ -3076,8 +3227,9 @@ async function uploadEntries(fileEntries, label = "文件") {
 
   setUploadProgress(100, "上传完成");
   updateUploadTask(task, { status: "done", message: "上传完成", progress: 100 });
-  showMessage(`上传完成，共 ${result.data.uploaded} 个项目，已写入备份。`, "success");
+  showMessage(`上传完成，共 ${result.data.uploaded} 个文件。`, "success");
   await loadDir(state.currentDir);
+  await Promise.all([loadWorkspaceStatus(), loadInProgressProjects()]);
   pollLogs();
   window.setTimeout(resetUploadProgress, 800);
   window.setTimeout(() => removeUploadTask(task.id), 4000);
@@ -3711,6 +3863,7 @@ if (hideBtn) {
       document.querySelector("#logPanel"),
       document.querySelector("#recycleDrawer"),
       document.querySelector("#floatControl"),
+      document.querySelector("#workspaceRail"),
       document.querySelector("#tab-audio"),
       document.querySelector("#tab-video"),
     ];
@@ -3926,12 +4079,1001 @@ initBackground();
 setViewMode(state.viewMode);
 async function initializeFileView() {
   await restoreNsfwSession();
+  await loadInProgressProjects();
   const savedDir = localStorage.getItem(CURRENT_DIR_KEY) || "";
   await loadDir(savedDir);
 }
 initializeFileView();
 setupScrollPagination();
 loadRecycleItems();
+
+// --- 宽屏工作区：目录/选中项概览 + 协作动态 ---
+function formatWorkspaceTime(value) {
+  if (!value) return "暂无";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "暂无";
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
+  }).format(date);
+}
+
+function getWorkspaceItemBytes(item) {
+  if (!item) return null;
+  if (item.type === "directory") return Number.isFinite(item.folderSize) ? item.folderSize : null;
+  return Number.isFinite(item.size) ? item.size : null;
+}
+
+function isWorkspaceDateToday(value) {
+  const date = new Date(value);
+  const now = new Date();
+  return !Number.isNaN(date.getTime())
+    && date.getFullYear() === now.getFullYear()
+    && date.getMonth() === now.getMonth()
+    && date.getDate() === now.getDate();
+}
+
+function formatWorkspaceProjectTime(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "时间未知";
+  const now = new Date();
+  const time = new Intl.DateTimeFormat("zh-CN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
+  }).format(date);
+  if (isWorkspaceDateToday(date)) return `今天 ${time}`;
+  const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+  if (
+    date.getFullYear() === yesterday.getFullYear()
+    && date.getMonth() === yesterday.getMonth()
+    && date.getDate() === yesterday.getDate()
+  ) {
+    return `昨天 ${time}`;
+  }
+  return new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit" }).format(date);
+}
+
+function renderWorkspaceWorkSummary() {
+  if (!state.workspaceProjectsLoaded) {
+    return '<div class="workspace-work-loading">正在读取工作概况…</div>';
+  }
+  const projects = state.workspaceProjects;
+  const notStarted = projects.filter((project) => project.status === "not_started").length;
+  const inProgress = projects.filter((project) => project.status === "in_progress").length;
+  const completed = projects.filter((project) => project.status === "completed").length;
+  const activity = state.workspaceStatus && state.workspaceStatus.activity;
+  const uploadedToday = activity ? Number(activity.uploadedFiles) || 0 : null;
+  const uploadedBytesToday = activity ? Number(activity.uploadedBytes) || 0 : null;
+  const downloadedToday = activity ? Number(activity.downloadedFiles) || 0 : null;
+  const downloadedBytesToday = activity ? Number(activity.downloadedBytes) || 0 : null;
+  const deletedToday = activity ? Number(activity.deletedItems) || 0 : null;
+  const deletedBytesToday = activity ? Number(activity.deletedBytes) || 0 : null;
+  const activeDevices = activity ? Number(activity.activeDevices) || 0 : null;
+  const projectCount = Math.max(1, projects.length);
+  const pendingWidth = notStarted / projectCount * 100;
+  const progressWidth = inProgress / projectCount * 100;
+  const completedWidth = completed / projectCount * 100;
+  return `
+    <section class="workspace-work-summary" aria-label="工作概况">
+      <div class="workspace-projects-head">
+        <span>工作概况</span>
+        <strong>${projects.length ? `最近活动 ${formatWorkspaceProjectTime(Math.max(...projects.map((project) => new Date(project.updatedAt).getTime() || 0)))}` : "暂无项目"}</strong>
+      </div>
+      <div class="workspace-stat-grid workspace-work-grid">
+        <div class="workspace-stat"><span>项目总数</span><strong>${projects.length} 项</strong></div>
+        <div class="workspace-stat workspace-activity-stat" title="文件项数 · 数据量"><span>今日上传</span><strong>${uploadedToday == null ? "读取中" : `${uploadedToday} 项 · ${formatWorkspaceActivitySize(uploadedBytesToday, activity.uploadedBytesComplete)}`}</strong></div>
+        <div class="workspace-stat workspace-activity-stat" title="文件项数 · 数据量"><span>今日下载 / 删除</span><strong class="workspace-activity-values">${downloadedToday == null || deletedToday == null ? "读取中" : `<b>下载 ${downloadedToday} 项 · ${formatWorkspaceActivitySize(downloadedBytesToday, activity.downloadedBytesComplete)}</b><b>删除 ${deletedToday} 项 · ${formatWorkspaceActivitySize(deletedBytesToday, activity.deletedBytesComplete)}</b>`}</strong></div>
+        <div class="workspace-stat"><span>在线设备</span><strong>${activeDevices == null ? "读取中" : `${activeDevices} 台`}</strong></div>
+      </div>
+      <div class="workspace-progress" aria-label="待开始 ${notStarted} 项，进行中 ${inProgress} 项，已完成 ${completed} 项">
+        <div class="workspace-progress-track">
+          <span class="is-pending" style="width:${pendingWidth.toFixed(2)}%"></span>
+          <span class="is-progress" style="width:${progressWidth.toFixed(2)}%"></span>
+          <span class="is-completed" style="width:${completedWidth.toFixed(2)}%"></span>
+        </div>
+        <div class="workspace-progress-legend">
+          <span><i class="is-pending"></i>待开始 ${notStarted}</span>
+          <span><i class="is-progress"></i>进行中 ${inProgress}</span>
+          <span><i class="is-completed"></i>完成 ${completed}</span>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function renderInProgressProjects() {
+  const projects = [...state.inProgressProjects].sort(
+    (left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime()
+  );
+  const rows = !state.workspaceProjectsLoaded
+    ? '<div class="workspace-project-empty">正在读取进行中的项目…</div>'
+    : projects.length
+      ? projects.map((project) => {
+        const size = getWorkspaceItemBytes(project);
+        const meta = `${formatWorkspaceProjectTime(project.updatedAt)}${size == null ? "" : ` · ${formatSize(size)}`}`;
+        return `
+        <button class="workspace-project-link" type="button" data-workspace-project-path="${escapeHtml(project.path)}" title="${escapeHtml(project.path)}">
+          <span>${escapeHtml(project.name)}</span>
+          <small>${escapeHtml(meta)}</small>
+        </button>
+      `;
+      }).join("")
+      : '<div class="workspace-project-empty">暂无进行中的项目</div>';
+  return `
+    <div class="workspace-projects">
+      <div class="workspace-projects-head">
+        <span>进行中的项目</span>
+        <strong>${projects.length} 项</strong>
+      </div>
+      <div class="workspace-project-list">${rows}</div>
+    </div>
+  `;
+}
+
+function renderWorkspaceStorage() {
+  const data = state.workspaceStatus;
+  if (!data || !data.storage) {
+    return `
+      <div class="workspace-storage">
+        <div class="workspace-storage-head"><span>存储空间</span><strong>读取中…</strong></div>
+        ${renderInProgressProjects()}
+      </div>
+    `;
+  }
+  const storage = data.storage;
+  const total = Number(storage.totalBytes) || 0;
+  const used = Number(storage.usedBytes) || 0;
+  const free = Number(storage.freeBytes) || 0;
+  const usedPercent = total > 0 ? Math.min(100, Math.max(0, used / total * 100)) : 0;
+  return `
+    <div class="workspace-storage">
+      <div class="workspace-storage-head">
+        <span>${escapeHtml(storage.volume || "共享盘")} 存储</span>
+        <strong>剩余 ${formatSize(free)} / ${formatSize(total)}</strong>
+      </div>
+      <div class="workspace-storage-bar" aria-label="磁盘已用 ${Math.round(usedPercent)}%">
+        <span style="width:${usedPercent.toFixed(2)}%"></span>
+      </div>
+      ${renderInProgressProjects()}
+    </div>
+  `;
+}
+
+function getWorkspaceSelectedItems() {
+  const source = state.searchQuery ? state.searchResults : state.currentItems;
+  return source.filter((item) => state.selectedPaths.has(item.path));
+}
+
+function renderWorkspaceSingleItem(item) {
+  const size = getWorkspaceItemBytes(item);
+  const status = item.type === "directory" ? (statusLabels[item.status] || "待开始") : "—";
+  const creator = item.creator || "—";
+  const createdTime = item.createdByAt || item.bornAt;
+  let preview = escapeHtml(getFileType(item));
+  if (item.previewType === "image" || item.previewType === "video") {
+    const src = `/api/thumb?path=${encodeURIComponent(item.path)}&w=240${state.nsfwMode ? "&nsfw=1" : ""}`;
+    preview = `<img src="${src}" alt="" loading="lazy" />`;
+  } else if (item.previewType === "audio") {
+    preview = "AUDIO";
+  } else if (item.type === "directory") {
+    preview = "DIR";
+  }
+  return `
+    <div class="workspace-selected-head">
+      <div class="workspace-selected-preview">${preview}</div>
+      <div class="workspace-selected-title">
+        <strong title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</strong>
+        <span>${escapeHtml(getFileType(item))}${item.isProject ? " · 项目目录" : ""}</span>
+        <span class="workspace-selected-uploader" title="创建者：${escapeHtml(creator)}">创建者 · ${escapeHtml(creator)}</span>
+      </div>
+    </div>
+    <dl class="workspace-detail-list">
+      <div class="workspace-detail-row"><dt>路径</dt><dd title="${escapeHtml(item.path)}">${escapeHtml(item.path)}</dd></div>
+      <div class="workspace-detail-pair">
+        <div><dt>大小</dt><dd>${size == null ? "计算中或未知" : formatSize(size)}</dd></div>
+        <div><dt>状态</dt><dd>${escapeHtml(status)}</dd></div>
+      </div>
+      <div class="workspace-detail-pair">
+        <div><dt>创建</dt><dd>${formatWorkspaceTime(createdTime)}</dd></div>
+        <div><dt>修改</dt><dd>${formatWorkspaceTime(item.updatedAt)}</dd></div>
+      </div>
+    </dl>
+    ${renderWorkspaceStorage()}
+  `;
+}
+
+function renderWorkspaceMultipleItems(items) {
+  const folders = items.filter((item) => item.type === "directory").length;
+  const files = items.length - folders;
+  const knownBytes = items.reduce((total, item) => {
+    const size = getWorkspaceItemBytes(item);
+    return total + (size == null ? 0 : size);
+  }, 0);
+  const previewNames = items.slice(0, 4).map((item) => item.name).join("、");
+  return `
+    <div class="workspace-path" title="${escapeHtml(previewNames)}">${escapeHtml(previewNames)}${items.length > 4 ? "…" : ""}</div>
+    <div class="workspace-stat-grid">
+      <div class="workspace-stat"><span>已选择</span><strong>${items.length} 项</strong></div>
+      <div class="workspace-stat"><span>已知大小</span><strong>${formatSize(knownBytes)}</strong></div>
+      <div class="workspace-stat"><span>文件夹</span><strong>${folders}</strong></div>
+      <div class="workspace-stat"><span>文件</span><strong>${files}</strong></div>
+    </div>
+    ${renderWorkspaceStorage()}
+  `;
+}
+
+function renderWorkspaceDirectory() {
+  return `${renderWorkspaceWorkSummary()}${renderWorkspaceStorage()}`;
+}
+
+function renderWorkspaceOverview() {
+  if (!workspaceOverviewBody || !workspaceModeLabel) return;
+  const selectedItems = getWorkspaceSelectedItems();
+  if (selectedItems.length === 1) {
+    workspaceModeLabel.textContent = "项目详情";
+    workspaceOverviewBody.innerHTML = renderWorkspaceSingleItem(selectedItems[0]);
+  } else if (selectedItems.length > 1) {
+    workspaceModeLabel.textContent = "批量选择";
+    workspaceOverviewBody.innerHTML = renderWorkspaceMultipleItems(selectedItems);
+  } else {
+    workspaceModeLabel.textContent = "项目概览";
+    workspaceOverviewBody.innerHTML = renderWorkspaceDirectory();
+  }
+}
+
+if (workspaceOverviewBody) {
+  workspaceOverviewBody.addEventListener("click", (event) => {
+    const projectButton = event.target.closest("[data-workspace-project-path]");
+    if (!projectButton) return;
+    loadDir(projectButton.dataset.workspaceProjectPath || "");
+  });
+  workspaceOverviewBody.addEventListener("contextmenu", (event) => {
+    const projectButton = event.target.closest("[data-workspace-project-path]");
+    if (!projectButton) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const projectPath = projectButton.dataset.workspaceProjectPath || "";
+    const project = state.inProgressProjects.find((item) => item.path === projectPath);
+    if (!project) return;
+    showContextMenu([
+      { label: "打开", action: function() { loadDir(project.path); } },
+      { sep: true },
+      { label: "待开始", action: function() { setItemStatus(project, "not_started"); } },
+      { label: "进行中", action: function() { setItemStatus(project, "in_progress"); } },
+      { label: "已完成", action: function() { setItemStatus(project, "completed"); } },
+      { sep: true },
+      { label: "重命名", action: async function() { await renameItem(project); loadInProgressProjects(); } },
+      { label: "复制", action: function() { copyItem(project); } },
+      { label: "移动", action: async function() { await moveItem(project); loadInProgressProjects(); } },
+      { sep: true },
+      { label: "删除", action: async function() { await deleteItem(project); loadInProgressProjects(); }, danger: true }
+    ], event.clientX, event.clientY);
+  });
+}
+
+async function loadWorkspaceStatus() {
+  try {
+    const response = await fetch("/api/workspace/status", { cache: "no-store" });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "读取工作区状态失败");
+    state.workspaceStatus = data;
+    renderWorkspaceOverview();
+  } catch {
+    state.workspaceStatus = null;
+    renderWorkspaceOverview();
+  }
+}
+
+let workspaceProjectSizeTimer = null;
+
+async function refreshWorkspaceProjectSizes(attempt = 0) {
+  if (workspaceProjectSizeTimer) {
+    clearTimeout(workspaceProjectSizeTimer);
+    workspaceProjectSizeTimer = null;
+  }
+  const pendingProjects = state.workspaceProjects.filter(
+    (project) => project.folderSizeStatus === "pending" || project.folderSizeStatus === "stale"
+  );
+  if (!pendingProjects.length) return;
+  const params = new URLSearchParams();
+  pendingProjects.slice(0, 200).forEach((project) => params.append("path", project.path));
+  try {
+    let url = `/api/folder-sizes?${params.toString()}`;
+    if (state.nsfwMode) url += "&nsfw=1";
+    const response = await fetch(url, { cache: "no-store" });
+    const data = await response.json();
+    if (!response.ok) return;
+    const updates = new Map((data.items || []).map((item) => [item.path, item]));
+    state.workspaceProjects.forEach((project) => {
+      const next = updates.get(project.path);
+      if (!next) return;
+      project.folderSize = next.folderSize == null ? null : Number(next.folderSize);
+      project.folderSizeStatus = next.folderSizeStatus;
+      project.folderSizeCachedAt = next.folderSizeCachedAt;
+    });
+    renderWorkspaceOverview();
+    const stillPending = state.workspaceProjects.some(
+      (project) => project.folderSizeStatus === "pending" || project.folderSizeStatus === "stale"
+    );
+    if (stillPending && attempt < 12) {
+      workspaceProjectSizeTimer = setTimeout(() => refreshWorkspaceProjectSizes(attempt + 1), 1500);
+    }
+  } catch {
+    // 下一次工作区刷新会重新请求项目大小。
+  }
+}
+
+async function loadInProgressProjects() {
+  try {
+    let url = "/api/list?dir=&offset=0&limit=200";
+    if (state.nsfwMode) url += "&nsfw=1";
+    const response = await fetch(url, { cache: "no-store" });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "读取进行中项目失败");
+    state.workspaceProjects = (data.items || []).filter((item) => item.type === "directory");
+    state.inProgressProjects = state.workspaceProjects.filter((item) => item.status === "in_progress");
+    state.workspaceProjectsLoaded = true;
+    renderWorkspaceOverview();
+    refreshWorkspaceProjectSizes();
+  } catch {
+    state.inProgressProjects = [];
+    state.workspaceProjects = [];
+    state.workspaceProjectsLoaded = true;
+    renderWorkspaceOverview();
+  }
+}
+
+function renderForumReplies(container, replies, {
+  append = false,
+  total = replies.length,
+  hasMore = false,
+  postId
+} = {}) {
+  container.querySelector(".forum-floor-load-more")?.remove();
+  const previousLoadedCount = append ? Number(container.dataset.loadedCount || 0) : 0;
+  if (!append) container.innerHTML = "";
+  if (!replies.length && previousLoadedCount === 0) {
+    const empty = document.createElement("div");
+    empty.className = "forum-reply forum-reply-empty";
+    empty.textContent = "还没有回复";
+    container.appendChild(empty);
+  } else if (append) {
+    container.querySelector(".forum-reply-empty")?.remove();
+  }
+  replies.forEach((reply) => {
+    const item = document.createElement("div");
+    item.className = "forum-reply";
+    const meta = document.createElement("div");
+    meta.className = "forum-reply-meta";
+    meta.textContent = `${reply.floorNumber}F · ${reply.author} · ${formatWorkspaceTime(reply.createdAt)}`;
+    const content = document.createElement("div");
+    content.textContent = reply.content;
+    item.append(meta, content);
+    container.appendChild(item);
+  });
+  const loadedCount = previousLoadedCount + replies.length;
+  container.dataset.loadedCount = String(loadedCount);
+  container.dataset.total = String(total);
+  if (hasMore) {
+    const loadMore = document.createElement("div");
+    loadMore.className = "forum-floor-load-more";
+    const remaining = Math.max(0, total - loadedCount);
+    const hint = document.createElement("span");
+    hint.textContent = remaining > 0 ? `还有 ${remaining} 楼` : "还有更多楼层";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "workspace-text-button forum-floor-load-more-button";
+    button.textContent = "加载更多";
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      button.textContent = "加载中…";
+      await loadForumReplies(postId, container, { append: true, limit: 5 });
+    });
+    loadMore.append(hint, button);
+    container.appendChild(loadMore);
+  }
+}
+
+async function loadForumReplies(postId, container, { append = false, limit = 4 } = {}) {
+  if (!append) {
+    container.innerHTML = '<div class="forum-reply">正在读取回复…</div>';
+    container.dataset.loadedCount = "0";
+  }
+  try {
+    const offset = append ? Number(container.dataset.loadedCount || 0) : 0;
+    const response = await fetch(
+      `/api/forum/replies?postId=${encodeURIComponent(postId)}&limit=${encodeURIComponent(limit)}&offset=${encodeURIComponent(offset)}`,
+      { cache: "no-store" }
+    );
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "读取回复失败");
+    renderForumReplies(container, data.replies || [], {
+      append,
+      total: Number(data.total) || 0,
+      hasMore: Boolean(data.hasMore),
+      postId
+    });
+    container.dataset.loaded = "1";
+  } catch (error) {
+    if (append) {
+      renderForumReplies(container, [], {
+        append: true,
+        total: Number(container.dataset.total || 0),
+        hasMore: true,
+        postId
+      });
+      showMessage(error.message || "更多楼层加载失败", "error");
+      return;
+    }
+    container.innerHTML = "";
+    const item = document.createElement("div");
+    item.className = "forum-reply";
+    item.textContent = error.message || "回复读取失败";
+    container.appendChild(item);
+  }
+}
+
+function getSelectedForumPosts() {
+  return state.forumPosts.filter(
+    (post) => post.canDelete && state.forumSelectedPostIds.has(post.id)
+  );
+}
+
+function updateForumManagementUi() {
+  const deletableIds = new Set(state.forumPosts.filter((post) => post.canDelete).map((post) => post.id));
+  for (const postId of state.forumSelectedPostIds) {
+    if (!deletableIds.has(postId)) state.forumSelectedPostIds.delete(postId);
+  }
+  if (!deletableIds.size) {
+    state.forumManageMode = false;
+    state.forumSelectedPostIds.clear();
+  }
+  if (forumManageToggle) {
+    forumManageToggle.classList.toggle("is-hidden", !deletableIds.size);
+    forumManageToggle.textContent = state.forumManageMode ? "完成" : "多选";
+    forumManageToggle.setAttribute("aria-expanded", String(state.forumManageMode));
+  }
+  if (forumPostList) forumPostList.classList.toggle("is-managing", state.forumManageMode);
+  if (forumBatchBar) forumBatchBar.classList.toggle("is-hidden", !state.forumManageMode);
+  const selectedCount = getSelectedForumPosts().length;
+  if (forumBatchCount) forumBatchCount.textContent = `已选择 ${selectedCount} 条`;
+  if (forumSelectAllToggle) {
+    const allSelected = deletableIds.size > 0
+      && [...deletableIds].every((postId) => state.forumSelectedPostIds.has(postId));
+    forumSelectAllToggle.textContent = allSelected ? "取消全选" : "全选";
+    forumSelectAllToggle.disabled = deletableIds.size === 0;
+  }
+  if (forumBatchDelete) forumBatchDelete.disabled = selectedCount === 0;
+  document.querySelectorAll(".forum-post-select").forEach((selectionControl) => {
+    const selected = state.forumSelectedPostIds.has(Number(selectionControl.dataset.postId));
+    selectionControl.classList.toggle("is-checked", selected);
+    selectionControl.setAttribute("aria-checked", String(selected));
+  });
+}
+
+async function confirmAndDeleteForumPosts(posts, exitManageMode = false) {
+  const targets = posts.filter((post) => post && post.canDelete);
+  if (!targets.length) return false;
+  const isBatch = targets.length > 1;
+  const confirmed = await openConfirmDialog({
+    title: isBatch ? `删除 ${targets.length} 条动态` : "删除动态",
+    message: isBatch
+      ? "所选动态及其全部回复将被永久删除。"
+      : "这条动态及其全部回复将被永久删除。",
+    items: targets.map((post) => post.title),
+    confirmText: isBatch ? "批量删除" : "删除",
+    danger: true
+  });
+  if (!confirmed) return false;
+  if (forumBatchDelete) forumBatchDelete.disabled = true;
+  try {
+    const response = await apiFetch(isBatch ? "/api/forum/posts/delete-batch" : "/api/forum/posts/delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(isBatch ? { ids: targets.map((post) => post.id) } : { id: targets[0].id })
+    });
+    const data = await parseJsonResponse(response);
+    if (!response.ok) throw new Error(data.error || "删除失败");
+    targets.forEach((post) => state.forumSelectedPostIds.delete(post.id));
+    if (exitManageMode) {
+      state.forumManageMode = false;
+      state.forumSelectedPostIds.clear();
+    }
+    await loadForumPosts();
+    showMessage(isBatch ? `已删除 ${targets.length} 条动态` : "动态已删除", "success");
+    return true;
+  } catch (error) {
+    showMessage(error.message || "删除失败", "error");
+    return false;
+  } finally {
+    updateForumManagementUi();
+  }
+}
+
+function closeForumReactionPickers() {
+  if (forumReactionPickerPortal) {
+    forumReactionPickerPortal.classList.add("is-hidden");
+    forumReactionPickerPortal.classList.remove("is-reaction-overflow");
+    forumReactionPickerPortal.innerHTML = "";
+    forumReactionPickerPortal.dataset.anchorKey = "";
+  }
+}
+
+function ensureForumReactionPickerPortal() {
+  if (!forumReactionPickerPortal) {
+    forumReactionPickerPortal = document.createElement("span");
+    forumReactionPickerPortal.className = "forum-reaction-picker is-forum-reaction-portal is-hidden";
+    forumReactionPickerPortal.addEventListener("pointerdown", (event) => event.stopPropagation());
+    forumReactionPickerPortal.addEventListener("click", (event) => event.stopPropagation());
+    document.body.appendChild(forumReactionPickerPortal);
+  }
+  return forumReactionPickerPortal;
+}
+
+function positionForumReactionPicker(anchor) {
+  const anchorRect = anchor.getBoundingClientRect();
+  const pickerRect = forumReactionPickerPortal.getBoundingClientRect();
+  const pageGap = 8;
+  const left = Math.min(
+    Math.max(pageGap, anchorRect.left),
+    Math.max(pageGap, window.innerWidth - pickerRect.width - pageGap)
+  );
+  const topAbove = anchorRect.top - pickerRect.height - 6;
+  const top = topAbove >= pageGap
+    ? topAbove
+    : Math.min(window.innerHeight - pickerRect.height - pageGap, anchorRect.bottom + 6);
+  forumReactionPickerPortal.style.left = `${Math.round(left)}px`;
+  forumReactionPickerPortal.style.top = `${Math.round(Math.max(pageGap, top))}px`;
+}
+
+function openForumReactionPicker(post, container, anchor) {
+  ensureForumReactionPickerPortal();
+  forumReactionPickerPortal.classList.remove("is-reaction-overflow");
+  forumReactionPickerPortal.innerHTML = "";
+  FORUM_REACTION_EMOJIS.forEach((emoji) => {
+    const emojiButton = document.createElement("button");
+    emojiButton.type = "button";
+    emojiButton.textContent = emoji;
+    emojiButton.title = `添加 ${emoji} 反应`;
+    emojiButton.setAttribute("aria-label", `添加 ${emoji} 反应`);
+    emojiButton.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      closeForumReactionPickers();
+      toggleForumReaction(post, emoji, container, emojiButton);
+    });
+    forumReactionPickerPortal.appendChild(emojiButton);
+  });
+  forumReactionPickerPortal.classList.remove("is-hidden");
+  forumReactionPickerPortal.dataset.anchorKey = `add:${post.id}`;
+  positionForumReactionPicker(anchor);
+}
+
+async function toggleForumReaction(post, emoji, container, control) {
+  if (!FORUM_REACTION_EMOJIS.includes(emoji)) return;
+  if (control) control.disabled = true;
+  try {
+    const response = await apiFetch("/api/forum/reactions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ postId: post.id, emoji })
+    });
+    const data = await parseJsonResponse(response);
+    if (!response.ok) throw new Error(data.error || "表情反应失败");
+    post.reactions = Array.isArray(data.reactions) ? data.reactions : [];
+    renderForumReactionControls(post, container);
+  } catch (error) {
+    showMessage(error.message || "表情反应失败", "error");
+    if (control && control.isConnected) control.disabled = false;
+  }
+}
+
+function renderForumReactionControls(post, container) {
+  container.innerHTML = "";
+  const emojiOrder = new Map(FORUM_REACTION_EMOJIS.map((emoji, index) => [emoji, index]));
+  const reactions = (Array.isArray(post.reactions) ? post.reactions : [])
+    .filter((reaction) => FORUM_REACTION_EMOJIS.includes(reaction.emoji) && Number(reaction.count) > 0)
+    .sort((left, right) =>
+      Number(right.count) - Number(left.count)
+      || emojiOrder.get(left.emoji) - emojiOrder.get(right.emoji)
+    );
+  const chipsWrap = document.createElement("span");
+  chipsWrap.className = "forum-reaction-chips";
+  for (const reaction of reactions) {
+    const emoji = reaction.emoji;
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = `forum-reaction-chip${reaction.reacted ? " is-active" : ""}`;
+    chip.textContent = `${emoji} ${reaction.count}`;
+    chip.title = reaction.reacted ? `取消 ${emoji} 反应` : `添加 ${emoji} 反应`;
+    chip.setAttribute("aria-pressed", String(Boolean(reaction.reacted)));
+    chip.addEventListener("pointerdown", (event) => event.stopPropagation());
+    chip.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      toggleForumReaction(post, emoji, container, chip);
+    });
+    chipsWrap.appendChild(chip);
+  }
+
+  const addWrap = document.createElement("span");
+  addWrap.className = "forum-reaction-add";
+  const addButton = document.createElement("button");
+  addButton.type = "button";
+  addButton.className = "forum-reaction-add-button";
+  addButton.textContent = "☺";
+  addButton.title = "添加表情反应";
+  addButton.setAttribute("aria-label", "添加表情反应");
+  addButton.addEventListener("pointerdown", (event) => event.stopPropagation());
+  addButton.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const anchorKey = `add:${post.id}`;
+    const isSameAnchor = forumReactionPickerPortal?.dataset.anchorKey === anchorKey
+      && !forumReactionPickerPortal.classList.contains("is-hidden");
+    closeForumReactionPickers();
+    if (!isSameAnchor) openForumReactionPicker(post, container, addButton);
+  });
+  addWrap.appendChild(addButton);
+  container.append(addWrap, chipsWrap);
+}
+
+function renderForumPosts() {
+  if (!forumPostList) return;
+  const preservedOpenPosts = new Map(
+    [...forumPostList.querySelectorAll("details[open][data-post-id]")].map((details) => [
+      Number(details.dataset.postId),
+      details.querySelector(".forum-reply-form input")?.value || ""
+    ])
+  );
+  forumPostList.innerHTML = "";
+  if (forumPostCount) forumPostCount.textContent = `${state.forumPosts.length} 帖`;
+  if (!state.forumPosts.length) {
+    forumPostList.innerHTML = '<div class="workspace-empty">小论坛还是空的<br />发布第一条动态吧。</div>';
+    updateForumManagementUi();
+    return;
+  }
+
+  const fragment = document.createDocumentFragment();
+  state.forumPosts.forEach((post, index) => {
+    const details = document.createElement("details");
+    details.className = "forum-post";
+    if (index === 0) details.classList.add("is-latest");
+    if (post.canDelete) details.classList.add("can-delete");
+    details.dataset.postId = String(post.id);
+
+    const summary = document.createElement("summary");
+    const replyIndicator = document.createElement("span");
+    replyIndicator.className = "forum-post-reply-indicator";
+    replyIndicator.hidden = !hasUnreadForumReplies(post);
+    replyIndicator.title = `${post.replyCount || 0} 条回复`;
+    summary.appendChild(replyIndicator);
+    if (post.canDelete) {
+      const selectInput = document.createElement("button");
+      selectInput.type = "button";
+      selectInput.className = "forum-post-select";
+      selectInput.dataset.postId = String(post.id);
+      selectInput.classList.toggle("is-checked", state.forumSelectedPostIds.has(post.id));
+      selectInput.setAttribute("role", "checkbox");
+      selectInput.setAttribute("aria-checked", String(state.forumSelectedPostIds.has(post.id)));
+      selectInput.setAttribute("aria-label", `选择动态：${post.title}`);
+      selectInput.addEventListener("pointerdown", (event) => event.stopPropagation());
+      selectInput.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (state.forumSelectedPostIds.has(post.id)) {
+          state.forumSelectedPostIds.delete(post.id);
+        } else {
+          state.forumSelectedPostIds.add(post.id);
+        }
+        updateForumManagementUi();
+      });
+      summary.appendChild(selectInput);
+    }
+    const summaryMain = document.createElement("span");
+    summaryMain.className = "forum-post-summary-main";
+    const title = document.createElement("span");
+    title.className = "forum-post-title";
+    title.textContent = post.title;
+    const meta = document.createElement("span");
+    meta.className = "forum-post-meta";
+    const author = document.createElement("span");
+    author.textContent = post.author;
+    const time = document.createElement("span");
+    time.textContent = formatWorkspaceTime(post.createdAt);
+    const replyCount = document.createElement("span");
+    replyCount.className = "forum-post-reply-count";
+    replyCount.textContent = `${post.replyCount || 0} 回复`;
+    meta.append(author, time, replyCount);
+    summaryMain.append(title, meta);
+    summary.appendChild(summaryMain);
+    const reactionControls = document.createElement("span");
+    reactionControls.className = "forum-post-reactions";
+    renderForumReactionControls(post, reactionControls);
+    summary.appendChild(reactionControls);
+    if (post.canDelete) {
+      const removeButton = document.createElement("button");
+      removeButton.type = "button";
+      removeButton.className = "forum-post-remove";
+      removeButton.textContent = "删除";
+      removeButton.title = "删除动态";
+      removeButton.setAttribute("aria-label", `删除动态：${post.title}`);
+      removeButton.addEventListener("pointerdown", (event) => event.stopPropagation());
+      removeButton.addEventListener("click", async (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        removeButton.disabled = true;
+        await confirmAndDeleteForumPosts([post]);
+        if (removeButton.isConnected) removeButton.disabled = false;
+      });
+      summary.appendChild(removeButton);
+    }
+    const expandButton = document.createElement("button");
+    expandButton.type = "button";
+    expandButton.className = "forum-post-expand";
+    expandButton.textContent = "展开";
+    expandButton.setAttribute("aria-label", `展开动态：${post.title}`);
+    expandButton.addEventListener("pointerdown", (event) => event.stopPropagation());
+    expandButton.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      details.open = !details.open;
+    });
+    summary.appendChild(expandButton);
+
+    const body = document.createElement("div");
+    body.className = "forum-post-body";
+    const bodyLabel = document.createElement("div");
+    bodyLabel.className = "forum-post-body-label";
+    bodyLabel.textContent = "1F · 楼主";
+    const content = document.createElement("p");
+    content.className = "forum-post-content";
+    content.textContent = post.content;
+    const replies = document.createElement("div");
+    replies.className = "forum-replies";
+
+    const replyForm = document.createElement("form");
+    replyForm.className = "forum-reply-form";
+    const replyInput = document.createElement("input");
+    replyInput.type = "text";
+    replyInput.maxLength = 500;
+    replyInput.placeholder = "回复这条动态…";
+    replyInput.setAttribute("aria-label", `回复：${post.title}`);
+    const replyButton = document.createElement("button");
+    replyButton.type = "submit";
+    replyButton.className = "workspace-text-button";
+    replyButton.textContent = "回复";
+    replyForm.append(replyInput, replyButton);
+    replyForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const replyText = replyInput.value.trim();
+      if (!replyText) return;
+      replyButton.disabled = true;
+      try {
+        const response = await apiFetch("/api/forum/replies", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Device-Name": encodeURIComponent(state.nickname || "匿名") },
+          body: JSON.stringify({ postId: post.id, content: replyText })
+        });
+        const data = await parseJsonResponse(response);
+        if (!response.ok) throw new Error(data.error || "回复失败");
+        replyInput.value = "";
+        await loadForumReplies(post.id, replies);
+        replyCount.textContent = `${Number(post.replyCount || 0) + 1} 回复`;
+        post.replyCount = Number(post.replyCount || 0) + 1;
+        markForumPostRepliesRead(post);
+        replyIndicator.hidden = true;
+        replyIndicator.title = `${post.replyCount} 条回复`;
+      } catch (error) {
+        showMessage(error.message || "回复失败", "error");
+      } finally {
+        replyButton.disabled = false;
+      }
+    });
+
+    body.append(bodyLabel, content);
+    body.append(replies, replyForm);
+    details.append(summary, body);
+    details.addEventListener("toggle", () => {
+      expandButton.textContent = details.open ? "收起" : "展开";
+      expandButton.setAttribute("aria-label", `${details.open ? "收起" : "展开"}动态：${post.title}`);
+      if (details.open) {
+        markForumPostRepliesRead(post);
+        replyIndicator.hidden = true;
+      }
+      if (details.open && replies.dataset.loaded !== "1") {
+        loadForumReplies(post.id, replies);
+      }
+    });
+    fragment.appendChild(details);
+  });
+  forumPostList.appendChild(fragment);
+  for (const [postId, replyDraft] of preservedOpenPosts) {
+    const details = forumPostList.querySelector(`details[data-post-id="${postId}"]`);
+    if (!details) continue;
+    details.open = true;
+    const replyInput = details.querySelector(".forum-reply-form input");
+    if (replyInput) replyInput.value = replyDraft;
+  }
+  updateForumManagementUi();
+}
+
+document.addEventListener("click", () => closeForumReactionPickers());
+window.addEventListener("resize", () => closeForumReactionPickers());
+window.addEventListener("scroll", () => closeForumReactionPickers(), true);
+
+function updateForumPostsLive(previousReplyCounts) {
+  if (forumPostCount) forumPostCount.textContent = `${state.forumPosts.length} 帖`;
+  state.forumPosts.forEach((post) => {
+    const details = forumPostList.querySelector(`details[data-post-id="${post.id}"]`);
+    if (!details) return;
+    const replyCount = Number(post.replyCount || 0);
+    const replyIndicator = details.querySelector(".forum-post-reply-indicator");
+    if (replyIndicator) {
+      replyIndicator.hidden = !hasUnreadForumReplies(post);
+      replyIndicator.title = `${replyCount} 条回复`;
+    }
+    const replyCountLabel = details.querySelector(".forum-post-reply-count");
+    if (replyCountLabel) replyCountLabel.textContent = `${replyCount} 回复`;
+    const reactionControls = details.querySelector(".forum-post-reactions");
+    if (reactionControls) renderForumReactionControls(post, reactionControls);
+
+    if (!details.open || previousReplyCounts.get(post.id) === replyCount) return;
+    const replies = details.querySelector(".forum-replies");
+    if (!replies || replies.dataset.loaded !== "1") return;
+    const loadedCount = Number(replies.dataset.loadedCount || 0);
+    const previousTotal = Number(replies.dataset.total || 0);
+    const wasFullyLoaded = loadedCount >= previousTotal;
+    const limit = wasFullyLoaded ? Math.max(4, replyCount) : Math.max(4, loadedCount);
+    loadForumReplies(post.id, replies, { limit });
+  });
+}
+
+async function loadForumPosts({ background = false } = {}) {
+  if (!forumPostList) return;
+  try {
+    const response = await fetch("/api/forum/posts?limit=16", {
+      cache: "no-store",
+      headers: { "X-Device-Name": encodeURIComponent(state.nickname || "匿名") }
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "读取动态失败");
+    const incomingPosts = Array.isArray(data.posts) ? data.posts : [];
+    const previousReplyCounts = new Map(
+      state.forumPosts.map((post) => [post.id, Number(post.replyCount || 0)])
+    );
+    const previousById = new Map(state.forumPosts.map((post) => [post.id, post]));
+    const sameStructure = incomingPosts.length === state.forumPosts.length
+      && incomingPosts.every((post, index) =>
+        post.id === state.forumPosts[index]?.id
+        && Boolean(post.canDelete) === Boolean(state.forumPosts[index]?.canDelete)
+      );
+    state.forumPosts = incomingPosts.map((post) => {
+      const existingPost = previousById.get(post.id);
+      if (!existingPost) return post;
+      Object.assign(existingPost, post);
+      return existingPost;
+    });
+    if (background && sameStructure) {
+      updateForumPostsLive(previousReplyCounts);
+    } else {
+      renderForumPosts();
+    }
+  } catch (error) {
+    if (background) return;
+    forumPostList.innerHTML = "";
+    const empty = document.createElement("div");
+    empty.className = "workspace-empty";
+    empty.textContent = error.message || "动态读取失败";
+    forumPostList.appendChild(empty);
+  }
+}
+
+if (forumManageToggle) {
+  forumManageToggle.addEventListener("click", () => {
+    state.forumManageMode = !state.forumManageMode;
+    if (!state.forumManageMode) state.forumSelectedPostIds.clear();
+    updateForumManagementUi();
+  });
+}
+
+if (forumBatchCancel) {
+  forumBatchCancel.addEventListener("click", () => {
+    state.forumManageMode = false;
+    state.forumSelectedPostIds.clear();
+    updateForumManagementUi();
+  });
+}
+
+if (forumSelectAllToggle) {
+  forumSelectAllToggle.addEventListener("click", () => {
+    const deletableIds = state.forumPosts.filter((post) => post.canDelete).map((post) => post.id);
+    const allSelected = deletableIds.length > 0
+      && deletableIds.every((postId) => state.forumSelectedPostIds.has(postId));
+    deletableIds.forEach((postId) => {
+      if (allSelected) {
+        state.forumSelectedPostIds.delete(postId);
+      } else {
+        state.forumSelectedPostIds.add(postId);
+      }
+    });
+    updateForumManagementUi();
+  });
+}
+
+if (forumBatchDelete) {
+  forumBatchDelete.addEventListener("click", async () => {
+    await confirmAndDeleteForumPosts(getSelectedForumPosts(), true);
+  });
+}
+
+if (forumComposeToggle && forumComposeForm) {
+  forumComposeToggle.addEventListener("click", () => {
+    const opening = forumComposeForm.classList.contains("is-hidden");
+    forumComposeForm.classList.toggle("is-hidden", !opening);
+    forumComposeToggle.setAttribute("aria-expanded", String(opening));
+    forumComposeToggle.textContent = opening ? "收起" : "发布";
+    forumComposeMessage.textContent = "";
+    forumComposeMessage.classList.remove("is-error");
+    if (opening) forumPostTitle.focus();
+  });
+
+  forumComposeForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const title = forumPostTitle.value.trim();
+    const content = forumPostContent.value.trim();
+    if (!title || !content) return;
+    const submitButton = forumComposeForm.querySelector('button[type="submit"]');
+    submitButton.disabled = true;
+    forumComposeMessage.textContent = "正在发布…";
+    forumComposeMessage.classList.remove("is-error");
+    try {
+      const response = await apiFetch("/api/forum/posts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Device-Name": encodeURIComponent(state.nickname || "匿名") },
+        body: JSON.stringify({ title, content })
+      });
+      const data = await parseJsonResponse(response);
+      if (!response.ok) throw new Error(data.error || "发布失败");
+      forumComposeForm.reset();
+      forumComposeForm.classList.add("is-hidden");
+      forumComposeToggle.setAttribute("aria-expanded", "false");
+      forumComposeToggle.textContent = "发布";
+      forumComposeMessage.textContent = "";
+      await loadForumPosts();
+    } catch (error) {
+      forumComposeMessage.textContent = error.message || "发布失败";
+      forumComposeMessage.classList.add("is-error");
+    } finally {
+      submitButton.disabled = false;
+    }
+  });
+}
+
+renderWorkspaceOverview();
+loadWorkspaceStatus();
+loadForumPosts();
+setInterval(() => {
+  if (document.visibilityState === "visible") loadWorkspaceStatus();
+}, 3000);
+setInterval(() => {
+  if (document.visibilityState === "visible") loadInProgressProjects();
+}, 10000);
+window.addEventListener("focus", () => {
+  loadWorkspaceStatus();
+  loadInProgressProjects();
+});
+setInterval(() => {
+  if (!forumPostList || document.visibilityState !== "visible") return;
+  if (state.forumManageMode) return;
+  if (forumReactionPickerPortal && !forumReactionPickerPortal.classList.contains("is-hidden")) return;
+  loadForumPosts({ background: true });
+}, 3000);
+
 // --- Floating characters (per-character bounce) + cursor particles + click burst ---
 
 let floatChars = [];

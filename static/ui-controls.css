@@ -1,0 +1,117 @@
+/*
+ * 墨韵控件状态统一入口。
+ * 必须在 skins.css / tool-skins.css 之后加载，避免主页面与工具页状态漂移。
+ */
+
+body[data-ui-style="editorial"] {
+  --control-border: var(--line);
+  --control-text: var(--ink-soft);
+  --control-hover-bg: var(--accent);
+  --control-hover-text: var(--accent-text);
+  --control-disabled-text: var(--muted);
+}
+
+body[data-ui-style="editorial"] :is(
+  .button,
+  .button.primary,
+  .button.secondary,
+  .button.warm,
+  .button.ghost,
+  .mini-tool-button,
+  .item-actions button,
+  .play-btn,
+  .chat-send
+) {
+  border-color: var(--control-border);
+  background: transparent;
+  color: var(--control-text);
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease, transform 80ms ease;
+}
+
+body[data-ui-style="editorial"] :is(
+  .button,
+  .button.primary,
+  .button.secondary,
+  .button.warm,
+  .button.ghost,
+  .mini-tool-button,
+  .item-actions button,
+  .play-btn,
+  .chat-send
+):hover:not(:disabled) {
+  border-color: var(--control-hover-bg);
+  background: var(--control-hover-bg);
+  color: var(--control-hover-text);
+}
+
+body[data-ui-style="editorial"] :is(
+  .button,
+  .mini-tool-button,
+  .item-actions button,
+  .play-btn,
+  .chat-send
+):active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+body[data-ui-style="editorial"] :is(
+  .button.is-active,
+  .button.active-tool,
+  .button[aria-pressed="true"]
+) {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-text);
+  box-shadow: none;
+}
+
+body[data-ui-style="editorial"] :is(
+  .button,
+  .mini-tool-button,
+  .item-actions button,
+  .play-btn,
+  .chat-send
+):disabled {
+  border-color: var(--line);
+  background: transparent;
+  color: var(--control-disabled-text);
+  box-shadow: none;
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+}
+
+body[data-ui-style="editorial"] .button.danger-button {
+  border-color: color-mix(in srgb, var(--danger) 48%, var(--line));
+  background: transparent;
+  color: var(--danger);
+}
+
+body[data-ui-style="editorial"] .button.danger-button:hover:not(:disabled) {
+  border-color: var(--danger);
+  background: var(--danger);
+  color: var(--bg);
+}
+
+body[data-ui-style="editorial"] :where(
+  button,
+  a[href],
+  input,
+  select,
+  textarea,
+  [tabindex]:not([tabindex="-1"])
+):focus-visible {
+  outline: 2px solid var(--accent) !important;
+  outline-offset: 2px !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

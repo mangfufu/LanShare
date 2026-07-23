@@ -10,7 +10,7 @@
 html, body {
   height: 100%;
   margin: 0;
-  font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+  font-family: "Noto Serif SC", "Songti SC", "SimSun", serif;
   color: var(--text);
   background: transparent;
   overflow: hidden;
@@ -383,7 +383,7 @@ input[type="range"]::-moz-range-track {
 
 .toggle-row { display: flex; gap: 6px; margin-top: 10px; }
 .toggle-row button { flex: 1; }
-.active-tool { background: var(--accent); color: #fff; }
+.active-tool { background: var(--accent); color: var(--accent-text); }
 
 /* ── Scrollbar styles ──────────────────── */
 

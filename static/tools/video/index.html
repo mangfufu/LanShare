@@ -6,10 +6,11 @@
   <title>视频截帧工具</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@600;700&family=Noto+Sans+SC:wght@400;500;700;900&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/styles.css">
   <link rel="stylesheet" href="./styles.css">
   <link rel="stylesheet" href="/tool-skins.css">
+  <link rel="stylesheet" href="/ui-controls.css">
 </head>
 <body>
   <!-- .app-shell: height:100% overflow:hidden -->
@@ -123,7 +124,7 @@
     </div>
   </main>
 
-  <script>!function(){function s(){try{var pb=window.parent.document.body,p=pb.style,d=document.body.style,list=["--bg","--panel","--panel-strong","--panel-soft","--panel-hover","--line","--text","--muted","--accent","--floating-bg","--floating-text","--paper-deep","--ink-soft","--line-soft","--s-blue","--s-amber","--s-green","--danger","--success"];for(var i=0;i<list.length;i++){var v=p.getPropertyValue(list[i]);if(v)d.setProperty(list[i],v)}document.body.dataset.uiStyle=new URLSearchParams(location.search).get("style")||pb.dataset.uiStyle||"classic"}catch(e){}}s();var o=new MutationObserver(s);try{o.observe(window.parent.document.body,{attributes:true,attributeFilter:["style","data-ui-style"]})}catch(e){}}()</script>
+  <script>!function(){function s(){try{var pb=window.parent.document.body,p=pb.style,d=document.body.style,list=["--bg","--panel","--panel-strong","--panel-soft","--panel-hover","--line","--text","--muted","--accent","--accent-2","--accent-text","--floating-bg","--floating-text","--paper-deep","--ink-soft","--line-soft","--s-blue","--s-amber","--s-green","--danger","--success"];for(var i=0;i<list.length;i++){var v=p.getPropertyValue(list[i]);if(v)d.setProperty(list[i],v)}document.body.dataset.uiStyle=new URLSearchParams(location.search).get("style")||pb.dataset.uiStyle||"classic";document.body.dataset.theme=pb.dataset.theme||"light";d.colorScheme=document.body.dataset.theme}catch(e){}}s();var o=new MutationObserver(s);try{o.observe(window.parent.document.body,{attributes:true,attributeFilter:["style","data-ui-style","data-theme"]})}catch(e){}}()</script>
   <script src="./media-store.js"></script>
   <script src="./app.js"></script>
 </body>

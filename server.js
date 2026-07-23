@@ -6,6 +6,7 @@ const crypto = require("crypto");
 const os = require("os");
 const { spawn, execSync } = require("child_process");
 const { URL } = require("url");
+const { DatabaseSync } = require("node:sqlite");
 
 // 自动安装依赖
 function ensureDeps() {
@@ -55,6 +56,7 @@ const RECYCLE_DIR = path.resolve(process.env.RECYCLE_DIR || path.join(__dirname,
 const LOG_DIR = path.resolve(process.env.LOG_DIR || path.join(__dirname, "logs"));
 const STATIC_DIR = path.join(__dirname, "static");
 const FOLDER_SIZE_CACHE_FILE = path.join(__dirname, "folder_size_cache.json");
+const FORUM_DB_FILE = path.join(__dirname, "forum.db");
 const MAX_BODY_SIZE = 2 * 1024 * 1024 * 1024;
 const MAX_FILE_SIZE = Number(process.env.MAX_FILE_SIZE || 8 * 1024 * 1024 * 1024);
 
@@ -85,6 +87,7 @@ const batchDownloads = new Map();
 const logBuffer = [];
 const MAX_LOG_BUFFER = 200;
 const MAX_LOG_SIZE = 10 * 1024 * 1024; // 10MB per file
+let workspaceActivityCache = null;
 const videoThumbQueue = [];
 const videoThumbJobs = new Map();
 let activeVideoThumbJobs = 0;
@@ -97,6 +100,14 @@ let dailyBackupTimer = null;
 let dailyBackupRunning = false;
 const CSRF_TOKEN = crypto.randomBytes(32).toString("hex");
 const NSFW_SESSION_COOKIE = "lanshare_nsfw_session";
+const FORUM_OWNER_COOKIE = "lanshare_forum_owner";
+const FORUM_REACTION_EMOJIS = [
+  "😀", "😄", "😂", "🤣", "😊", "🥰",
+  "😍", "😅", "😭", "😢", "😮", "😱",
+  "😡", "🤬", "🤔", "🙄", "👍", "👎",
+  "👏", "🙏", "💪", "❤️", "💔", "🔥",
+  "🎉", "💯", "👀", "✅", "❌", "🤝"
+];
 const configuredNsfwSessionTtlMs = Number(process.env.NSFW_SESSION_TTL_MS);
 const NSFW_SESSION_TTL_MS = Number.isFinite(configuredNsfwSessionTtlMs) && configuredNsfwSessionTtlMs > 0
   ? configuredNsfwSessionTtlMs
@@ -105,6 +116,11 @@ const nsfwSessions = new Map();
 const PROTECTED_POST_PATHS = new Set([
   "/api/chat/send",
   "/api/chat/clear",
+  "/api/forum/posts",
+  "/api/forum/posts/delete",
+  "/api/forum/posts/delete-batch",
+  "/api/forum/reactions",
+  "/api/forum/replies",
   "/api/nsfw/setpwd",
   "/api/nsfw/auth",
   "/api/nsfw/logout",
@@ -123,6 +139,155 @@ const PROTECTED_POST_PATHS = new Set([
   "/api/nickname",
   "/api/set-status"
 ]);
+
+let forumDb = null;
+
+function initForumDatabase() {
+  if (forumDb) return forumDb;
+  forumDb = new DatabaseSync(FORUM_DB_FILE);
+  forumDb.exec(`
+    PRAGMA foreign_keys = ON;
+    PRAGMA journal_mode = WAL;
+    CREATE TABLE IF NOT EXISTS posts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      title TEXT NOT NULL,
+      content TEXT NOT NULL,
+      author TEXT NOT NULL,
+      owner_token TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER
+    );
+    CREATE TABLE IF NOT EXISTS replies (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      post_id INTEGER NOT NULL,
+      content TEXT NOT NULL,
+      author TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE
+    );
+    CREATE TABLE IF NOT EXISTS forum_reactions (
+      post_id INTEGER NOT NULL,
+      emoji TEXT NOT NULL,
+      owner_token TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY (post_id, emoji, owner_token),
+      FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE
+    );
+    CREATE TABLE IF NOT EXISTS file_attributions (
+      root_key TEXT NOT NULL,
+      path TEXT NOT NULL,
+      uploader TEXT NOT NULL,
+      uploaded_at INTEGER NOT NULL,
+      PRIMARY KEY (root_key, path)
+    );
+    CREATE INDEX IF NOT EXISTS idx_posts_created_at ON posts(created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_replies_post_id ON replies(post_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_forum_reactions_post_id ON forum_reactions(post_id, emoji);
+    CREATE INDEX IF NOT EXISTS idx_file_attributions_root_path ON file_attributions(root_key, path);
+  `);
+  const postColumns = forumDb.prepare("PRAGMA table_info(posts)").all();
+  if (!postColumns.some((column) => column.name === "owner_token")) {
+    forumDb.exec("ALTER TABLE posts ADD COLUMN owner_token TEXT");
+  }
+  return forumDb;
+}
+
+function getForumAuthor(req) {
+  try {
+    return decodeURIComponent(String(req.headers["x-device-name"] || "")).trim().slice(0, 20) || "匿名";
+  } catch {
+    return "匿名";
+  }
+}
+
+function getAttributionRootKey(nsfwMode) {
+  return nsfwMode ? "nsfw" : "shared";
+}
+
+function recordFileAttributions(paths, uploader, nsfwMode, overwriteExisting = true) {
+  const uniquePaths = [...new Set((paths || []).map((item) => safeRelative(item)).filter(Boolean))];
+  if (!uniquePaths.length) return;
+  const database = initForumDatabase();
+  const statement = database.prepare(overwriteExisting
+    ? `
+      INSERT INTO file_attributions (root_key, path, uploader, uploaded_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(root_key, path) DO UPDATE SET
+        uploader = excluded.uploader,
+        uploaded_at = excluded.uploaded_at
+    `
+    : `
+      INSERT INTO file_attributions (root_key, path, uploader, uploaded_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(root_key, path) DO NOTHING
+    `);
+  const rootKey = getAttributionRootKey(nsfwMode);
+  const uploadedAt = Date.now();
+  database.exec("BEGIN");
+  try {
+    uniquePaths.forEach((itemPath) => statement.run(rootKey, itemPath, uploader || "未知", uploadedAt));
+    database.exec("COMMIT");
+  } catch (error) {
+    database.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+function attachFileAttributions(items, nsfwMode) {
+  if (!items || !items.length) return items;
+  const itemPaths = [...new Set(items.map((item) => item.path).filter(Boolean))];
+  if (!itemPaths.length) return items;
+  const placeholders = itemPaths.map(() => "?").join(",");
+  const rows = initForumDatabase()
+    .prepare(`SELECT path, uploader, uploaded_at AS uploadedAt FROM file_attributions WHERE root_key = ? AND path IN (${placeholders})`)
+    .all(getAttributionRootKey(nsfwMode), ...itemPaths);
+  const byPath = new Map(rows.map((row) => [row.path, row]));
+  items.forEach((item) => {
+    const attribution = byPath.get(item.path);
+    if (!attribution) return;
+    item.creator = attribution.uploader;
+    item.createdByAt = attribution.uploadedAt;
+  });
+  return items;
+}
+
+function copyFileAttributions(sourceRelative, targetRelative, nsfwMode, move = false) {
+  const rootKey = getAttributionRootKey(nsfwMode);
+  const sourcePrefix = `${sourceRelative}/`;
+  const database = initForumDatabase();
+  const rows = database.prepare(`
+    SELECT path, uploader, uploaded_at AS uploadedAt
+    FROM file_attributions
+    WHERE root_key = ? AND (path = ? OR substr(path, 1, ?) = ?)
+  `).all(rootKey, sourceRelative, sourcePrefix.length, sourcePrefix);
+  if (!rows.length) return;
+  const targetPrefix = `${targetRelative}/`;
+  const deleteTarget = database.prepare(`
+    DELETE FROM file_attributions
+    WHERE root_key = ? AND (path = ? OR substr(path, 1, ?) = ?)
+  `);
+  const deleteSource = database.prepare("DELETE FROM file_attributions WHERE root_key = ? AND path = ?");
+  const upsert = database.prepare(`
+    INSERT INTO file_attributions (root_key, path, uploader, uploaded_at)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(root_key, path) DO UPDATE SET
+      uploader = excluded.uploader,
+      uploaded_at = excluded.uploaded_at
+  `);
+  database.exec("BEGIN");
+  try {
+    deleteTarget.run(rootKey, targetRelative, targetPrefix.length, targetPrefix);
+    rows.forEach((row) => {
+      const nextPath = `${targetRelative}${row.path.slice(sourceRelative.length)}`;
+      upsert.run(rootKey, nextPath, row.uploader, row.uploadedAt);
+      if (move) deleteSource.run(rootKey, row.path);
+    });
+    database.exec("COMMIT");
+  } catch (error) {
+    database.exec("ROLLBACK");
+    throw error;
+  }
+}
 
 const MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -195,6 +360,56 @@ function makeNsfwSessionCookie(token, maxAgeSeconds) {
   return `${NSFW_SESSION_COOKIE}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAgeSeconds}`;
 }
 
+function getForumOwnerToken(req) {
+  const token = getRequestCookie(req, FORUM_OWNER_COOKIE);
+  return /^[a-f0-9]{48}$/.test(token) ? token : "";
+}
+
+function createForumOwnerToken() {
+  return crypto.randomBytes(24).toString("hex");
+}
+
+function makeForumOwnerCookie(token) {
+  return `${FORUM_OWNER_COOKIE}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=31536000`;
+}
+
+function readForumReactions(database, postIds, ownerToken) {
+  const uniquePostIds = [...new Set((postIds || []).map(Number).filter((id) => Number.isInteger(id) && id > 0))];
+  if (!uniquePostIds.length) return new Map();
+  const placeholders = uniquePostIds.map(() => "?").join(",");
+  const counts = database.prepare(`
+    SELECT post_id AS postId, emoji, COUNT(*) AS count
+    FROM forum_reactions
+    WHERE post_id IN (${placeholders})
+    GROUP BY post_id, emoji
+  `).all(...uniquePostIds);
+  const ownReactions = ownerToken
+    ? database.prepare(`
+        SELECT post_id AS postId, emoji
+        FROM forum_reactions
+        WHERE owner_token = ? AND post_id IN (${placeholders})
+      `).all(ownerToken, ...uniquePostIds)
+    : [];
+  const ownKeys = new Set(ownReactions.map((row) => `${row.postId}:${row.emoji}`));
+  const byPost = new Map(uniquePostIds.map((postId) => [postId, []]));
+  const emojiOrder = new Map(FORUM_REACTION_EMOJIS.map((emoji, index) => [emoji, index]));
+  for (const row of counts) {
+    if (!emojiOrder.has(row.emoji)) continue;
+    byPost.get(row.postId)?.push({
+      emoji: row.emoji,
+      count: Number(row.count) || 0,
+      reacted: ownKeys.has(`${row.postId}:${row.emoji}`)
+    });
+  }
+  for (const reactions of byPost.values()) {
+    reactions.sort((left, right) =>
+      right.count - left.count
+      || emojiOrder.get(left.emoji) - emojiOrder.get(right.emoji)
+    );
+  }
+  return byPost;
+}
+
 function cleanupExpiredNsfwSessions(now = Date.now()) {
   for (const [token, expiresAt] of nsfwSessions) {
     if (!Number.isFinite(expiresAt) || expiresAt <= now) nsfwSessions.delete(token);
@@ -230,8 +445,16 @@ function clearNsfwSession(req) {
 }
 
 function isLoopbackRequest(req) {
-  const address = String(req.socket && req.socket.remoteAddress || "").replace(/^::ffff:/, "");
+  const address = normalizeSocketAddress(req.socket && req.socket.remoteAddress);
   return address === "127.0.0.1" || address === "::1";
+}
+
+function normalizeSocketAddress(value) {
+  return String(value || "").replace(/^::ffff:/, "").split("%")[0];
+}
+
+function isHostRequest(req) {
+  return isLoopbackRequest(req);
 }
 
 function requestNeedsNsfwSession(req, url) {
@@ -802,6 +1025,51 @@ async function collectDirFileNames(dirPath, prefix = "") {
   return names;
 }
 
+function countLoggedFileNames(items) {
+  return (Array.isArray(items) ? items : []).filter((item) => {
+    const label = String(item || "");
+    if (!label || / \(文件夹\)$/.test(label)) return false;
+    const name = label.split("/").pop();
+    return Boolean(name && !name.startsWith("."));
+  }).length;
+}
+
+async function measureWorkspaceFiles(fullPath) {
+  const initialStat = await fsp.stat(toFsPath(fullPath)).catch(() => null);
+  if (!initialStat) return { fileCount: 0, totalBytes: 0 };
+  if (initialStat.isFile()) {
+    return path.basename(fullPath).startsWith(".")
+      ? { fileCount: 0, totalBytes: 0 }
+      : { fileCount: 1, totalBytes: initialStat.size };
+  }
+  if (!initialStat.isDirectory()) return { fileCount: 0, totalBytes: 0 };
+
+  let fileCount = 0;
+  let totalBytes = 0;
+  const stack = [fullPath];
+  while (stack.length > 0) {
+    const currentPath = stack.pop();
+    const entries = await fsp.readdir(toFsPath(currentPath), { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      if (entry.name.startsWith(".")) continue;
+      const childPath = path.join(currentPath, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(childPath);
+      } else if (entry.isFile()) {
+        const stat = await fsp.stat(toFsPath(childPath)).catch(() => null);
+        if (!stat) continue;
+        fileCount += 1;
+        totalBytes += stat.size;
+      }
+    }
+  }
+  return { fileCount, totalBytes };
+}
+
+async function countWorkspaceFiles(fullPath) {
+  return (await measureWorkspaceFiles(fullPath)).fileCount;
+}
+
 function getDeviceName(req) {
   const raw = String(req.headers["x-device-name"] || "").trim();
   try { return decodeURIComponent(raw) || "未知"; } catch { return raw || "未知"; }
@@ -836,11 +1104,127 @@ async function appendLogFileEntry(logLine, items) {
     fileContent += items.map((item) => `  - ${item}\n`).join("");
   }
   await fsp.appendFile(logFile, fileContent, "utf8");
+  workspaceActivityCache = null;
   const stat = await fsp.stat(logFile).catch(() => null);
   if (stat && stat.size > MAX_LOG_SIZE) {
     try { await fsp.rename(`${logFile}.1`, `${logFile}.2`); } catch {}
     try { await fsp.rename(logFile, `${logFile}.1`); } catch {}
   }
+}
+
+async function readTodayWorkspaceActivity() {
+  const dateId = new Date().toISOString().slice(0, 10);
+  const logFile = path.join(LOG_DIR, `${dateId}.log`);
+  const stat = await fsp.stat(logFile).catch(() => null);
+  if (!stat) {
+    return {
+      uploadedFiles: 0,
+      uploadedBytes: 0,
+      uploadedBytesComplete: true,
+      downloadedFiles: 0,
+      downloadedBytes: 0,
+      downloadedBytesComplete: true,
+      deletedItems: 0,
+      deletedBytes: 0,
+      deletedBytesComplete: true,
+      activeDevices: 0
+    };
+  }
+  if (
+    workspaceActivityCache
+    && workspaceActivityCache.dateId === dateId
+    && workspaceActivityCache.mtimeMs === stat.mtimeMs
+    && workspaceActivityCache.size === stat.size
+  ) {
+    return workspaceActivityCache.result;
+  }
+  const content = await fsp.readFile(logFile, "utf8");
+  let uploadedFiles = 0;
+  let uploadedBytes = 0;
+  let uploadedBytesComplete = true;
+  let downloadedFiles = 0;
+  let downloadedBytes = 0;
+  let downloadedBytesComplete = true;
+  let deletedItems = 0;
+  let deletedBytes = 0;
+  let deletedBytesComplete = true;
+  const activeDevices = new Set();
+  let currentEntry = null;
+  const addCurrentEntry = () => {
+    if (!currentEntry) return;
+    const { deviceName, clientIp, action, detail, items } = currentEntry;
+    activeDevices.add(clientIp || deviceName);
+
+    const explicitFileCount = detail.match(/[（(](\d+) 个文件[）)]/);
+    let itemCount;
+    if (explicitFileCount) {
+      itemCount = Number(explicitFileCount[1]);
+    } else if (items.length > 0) {
+      itemCount = action === "删除" || action === "彻底删除"
+        ? countLoggedFileNames(items)
+        : items.length;
+    } else {
+      const legacyCount = detail.match(/^(\d+) 项$/);
+      itemCount = legacyCount ? Number(legacyCount[1]) : 1;
+    }
+
+    const explicitBytes = detail.match(/(?:，|,)\s*(\d+)\s*字节[）)]/);
+    const byteCount = explicitBytes ? Number(explicitBytes[1]) : 0;
+    if (action === "上传") {
+      uploadedFiles += itemCount;
+      uploadedBytes += byteCount;
+      if (!explicitBytes) uploadedBytesComplete = false;
+    }
+    if (action === "下载") {
+      downloadedFiles += itemCount;
+      downloadedBytes += byteCount;
+      if (!explicitBytes) downloadedBytesComplete = false;
+    }
+    if (action === "删除") {
+      deletedItems += itemCount;
+      deletedBytes += byteCount;
+      if (!explicitBytes) deletedBytesComplete = false;
+    }
+    currentEntry = null;
+  };
+
+  for (const line of content.split(/\r?\n/)) {
+    const match = line.match(/^\[(.+?)\] (.+?)(?: \(([^)]+)\))? ([^ ]+) (.+)$/);
+    if (match) {
+      addCurrentEntry();
+      if (match[4] !== "修改昵称") {
+        currentEntry = {
+          deviceName: match[2],
+          clientIp: match[3],
+          action: match[4],
+          detail: match[5],
+          items: []
+        };
+      }
+      continue;
+    }
+    const itemMatch = line.match(/^  - (.+)$/);
+    if (itemMatch && currentEntry) {
+      currentEntry.items.push(itemMatch[1]);
+      continue;
+    }
+    addCurrentEntry();
+  }
+  addCurrentEntry();
+  const result = {
+    uploadedFiles,
+    uploadedBytes,
+    uploadedBytesComplete,
+    downloadedFiles,
+    downloadedBytes,
+    downloadedBytesComplete,
+    deletedItems,
+    deletedBytes,
+    deletedBytesComplete,
+    activeDevices: activeDevices.size
+  };
+  workspaceActivityCache = { dateId, mtimeMs: stat.mtimeMs, size: stat.size, result };
+  return result;
 }
 
 async function appendLocalLogOnly(deviceName, clientIp, action, detail, items) {
@@ -1575,7 +1959,10 @@ async function handleStreamingUpload(req, rootDir) {
     const fileTasks = [];
     let fileIndex = 0;
     let uploadedCount = 0;
+    let uploadedBytes = 0;
     const uploadedNames = [];
+    const uploadedPaths = [];
+    const createdDirectoryPaths = new Set();
     const backupBatchId = PER_UPLOAD_BACKUP_ENABLED ? makeTimestampId() : null;
     let aborted = false;
 
@@ -1632,6 +2019,14 @@ async function handleStreamingUpload(req, rootDir) {
       }
 
       const task = (async () => {
+        const parentSegments = fileRelative.split("/").slice(0, -1);
+        let parentRelative = "";
+        for (const segment of parentSegments) {
+          parentRelative = parentRelative ? `${parentRelative}/${segment}` : segment;
+          const parentPath = path.resolve(root, parentRelative);
+          const parentStat = await fsp.stat(toFsPath(parentPath)).catch(() => null);
+          if (!parentStat) createdDirectoryPaths.add(parentRelative);
+        }
         await ensureUploadParentDirectories(fileRelative, overwriteExisting, root);
         const existingStat = await fsp.stat(toFsPath(filePath)).catch(() => null);
         if (existingStat) {
@@ -1673,8 +2068,10 @@ async function handleStreamingUpload(req, rootDir) {
               }
               writeCompleted = true;
               uploadedCount += 1;
+              uploadedBytes += Number(sharedStream.bytesWritten) || 0;
               const segments = relativeNameRaw.split("/");
               uploadedNames.push(segments[segments.length - 1]);
+              uploadedPaths.push(fileRelative);
               invalidateFolderSizeCacheForPath(fileRelative, root !== ROOT_DIR);
               resolveFile();
             });
@@ -1714,7 +2111,14 @@ async function handleStreamingUpload(req, rootDir) {
         if (uploadedCount === 0) {
           throw new Error("没有可上传的文件");
         }
-        resolve({ uploaded: uploadedCount, backupBatchId, uploadedNames });
+        try {
+          const uploader = getDeviceName(req);
+          recordFileAttributions(uploadedPaths, uploader, root !== ROOT_DIR);
+          recordFileAttributions([...createdDirectoryPaths], uploader, root !== ROOT_DIR, false);
+        } catch (error) {
+          console.error(`上传者记录写入失败: ${error.message}`);
+        }
+        resolve({ uploaded: uploadedCount, uploadedBytes, backupBatchId, uploadedNames });
       } catch (error) {
         fail(error);
       }
@@ -1739,6 +2143,7 @@ async function listDirectory(relativeDir, offset, limit, rootOverride) {
   const page = offset !== undefined ? sorted.slice(offset, offset + (limit || 50)) : sorted;
   const normalizedDir = relativeDir.replaceAll("\\", "/");
   var pageResults = await Promise.all(page.map((item) => buildListItem(item, normalizedDir, root)));
+  attachFileAttributions(pageResults, root !== ROOT_DIR);
   return { items: pageResults, total };
 }
 
@@ -1804,6 +2209,7 @@ async function searchShared(query, rootOverride) {
   }
 
   await walk("");
+  attachFileAttributions(results, root !== ROOT_DIR);
   return { items: results, stoppedEarly, total: results.length };
 }
 
@@ -2174,6 +2580,9 @@ async function collectBatchDownloadEntries(paths, rootOverride) {
   if (entries.length === 0) {
     throw new Error("没有可下载的有效目标");
   }
+  const measurements = await Promise.all(entries.map((entry) => measureWorkspaceFiles(entry.fullPath)));
+  const fileCount = measurements.reduce((total, measurement) => total + measurement.fileCount, 0);
+  const totalBytes = measurements.reduce((total, measurement) => total + measurement.totalBytes, 0);
 
   // 计算公共父目录前缀，压缩时去掉，避免解压后路径过深
   const parts = entries.map((e) => e.relativePath.split("/"));
@@ -2196,7 +2605,7 @@ async function collectBatchDownloadEntries(paths, rootOverride) {
     }
   }
 
-  return { entries, skipped };
+  return { entries, skipped, fileCount, totalBytes };
 }
 
 function registerBatchDownload(entries, skipped) {
@@ -2211,8 +2620,8 @@ async function createBatchDownload(paths, rootOverride) {
   if (paths.length === 0) {
     throw new Error("没有可下载的目标");
   }
-  const { entries, skipped } = await collectBatchDownloadEntries(paths, rootOverride);
-  return { ...registerBatchDownload(entries, skipped), skipped };
+  const { entries, skipped, fileCount, totalBytes } = await collectBatchDownloadEntries(paths, rootOverride);
+  return { ...registerBatchDownload(entries, skipped), skipped, fileCount, totalBytes };
 }
 
 // --- 摸鱼板 ---
@@ -2275,6 +2684,265 @@ async function handleApi(req, res, url) {
     const since = parseInt(url.searchParams.get("since") || "0");
     const result = moyuMessages.filter(m => m.id > since);
     sendJson(res, 200, result);
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/workspace/status") {
+    try {
+      const disk = await fsp.statfs(ROOT_DIR);
+      const blockSize = Number(disk.bsize) || 0;
+      const totalBytes = Number(disk.blocks) * blockSize;
+      const freeBytes = Number(disk.bavail) * blockSize;
+      const latestSnapshot = await findLatestDailySnapshot();
+      const latestStat = latestSnapshot ? await fsp.stat(latestSnapshot).catch(() => null) : null;
+      const activity = await readTodayWorkspaceActivity();
+      sendJson(res, 200, {
+        storage: {
+          volume: path.parse(ROOT_DIR).root.replace(/[\\/]+$/, ""),
+          totalBytes,
+          freeBytes,
+          usedBytes: Math.max(0, totalBytes - freeBytes)
+        },
+        backup: {
+          enabled: DAILY_BACKUP_ENABLED,
+          running: dailyBackupRunning,
+          nextAt: DAILY_BACKUP_ENABLED ? getNextDailyBackupTime().toISOString() : null,
+          latestAt: latestStat ? latestStat.mtime.toISOString() : null
+        },
+        activity
+      }, { "Cache-Control": "no-store" });
+    } catch (error) {
+      sendJson(res, 500, { error: error.message });
+    }
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/forum/posts") {
+    try {
+      const limit = Math.min(30, Math.max(1, Number(url.searchParams.get("limit")) || 12));
+      const database = initForumDatabase();
+      const rows = database.prepare(`
+        SELECT
+          p.id,
+          p.title,
+          p.content,
+          p.author,
+          p.owner_token AS ownerToken,
+          p.created_at AS createdAt,
+          p.updated_at AS updatedAt,
+          COUNT(r.id) AS replyCount
+        FROM posts p
+        LEFT JOIN replies r ON r.post_id = p.id
+        GROUP BY p.id
+        ORDER BY p.created_at DESC, p.id DESC
+        LIMIT ?
+      `).all(limit);
+      const ownerToken = getForumOwnerToken(req);
+      const hostRequest = isHostRequest(req);
+      const reactionsByPost = readForumReactions(database, rows.map((post) => post.id), ownerToken);
+      const posts = rows.map(({ ownerToken: postOwnerToken, ...post }) => ({
+        ...post,
+        canDelete: hostRequest || Boolean(ownerToken && postOwnerToken && ownerToken === postOwnerToken),
+        reactions: reactionsByPost.get(post.id) || []
+      }));
+      sendJson(res, 200, { posts }, { "Cache-Control": "no-store" });
+    } catch (error) {
+      sendJson(res, 500, { error: error.message });
+    }
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/forum/reactions") {
+    try {
+      const body = parseJson(await readRequestBody(req));
+      const postId = Number(body.postId);
+      const emoji = String(body.emoji || "");
+      if (!Number.isInteger(postId) || postId <= 0 || !FORUM_REACTION_EMOJIS.includes(emoji)) {
+        sendJson(res, 400, { error: "反应内容无效" });
+        return true;
+      }
+      const database = initForumDatabase();
+      const post = database.prepare("SELECT id FROM posts WHERE id = ?").get(postId);
+      if (!post) {
+        sendJson(res, 404, { error: "动态不存在" });
+        return true;
+      }
+      const existingToken = getForumOwnerToken(req);
+      const ownerToken = existingToken || createForumOwnerToken();
+      const existing = database
+        .prepare("SELECT 1 FROM forum_reactions WHERE post_id = ? AND emoji = ? AND owner_token = ?")
+        .get(postId, emoji, ownerToken);
+      let active;
+      if (existing) {
+        database
+          .prepare("DELETE FROM forum_reactions WHERE post_id = ? AND emoji = ? AND owner_token = ?")
+          .run(postId, emoji, ownerToken);
+        active = false;
+      } else {
+        database
+          .prepare("INSERT INTO forum_reactions (post_id, emoji, owner_token, created_at) VALUES (?, ?, ?, ?)")
+          .run(postId, emoji, ownerToken, Date.now());
+        active = true;
+      }
+      const reactions = readForumReactions(database, [postId], ownerToken).get(postId) || [];
+      sendJson(res, 200, { ok: true, active, reactions }, {
+        "Set-Cookie": makeForumOwnerCookie(ownerToken)
+      });
+    } catch (error) {
+      sendJson(res, 400, { error: error.message });
+    }
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/forum/posts") {
+    try {
+      const body = parseJson(await readRequestBody(req));
+      const title = String(body.title || "").trim().slice(0, 80);
+      const content = String(body.content || "").trim().slice(0, 1200);
+      if (!title || !content) {
+        sendJson(res, 400, { error: "标题和正文不能为空" });
+        return true;
+      }
+      const createdAt = Date.now();
+      const ownerToken = getForumOwnerToken(req) || createForumOwnerToken();
+      const database = initForumDatabase();
+      const result = database
+        .prepare("INSERT INTO posts (title, content, author, owner_token, created_at) VALUES (?, ?, ?, ?, ?)")
+        .run(title, content, getForumAuthor(req), ownerToken, createdAt);
+      sendJson(res, 201, { id: Number(result.lastInsertRowid), createdAt }, {
+        "Set-Cookie": makeForumOwnerCookie(ownerToken)
+      });
+    } catch (error) {
+      sendJson(res, 400, { error: error.message });
+    }
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/forum/posts/delete") {
+    try {
+      const body = parseJson(await readRequestBody(req));
+      const postId = Number(body.id);
+      if (!Number.isInteger(postId) || postId <= 0) {
+        sendJson(res, 400, { error: "动态编号无效" });
+        return true;
+      }
+      const database = initForumDatabase();
+      const post = database.prepare("SELECT id, owner_token AS ownerToken FROM posts WHERE id = ?").get(postId);
+      if (!post) {
+        sendJson(res, 404, { error: "动态不存在" });
+        return true;
+      }
+      const ownerToken = getForumOwnerToken(req);
+      const canDelete = isHostRequest(req)
+        || Boolean(ownerToken && post.ownerToken && ownerToken === post.ownerToken);
+      if (!canDelete) {
+        sendJson(res, 403, { error: "仅动态发布者或主机可删除" });
+        return true;
+      }
+      database.prepare("DELETE FROM posts WHERE id = ?").run(postId);
+      sendJson(res, 200, { ok: true });
+    } catch (error) {
+      sendJson(res, 400, { error: error.message });
+    }
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/forum/posts/delete-batch") {
+    try {
+      const body = parseJson(await readRequestBody(req));
+      const postIds = [...new Set((Array.isArray(body.ids) ? body.ids : [])
+        .map((id) => Number(id))
+        .filter((id) => Number.isInteger(id) && id > 0))]
+        .slice(0, 30);
+      if (!postIds.length) {
+        sendJson(res, 400, { error: "请选择要删除的动态" });
+        return true;
+      }
+      const database = initForumDatabase();
+      const placeholders = postIds.map(() => "?").join(",");
+      const posts = database
+        .prepare(`SELECT id, owner_token AS ownerToken FROM posts WHERE id IN (${placeholders})`)
+        .all(...postIds);
+      if (posts.length !== postIds.length) {
+        sendJson(res, 404, { error: "部分动态不存在，请刷新后重试" });
+        return true;
+      }
+      const ownerToken = getForumOwnerToken(req);
+      const hostRequest = isHostRequest(req);
+      const canDeleteAll = posts.every((post) =>
+        hostRequest || Boolean(ownerToken && post.ownerToken && ownerToken === post.ownerToken)
+      );
+      if (!canDeleteAll) {
+        sendJson(res, 403, { error: "只能批量删除自己发布的动态" });
+        return true;
+      }
+      database.prepare(`DELETE FROM posts WHERE id IN (${placeholders})`).run(...postIds);
+      sendJson(res, 200, { ok: true, deleted: postIds.length });
+    } catch (error) {
+      sendJson(res, 400, { error: error.message });
+    }
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/forum/replies") {
+    try {
+      const postId = Number(url.searchParams.get("postId"));
+      if (!Number.isInteger(postId) || postId <= 0) {
+        sendJson(res, 400, { error: "动态编号无效" });
+        return true;
+      }
+      const limit = Math.min(50, Math.max(1, Number(url.searchParams.get("limit")) || 4));
+      const offset = Math.min(100000, Math.max(0, Number(url.searchParams.get("offset")) || 0));
+      const database = initForumDatabase();
+      const total = Number(
+        database.prepare("SELECT COUNT(*) AS count FROM replies WHERE post_id = ?").get(postId).count
+      ) || 0;
+      const rows = database
+        .prepare(`
+          SELECT id, post_id AS postId, content, author, created_at AS createdAt
+          FROM replies
+          WHERE post_id = ?
+          ORDER BY created_at, id
+          LIMIT ? OFFSET ?
+        `)
+        .all(postId, limit, offset);
+      const replies = rows.map((reply, index) => ({
+        ...reply,
+        floorNumber: offset + index + 2
+      }));
+      sendJson(res, 200, {
+        replies,
+        total,
+        hasMore: offset + replies.length < total
+      }, { "Cache-Control": "no-store" });
+    } catch (error) {
+      sendJson(res, 500, { error: error.message });
+    }
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/forum/replies") {
+    try {
+      const body = parseJson(await readRequestBody(req));
+      const postId = Number(body.postId);
+      const content = String(body.content || "").trim().slice(0, 500);
+      if (!Number.isInteger(postId) || postId <= 0 || !content) {
+        sendJson(res, 400, { error: "回复内容不能为空" });
+        return true;
+      }
+      const post = initForumDatabase().prepare("SELECT id FROM posts WHERE id = ?").get(postId);
+      if (!post) {
+        sendJson(res, 404, { error: "动态不存在" });
+        return true;
+      }
+      const createdAt = Date.now();
+      const result = initForumDatabase()
+        .prepare("INSERT INTO replies (post_id, content, author, created_at) VALUES (?, ?, ?, ?)")
+        .run(postId, content, getForumAuthor(req), createdAt);
+      sendJson(res, 201, { id: Number(result.lastInsertRowid), createdAt });
+    } catch (error) {
+      sendJson(res, 400, { error: error.message });
+    }
     return true;
   }
 
@@ -2456,7 +3124,8 @@ async function handleApi(req, res, url) {
       }
       const result = await handleStreamingUpload(req, NSFW_DIR);
       const names = result.uploadedNames || [];
-      const detail = names.length === 1 ? names[0] : `${result.uploaded} 项`;
+      const targetLabel = names.length === 1 ? names[0] : `${result.uploaded} 项`;
+      const detail = `${targetLabel}（${result.uploaded} 个文件，${result.uploadedBytes} 字节）`;
       logAction(getDeviceName(req), getClientIp(req), "上传", detail, names);
       sendJson(res, 200, { ok: true, uploaded: result.uploaded, backupBatchId: result.backupBatchId });
     } catch (error) {
@@ -2488,6 +3157,12 @@ async function handleApi(req, res, url) {
       if (isInvalidFileName(name)) throw new Error("文件夹名称包含非法字符");
       const targetRelative = safeRelative(path.posix.join(parentDir, name));
       await ensureDir(resolveInsideRoot(targetRelative, req));
+      recordFileAttributions(
+        [targetRelative],
+        getDeviceName(req),
+        req._nsfwMode,
+        false
+      );
       invalidateFolderSizeCacheForPath(targetRelative, req._nsfwMode);
       logAction(getDeviceName(req), getClientIp(req), "创建文件夹", path.posix.join(parentDir, name));
       sendJson(res, 200, { ok: true, path: targetRelative });
@@ -2550,6 +3225,12 @@ async function handleApi(req, res, url) {
       }
       // 标记为项目目录
       await fsp.writeFile(path.join(projectFull, ".project"), "").catch(() => {});
+      recordFileAttributions(
+        [projectPath],
+        getDeviceName(req),
+        req._nsfwMode,
+        false
+      );
       invalidateFolderSizeCacheForPath(projectPath, req._nsfwMode);
       logAction(getDeviceName(req), getClientIp(req), "创建项目文件夹", projectPath);
       sendJson(res, 200, { ok: true, path: projectPath });
@@ -2566,10 +3247,15 @@ async function handleApi(req, res, url) {
       if (paths.length === 0) throw new Error("没有可删除的目标");
       // Collect file names from folders before moving
       const deletedNames = [];
+      let deletedFileCount = 0;
+      let deletedBytes = 0;
       for (const item of paths) {
         try {
           const fullPath = resolveInsideRoot(safeRelative(item), req);
           const stat = await fsp.stat(fullPath);
+          const measurement = await measureWorkspaceFiles(fullPath);
+          deletedFileCount += measurement.fileCount;
+          deletedBytes += measurement.totalBytes;
           if (stat.isDirectory()) {
             deletedNames.push(...await collectDirFileNames(fullPath));
           } else {
@@ -2583,7 +3269,8 @@ async function handleApi(req, res, url) {
         deleted.push(await moveToRecycle(item, req._nsfwMode ? NSFW_DIR : null));
       }
       const itemNames = deleted.map(d => `${d.name}${d.itemType === "directory" ? " (文件夹)" : ""}`);
-      const detail = paths.length === 1 ? itemNames[0] : `${paths.length} 项`;
+      const targetLabel = paths.length === 1 ? itemNames[0] : `${paths.length} 项`;
+      const detail = `${targetLabel}（${deletedFileCount} 个文件，${deletedBytes} 字节）`;
       logAction(getDeviceName(req), getClientIp(req), "删除", detail, deletedNames);
       sendJson(res, 200, { ok: true, deleted });
     } catch (error) {
@@ -2614,6 +3301,11 @@ async function handleApi(req, res, url) {
       }
       await cleanupThumbCacheForPath(sourcePath, sourceStat);
       await fsp.rename(sourcePath, targetPath);
+      try {
+        copyFileAttributions(sourceRelative, targetRelative, req._nsfwMode, true);
+      } catch (error) {
+        console.error(`上传者记录重命名失败: ${error.message}`);
+      }
       invalidateFolderSizeCacheForPath(sourceRelative, req._nsfwMode);
       invalidateFolderSizeCacheForPath(targetRelative, req._nsfwMode);
       logAction(getDeviceName(req), getClientIp(req), "重命名", `${sourceRelative} → ${newName}`);
@@ -2630,6 +3322,13 @@ async function handleApi(req, res, url) {
       const paths = (Array.isArray(body.paths) ? body.paths : [body.path]).map((item) => safeRelative(item)).filter(Boolean);
       if (paths.length === 0) throw new Error("没有可移动的项目");
       const moved = await moveItems(paths, body.targetDir, { overwrite: body.overwrite === true }, req._nsfwMode ? NSFW_DIR : null);
+      moved.forEach((item) => {
+        try {
+          copyFileAttributions(item.from, item.to, req._nsfwMode, true);
+        } catch (error) {
+          console.error(`上传者记录移动失败: ${error.message}`);
+        }
+      });
       const movedNames = moved.map(m => m.from.split("/").pop());
       logAction(getDeviceName(req), getClientIp(req), "移动", `${paths.length} 项 → /${body.targetDir || ""}`, movedNames);
       sendJson(res, 200, { ok: true, moved });
@@ -2645,6 +3344,13 @@ async function handleApi(req, res, url) {
       const paths = (Array.isArray(body.paths) ? body.paths : [body.path]).map((item) => safeRelative(item)).filter(Boolean);
       if (paths.length === 0) throw new Error("没有可复制的项目");
       const copied = await copyItems(paths, body.targetDir, req._nsfwMode ? NSFW_DIR : null);
+      copied.forEach((item) => {
+        try {
+          copyFileAttributions(item.from, item.to, req._nsfwMode, false);
+        } catch (error) {
+          console.error(`上传者记录复制失败: ${error.message}`);
+        }
+      });
       const copiedNames = copied.map(m => m.from.split("/").pop());
       logAction(getDeviceName(req), getClientIp(req), "复制", `${paths.length} 项 → /${body.targetDir || ""}`, copiedNames);
       sendJson(res, 200, { ok: true, copied: copied.length });
@@ -2683,7 +3389,8 @@ async function handleApi(req, res, url) {
       }
       const result = await handleStreamingUpload(req, req._nsfwMode ? NSFW_DIR : null);
       const names = result.uploadedNames || [];
-      const detail = names.length === 1 ? names[0] : `${result.uploaded} 项`;
+      const targetLabel = names.length === 1 ? names[0] : `${result.uploaded} 项`;
+      const detail = `${targetLabel}（${result.uploaded} 个文件，${result.uploadedBytes} 字节）`;
       logAction(getDeviceName(req), getClientIp(req), "上传", detail, names);
       sendJson(res, 200, { ok: true, uploaded: result.uploaded, backupBatchId: result.backupBatchId });
     } catch (error) {
@@ -2700,11 +3407,18 @@ async function handleApi(req, res, url) {
       const downloadNames = (data.skipped || []).length > 0
         ? [`${paths.length} 项 (${data.skipped.length} 项已跳过)`]
         : paths.map(p => p.split("/").pop());
-      logAction(getDeviceName(req), getClientIp(req), "下载", `${paths.length} 项`, downloadNames);
+      logAction(
+        getDeviceName(req),
+        getClientIp(req),
+        "下载",
+        `${paths.length} 项（${data.fileCount} 个文件，${data.totalBytes} 字节）`,
+        downloadNames
+      );
       sendJson(res, 200, {
         ok: true,
         downloadUrl: `/download-batch?token=${encodeURIComponent(data.token)}&name=${encodeURIComponent(data.fileName)}`,
-        skipped: data.skipped
+        skipped: data.skipped,
+        fileCount: data.fileCount
       });
     } catch (error) {
       sendJson(res, error.statusCode || 400, { error: error.message });
@@ -2745,8 +3459,15 @@ async function handleApi(req, res, url) {
         if (meta.name) deleteName = meta.name;
         deleteItems = await getRecycleEntryFileNames(deleteId);
       } catch {}
+      const deletedFileCount = countLoggedFileNames(deleteItems);
       await permanentlyDeleteRecycleEntry(deleteId);
-      logAction(getDeviceName(req), getClientIp(req), "彻底删除", deleteName, deleteItems);
+      logAction(
+        getDeviceName(req),
+        getClientIp(req),
+        "彻底删除",
+        `${deleteName}（${deletedFileCount} 个文件）`,
+        deleteItems
+      );
       sendJson(res, 200, { ok: true });
     } catch (error) {
       sendJson(res, error.statusCode || 400, { error: error.message });
@@ -2815,6 +3536,9 @@ async function streamFile(req, res, url, download) {
     }
     const fileName = path.basename(fullPath);
     const mimeType = getMimeType(fullPath);
+    if (download) {
+      logAction(getDeviceName(req), getClientIp(req), "下载", `${fileName}（1 个文件，${stat.size} 字节）`, [fileName]);
+    }
     const range = req.headers.range;
     if (range && !download) {
       const match = /bytes=(\d*)-(\d*)/.exec(range);
@@ -3017,6 +3741,7 @@ async function start() {
   await loadNsfwPassword();
   await loadFolderSizeCache();
   await restoreLogBuffer();
+  initForumDatabase();
   await cleanupExpiredRecycleEntries();
   setInterval(() => {
     cleanupExpiredRecycleEntries().catch((error) => {

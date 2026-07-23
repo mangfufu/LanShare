@@ -7,11 +7,18 @@
    ============================================================ */
 
 body[data-ui-style="editorial"] {
-  --f-body: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --f-body: "Noto Serif SC", "Songti SC", "SimSun", serif;
   --f-display: "Noto Serif SC", "Songti SC", "SimSun", serif;
-  --f-mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+  --f-mono: "Noto Serif SC", "Songti SC", "SimSun", serif;
   font-family: var(--f-body);
   background: var(--bg);
+}
+
+body[data-ui-style="editorial"] button,
+body[data-ui-style="editorial"] input,
+body[data-ui-style="editorial"] select,
+body[data-ui-style="editorial"] textarea {
+  font-family: var(--f-display);
 }
 
 /* ── 面板：发丝线 + 纸面 ───────────────────── */
@@ -49,27 +56,28 @@ body[data-ui-style="editorial"] .mini-tool-button {
   font-weight: 500;
   transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
 }
-body[data-ui-style="editorial"] .button:hover,
-body[data-ui-style="editorial"] .mini-tool-button:hover {
+body[data-ui-style="editorial"] .button:hover:not(:disabled),
+body[data-ui-style="editorial"] .mini-tool-button:hover:not(:disabled) {
   transform: none;
-  background: var(--text);
-  color: var(--bg);
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-text);
 }
-body[data-ui-style="editorial"] .button.primary { background: var(--text); color: var(--bg); }
-body[data-ui-style="editorial"] .button.primary:hover { background: var(--accent); border-color: var(--accent); color: #fff; }
+body[data-ui-style="editorial"] .button.primary { background: transparent; border-color: var(--line); color: var(--ink-soft); }
+body[data-ui-style="editorial"] .button.primary:hover:not(:disabled) { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
 body[data-ui-style="editorial"] .button.ghost {
   border-color: var(--line);
   background: transparent;
   color: var(--ink-soft);
 }
-body[data-ui-style="editorial"] .button.ghost:hover { border-color: var(--text); color: var(--text); background: transparent; }
+body[data-ui-style="editorial"] .button.ghost:hover:not(:disabled) { border-color: var(--accent); color: var(--accent-text); background: var(--accent); }
 body[data-ui-style="editorial"] .button.ghost.is-active,
 body[data-ui-style="editorial"] .button.ghost.active-tool {
-  background: transparent;
-  color: var(--text);
+  background: var(--accent);
+  color: var(--accent-text);
   font-weight: 700;
-  border-color: var(--text);
-  box-shadow: inset 0 -2px 0 var(--text);
+  border-color: var(--accent);
+  box-shadow: none;
 }
 body[data-ui-style="editorial"] .mini-tool-button {
   font-size: 12px;
@@ -77,9 +85,37 @@ body[data-ui-style="editorial"] .mini-tool-button {
   border-color: var(--line);
   color: var(--ink-soft);
 }
-body[data-ui-style="editorial"] .mini-tool-button:hover { border-color: var(--text); color: var(--text); background: transparent; }
+body[data-ui-style="editorial"] .mini-tool-button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent-text); background: var(--accent); }
 body[data-ui-style="editorial"] .button:disabled,
-body[data-ui-style="editorial"] .mini-tool-button:disabled { box-shadow: none; }
+body[data-ui-style="editorial"] .mini-tool-button:disabled {
+  border-color: var(--line);
+  background: transparent;
+  color: var(--muted);
+  box-shadow: none;
+  opacity: 0.45;
+}
+
+/* 音频文件列表中的动态按钮也使用主界面的墨韵按钮配色。 */
+body[data-ui-style="editorial"] .item-actions button {
+  border: 1px solid var(--text);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  font-family: var(--f-display);
+  font-weight: 500;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+body[data-ui-style="editorial"] .item-actions button:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-text);
+}
+body[data-ui-style="editorial"] .item-actions button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  background: transparent;
+  color: var(--text);
+}
 
 /* ── 上传区 / 拖拽区 ─────────────────────── */
 body[data-ui-style="editorial"] .upload-box,
@@ -116,7 +152,7 @@ body[data-ui-style="editorial"] select {
 body[data-ui-style="editorial"] input[type="text"]:focus,
 body[data-ui-style="editorial"] input[type="number"]:focus,
 body[data-ui-style="editorial"] select:focus {
-  border-color: var(--text);
+  border-color: var(--accent);
   box-shadow: none;
   outline: none;
 }
@@ -142,8 +178,9 @@ body[data-ui-style="editorial"] .marker-item:hover {
 }
 body[data-ui-style="editorial"] .video-item.selected,
 body[data-ui-style="editorial"] .video-item.active {
-  border-color: var(--text);
-  box-shadow: inset 2px 0 0 var(--text);
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  box-shadow: inset 2px 0 0 var(--accent);
 }
 body[data-ui-style="editorial"] .file-list,
 body[data-ui-style="editorial"] .merge-list,
@@ -176,7 +213,7 @@ body[data-ui-style="editorial"] .play-btn {
   color: var(--text);
   transition: background 120ms ease, color 120ms ease;
 }
-body[data-ui-style="editorial"] .play-btn:hover { background: var(--text); color: var(--bg); }
+body[data-ui-style="editorial"] .play-btn:hover { border-color: var(--accent); background: var(--accent); color: var(--accent-text); }
 body[data-ui-style="editorial"] .time-display,
 body[data-ui-style="editorial"] .time-row,
 body[data-ui-style="editorial"] #speedValue {
@@ -193,7 +230,7 @@ body[data-ui-style="editorial"] .canvas-wrap {
   border-radius: 2px;
   background: #000;
 }
-body[data-ui-style="editorial"] .meta-text { font-family: var(--f-mono); font-size: 11px; letter-spacing: 0.04em; }
+body[data-ui-style="editorial"] .meta-text { font-family: var(--f-mono); font-size: 12px; letter-spacing: 0.04em; }
 body[data-ui-style="editorial"] .marker-jump { font-family: var(--f-mono); }
 
 /* ── 通知与状态 ──────────────────────────── */
@@ -205,14 +242,22 @@ body[data-ui-style="editorial"] .notice {
 }
 body[data-ui-style="editorial"] .status {
   font-family: var(--f-mono);
-  font-size: 11px;
+  font-size: 12px;
   letter-spacing: 0.06em;
   color: var(--muted);
 }
 
+body[data-ui-style="editorial"] .tool-mode-button[aria-pressed="true"]::after {
+  content: "当前";
+  margin-left: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  opacity: 0.78;
+}
+
 /* ── 复选框（视频/标记列表内） ─────────────── */
 body[data-ui-style="editorial"] .video-item-check,
-body[data-ui-style="editorial"] .marker-check { accent-color: var(--text); }
+body[data-ui-style="editorial"] .marker-check { accent-color: var(--accent); }
 
 /* ── 滚动条 ──────────────────────────────── */
 body[data-ui-style="editorial"] .app-shell::-webkit-scrollbar,

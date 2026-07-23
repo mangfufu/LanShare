@@ -10,7 +10,7 @@
 html, body {
   height: 100%;
   margin: 0;
-  font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+  font-family: "Noto Serif SC", "Songti SC", "SimSun", serif;
   color: var(--text);
   background: transparent;
   overflow: hidden;
@@ -537,7 +537,8 @@ html, body {
 /* ── Audio player dark theme ───────────── */
 
 audio {
-  filter: invert(0.85) hue-rotate(160deg);
+  filter: none;
+  color-scheme: inherit;
 }
 
 /* ── Scrollbar styles ──────────────────── */

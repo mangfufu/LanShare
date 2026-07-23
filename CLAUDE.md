@@ -4,9 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
+All server start, restart, and port-check operations must be run from PowerShell. Do not use `cmd.exe` launch scripts.
+
 ```powershell
 npm start              # Start production server on port 8080
-cd dev && npm start    # Start dev server on port 8082
+npm --prefix .\dev start    # Start dev server on port 8082
 node --check server.js          # Syntax check server
 node -c static/app.js      # Syntax check frontend
 ```
@@ -67,20 +69,21 @@ Tools run in iframes, inheriting theme CSS variables from parent via MutationObs
 ### Server Flow
 1. `http.createServer` receives all requests
 2. `handleApi()` routes API calls (`/api/list`, `/api/upload`, `/api/delete`, etc.)
-3. Write operations are protected by CSRF token + Origin/Referer check
+3. Protected POST write routes enforce CSRF token + Origin/Referer checks; NSFW data routes additionally require a valid server-side session
 4. File paths are normalized and restricted within `ROOT_DIR`
 
 ### Frontend Flow
 1. Tab switching controls visibility of `tab-content` divs
-2. All write operations go through `apiFetch()` (auto-attaches CSRF token + nickname)
+2. JSON/form write operations use `apiFetch()`; upload keeps XMLHttpRequest progress reporting and attaches the same CSRF token + nickname headers
 3. Upload uses XMLHttpRequest with progress tracking
 4. Theme slider interpolates CSS variable colors in real-time
 
 ### Key Concepts
 - **CSRF**: Token generated per server startup, fetched by frontend via `/api/security`
+- **NSFW auth**: Successful password verification creates an in-memory session identified by an HttpOnly, SameSite=Strict Cookie. The default TTL is 12 hours (`NSFW_SESSION_TTL_MS`); logout, password changes, and server restarts invalidate sessions.
 - **Path safety**: `safeRelative()` normalizes paths, `resolveInsideRoot()` prevents directory traversal
 - **Recycle bin**: Items are `rename`-ed to `recycle_bin/<uuid>/` with a `meta.json`
-- **Daily backup**: Defaults to 23:55. The first snapshot copies all files; later snapshots hard-link unchanged files from the previous snapshot and copy only new/changed files.
+- **Daily backup**: Defaults to 23:55. The first snapshot copies all files; later snapshots compare source size, mtime, and ctime, then hard-link unchanged files from the previous snapshot and copy new/changed files. Both copy and hard-link paths recheck source stability.
 - **Per-upload backup**: Disabled by default. Set `PER_UPLOAD_BACKUP_ENABLED=1` only for temporary legacy compatibility.
 - **Backup scope**: Each daily snapshot includes both `shared` and `shared_NSFW` and writes `.snapshot.json`.
 - **Tool iframes**: Audio/Video tools use `crypto.randomUUID()` polyfill (`generateId()`) for iframe compatibility
@@ -101,13 +104,13 @@ Tools run in iframes, inheriting theme CSS variables from parent via MutationObs
 3. 同步脚本自动把 dev 端口 8082 改为正式版 8080，并移除正式版标题与版本徽标中的测试标记
 4. 同步正式版代码、静态资源、脚本、`package.json`、README、CLAUDE、CHANGELOG 和交接文档到 `LanShare/`、`github/`
 5. 语法检查并验证所有版本号、端口和测试标记一致
-6. Git commit/push 是独立外部操作，只有用户明确要求推送时才执行
+6. 同步脚本在本地镜像完成后，自动提交 `github/` 的受管文件并推送当前分支到 GitHub；推送失败时同步命令返回失败
 
 ### 同步命令
 
 ```powershell
 npm run sync -- --dry-run  # 只预览，不写文件
-npm run sync              # 经用户确认后执行本地同步
+npm run sync              # 经用户确认后同步，并自动 commit/push GitHub
 ```
 
 ### 版本号更新
@@ -130,4 +133,4 @@ npm run sync              # 经用户确认后执行本地同步
 - **最小改动原则**：任何代码修改请始终遵守"最小改动原则"，除非我主动要求优化或者重构。
 - **严禁擅自删除**：永远不要删除不是你写的代码（即便代码已被注释），也**永远不要删除原有的任何注释**。
 - **复用与参考**：写代码前先思考哪些业务可以参考或复用。尽可能参考现有业务的实现风格；如果不明确，请让我为你提供参考，坚决避免重复造轮子。
-- **必须经过用户允许才能同步**：用户已明确声明"以后不许更新与推送"，同步必须等用户命令。
+- **必须经过用户允许才能同步**：同步必须等用户命令；收到同步命令后，`npm run sync` 自动 commit/push GitHub。

@@ -55,13 +55,17 @@ body[data-ui-style="editorial"] .page { width: min(1280px, calc(100% - 72px)); m
 /* 测试版标记 - 仅 dev 模式，同步正式版时移除 .test-badge */
 body[data-ui-style="editorial"] .test-badge {
   position: fixed;
-  top: 10px; left: 12px;
+  top: 10px;
+  left: 50%;
+  right: auto;
+  transform: translateX(-50%);
   z-index: 1100;
   font-family: var(--f-mono);
   font-size: 9px;
   letter-spacing: 0.2em;
   color: var(--danger);
   opacity: 0.6;
+  pointer-events: none;
   user-select: none;
 }
 

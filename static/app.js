@@ -47,6 +47,7 @@ const state = {
   sortKey: "name",
   sortAsc: true,
   filterStatus: "all", // all | completed | in_progress | not_started
+  nsfwMode: false,
   clipboard: { items: [], mode: null }
 };
 
@@ -229,8 +230,30 @@ async function apiFetch(url, options = {}) {
     url += (url.indexOf("?") === -1 ? "?" : "&") + "nsfw=1"
   }
   const res = await fetch(url, { ...options, headers });
+  if (res.status === 401 && state.nsfwMode) setNsfwModeUi(false);
   if (res.ok && (options.method === "POST" || options.method === undefined)) pollLogs();
   return res;
+}
+
+function setNsfwModeUi(enabled) {
+  state.nsfwMode = Boolean(enabled);
+  if (state.nsfwMode) sessionStorage.setItem("nsfw_authed", "1");
+  else sessionStorage.removeItem("nsfw_authed");
+  const input = document.getElementById("nsfwInput");
+  const bar = document.getElementById("nsfwBar");
+  if (input) input.style.display = state.nsfwMode ? "none" : "";
+  if (bar) bar.style.display = state.nsfwMode ? "" : "none";
+  if (typeof _nsfwSet !== "undefined" && _nsfwSet) _nsfwSet.style.display = state.nsfwMode ? "none" : "";
+}
+
+async function restoreNsfwSession() {
+  if (sessionStorage.getItem("nsfw_authed") !== "1") return;
+  try {
+    const response = await fetch("/api/nsfw/session", { cache: "no-store" });
+    setNsfwModeUi(response.ok);
+  } catch {
+    setNsfwModeUi(false);
+  }
 }
 
 async function checkConflicts(payload) {
@@ -1295,7 +1318,7 @@ function saveColumnWidths(widths) {
   localStorage.setItem(COLUMN_WIDTHS_KEY, JSON.stringify(widths));
 }
 
-function clampColumnWidth(key, width) {
+function clampColumnWidth(key, width, currentWidths = getSavedColumnWidths()) {
   const config = RESIZABLE_TABLE_COLUMNS[key];
   if (!config) return width;
   // 计算可用最大宽度：容器可视宽度 - 其他可调列的最小宽度 - 固定列宽度
@@ -1303,10 +1326,9 @@ function clampColumnWidth(key, width) {
   const containerWidth = tableWrap ? tableWrap.clientWidth : window.innerWidth
   // 其他列的实际宽度（防止已扩大的列占用操作栏空间）
   var otherWidth = FIXED_TABLE_COLUMN_WIDTH
-  var widths = getSavedColumnWidths()
   for (var k in RESIZABLE_TABLE_COLUMNS) {
     if (k === key) continue
-    var w = Number(widths[k]) || RESIZABLE_TABLE_COLUMNS[k].defaultWidth
+    var w = Number(currentWidths[k]) || RESIZABLE_TABLE_COLUMNS[k].defaultWidth
     otherWidth += Math.max(RESIZABLE_TABLE_COLUMNS[k].min, Math.min(RESIZABLE_TABLE_COLUMNS[k].max, w))
   }
   const dynamicMax = Math.max(config.min, containerWidth - otherWidth - 40)
@@ -1323,18 +1345,36 @@ function updateTableMinWidth(widths) {
 
 function applyColumnWidths(widths = getSavedColumnWidths()) {
   if (!fileTable) return;
+  const appliedWidths = {};
+  let savedWidthsChanged = false;
   for (const [key, config] of Object.entries(RESIZABLE_TABLE_COLUMNS)) {
     const col = fileTable.querySelector(config.selector);
     if (!col) continue;
     const width = Number(widths[key]);
-    col.style.width = Number.isFinite(width) ? `${clampColumnWidth(key, width)}px` : "";
+    if (Number.isFinite(width)) {
+      const clampedWidth = clampColumnWidth(key, width, widths);
+      col.style.width = `${clampedWidth}px`;
+      appliedWidths[key] = clampedWidth;
+      if (clampedWidth !== width) {
+        widths[key] = clampedWidth;
+        savedWidthsChanged = true;
+      }
+    } else {
+      col.style.width = "";
+      appliedWidths[key] = config.defaultWidth;
+      if (Object.prototype.hasOwnProperty.call(widths, key)) {
+        delete widths[key];
+        savedWidthsChanged = true;
+      }
+    }
   }
-  updateTableMinWidth(widths);
+  updateTableMinWidth(appliedWidths);
+  if (savedWidthsChanged) saveColumnWidths(widths);
 }
 
 function setColumnWidth(key, width) {
   const widths = getSavedColumnWidths();
-  widths[key] = clampColumnWidth(key, width);
+  widths[key] = clampColumnWidth(key, width, widths);
   saveColumnWidths(widths);
   applyColumnWidths(widths);
 }
@@ -2629,6 +2669,12 @@ async function loadDir(dir) {
     return;
   }
   if (!res.ok) {
+    if (res.status === 401 && state.nsfwMode) {
+      setNsfwModeUi(false);
+      showMessage("海外剧会话已失效，请重新输入密码", "error");
+      loadDir("");
+      return;
+    }
     showMessage(data.error || "读取目录失败", "error");
     return;
   }
@@ -2661,7 +2707,10 @@ async function loadMore() {
     if (state.nsfwMode) loadMoreUrl += "&nsfw=1"
     const res = await fetch(loadMoreUrl);
     const data = await res.json();
-    if (res.ok && data.items) {
+    if (res.status === 401 && state.nsfwMode) {
+      setNsfwModeUi(false);
+      loadDir("");
+    } else if (res.ok && data.items) {
       state.currentItems.push(...data.items);
       renderCurrentDirectory();
       state.fileTotal = data.total || state.currentItems.length;
@@ -3736,6 +3785,11 @@ async function performSearch(query) {
       var sUrl = "/api/search?q=" + encodeURIComponent(query) + (state.nsfwMode ? "&nsfw=1" : "")
       const res = await fetch(sUrl);
       const data = await res.json();
+      if (res.status === 401 && state.nsfwMode) {
+        setNsfwModeUi(false);
+        loadDir("");
+        return;
+      }
       if (!res.ok) throw new Error(data.error || "搜索失败");
       state.searchResults = data.items || [];
       state.searchResults._stoppedEarly = data.stoppedEarly;
@@ -3870,16 +3924,12 @@ document.body.dataset.uiStyle = "editorial";
 applyThemePos(state.themePos);
 initBackground();
 setViewMode(state.viewMode);
-// 恢复 NSFW 模式
-if (sessionStorage.getItem("nsfw_authed") === "1") {
-  state.nsfwMode = true
-  var _ni = document.getElementById("nsfwInput")
-  var _nb = document.getElementById("nsfwBar")
-  if (_ni) _ni.style.display = "none"
-  if (_nb) _nb.style.display = ""
+async function initializeFileView() {
+  await restoreNsfwSession();
+  const savedDir = localStorage.getItem(CURRENT_DIR_KEY) || "";
+  await loadDir(savedDir);
 }
-const savedDir = localStorage.getItem(CURRENT_DIR_KEY) || "";
-loadDir(savedDir);
+initializeFileView();
 setupScrollPagination();
 loadRecycleItems();
 // --- Floating characters (per-character bounce) + cursor particles + click burst ---
@@ -4784,7 +4834,7 @@ async function chatSend() {
   if (!text) return
   chatInput.value = ""
   try {
-    await fetch("/api/chat/send", {
+    await apiFetch("/api/chat/send", {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Device-Name": encodeURIComponent(state.nickname || "匿名") },
       body: JSON.stringify({ text: text })
@@ -4798,7 +4848,7 @@ if (chatCloseBtn) chatCloseBtn.addEventListener("click", function() { chatPanel.
 var chatClearBtn = document.getElementById("chatClearBtn")
 if (chatClearBtn) {
   chatClearBtn.addEventListener("click", async function() {
-    var r = await fetch("/api/chat/clear", { method: "POST" })
+    var r = await apiFetch("/api/chat/clear", { method: "POST" })
     var d = await r.json()
     if (d.ok) {
       chatList.querySelectorAll(".chat-msg").forEach(function(el) { el.remove() })
@@ -4842,12 +4892,11 @@ var nsfwInput = document.getElementById("nsfwInput")
 var _nsfwSet = null
 
 if (nsfwBar) {
-  nsfwBar.addEventListener("click", function() {
-    state.nsfwMode = false
-    sessionStorage.removeItem("nsfw_authed")
-    nsfwInput.style.display = ""
-    nsfwBar.style.display = "none"
-    if (_nsfwSet) _nsfwSet.style.display = ""
+  nsfwBar.addEventListener("click", async function() {
+    try {
+      await apiFetch("/api/nsfw/logout", { method: "POST" })
+    } catch {}
+    setNsfwModeUi(false)
     loadDir("")
   })
 }
@@ -4865,7 +4914,7 @@ if (nsfwInput && (location.hostname === "127.0.0.1" || location.hostname === "lo
       validate: function(v) { return v.trim() ? "" : "密码不能为空" }
     }).then(function(p) {
       if (!p) return
-      return fetch("/api/nsfw/setpwd", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password: p }) })
+      return apiFetch("/api/nsfw/setpwd", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password: p }) })
         .then(function(r) { return r.json() })
         .then(function(d) { showMessage(d.ok ? "密码已修改" : (d.error || "失败"), d.ok ? "info" : "error") })
     })
@@ -4878,17 +4927,13 @@ if (nsfwInput) {
   nsfwInput.addEventListener("keydown", function(e) {
     if (e.key !== "Enter") return
     var _v = this.value
-    fetch("/api/nsfw/auth", {
+    apiFetch("/api/nsfw/auth", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ password: _v })
     }).then(function(r) { return r.json() }).then(function(d) {
       if (d.ok) {
         nsfwInput.value = ""
-        nsfwInput.style.display = "none"
-        state.nsfwMode = true
-        sessionStorage.setItem("nsfw_authed", "1")
-        if (nsfwBar) nsfwBar.style.display = ""
-        if (_nsfwSet) _nsfwSet.style.display = "none"
+        setNsfwModeUi(true)
         loadDir("")
       } else {
         showMessage("密码错误", "error")

@@ -96,7 +96,19 @@ let folderSizeCacheSaveTimer = null;
 let dailyBackupTimer = null;
 let dailyBackupRunning = false;
 const CSRF_TOKEN = crypto.randomBytes(32).toString("hex");
+const NSFW_SESSION_COOKIE = "lanshare_nsfw_session";
+const configuredNsfwSessionTtlMs = Number(process.env.NSFW_SESSION_TTL_MS);
+const NSFW_SESSION_TTL_MS = Number.isFinite(configuredNsfwSessionTtlMs) && configuredNsfwSessionTtlMs > 0
+  ? configuredNsfwSessionTtlMs
+  : 12 * 60 * 60 * 1000;
+const nsfwSessions = new Map();
 const PROTECTED_POST_PATHS = new Set([
+  "/api/chat/send",
+  "/api/chat/clear",
+  "/api/nsfw/setpwd",
+  "/api/nsfw/auth",
+  "/api/nsfw/logout",
+  "/api/nsfw/upload",
   "/api/mkdir",
   "/api/create-project",
   "/api/delete",
@@ -152,8 +164,8 @@ async function ensureDir(dirPath) {
   await fsp.mkdir(dirPath, { recursive: true });
 }
 
-function sendJson(res, statusCode, payload) {
-  res.writeHead(statusCode, { "Content-Type": "application/json; charset=utf-8" });
+function sendJson(res, statusCode, payload, extraHeaders = {}) {
+  res.writeHead(statusCode, { "Content-Type": "application/json; charset=utf-8", ...extraHeaders });
   res.end(JSON.stringify(payload));
 }
 
@@ -164,6 +176,72 @@ function sendText(res, statusCode, text) {
 
 function getHeaderValue(req, name) {
   return String(req.headers[name] || "").trim();
+}
+
+function getRequestCookie(req, name) {
+  const rawCookie = getHeaderValue(req, "cookie");
+  for (const part of rawCookie.split(";")) {
+    const separatorIndex = part.indexOf("=");
+    if (separatorIndex < 0) continue;
+    const key = part.slice(0, separatorIndex).trim();
+    if (key !== name) continue;
+    const value = part.slice(separatorIndex + 1).trim();
+    try { return decodeURIComponent(value); } catch { return ""; }
+  }
+  return "";
+}
+
+function makeNsfwSessionCookie(token, maxAgeSeconds) {
+  return `${NSFW_SESSION_COOKIE}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAgeSeconds}`;
+}
+
+function cleanupExpiredNsfwSessions(now = Date.now()) {
+  for (const [token, expiresAt] of nsfwSessions) {
+    if (!Number.isFinite(expiresAt) || expiresAt <= now) nsfwSessions.delete(token);
+  }
+}
+
+function createNsfwSession() {
+  cleanupExpiredNsfwSessions();
+  const token = crypto.randomBytes(32).toString("hex");
+  const expiresAt = Date.now() + NSFW_SESSION_TTL_MS;
+  nsfwSessions.set(token, expiresAt);
+  return { token, expiresAt };
+}
+
+function getValidNsfwSessionToken(req) {
+  const token = getRequestCookie(req, NSFW_SESSION_COOKIE);
+  if (!token) return "";
+  const expiresAt = nsfwSessions.get(token);
+  if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+    nsfwSessions.delete(token);
+    return "";
+  }
+  return token;
+}
+
+function isNsfwAuthorized(req) {
+  return Boolean(getValidNsfwSessionToken(req));
+}
+
+function clearNsfwSession(req) {
+  const token = getRequestCookie(req, NSFW_SESSION_COOKIE);
+  if (token) nsfwSessions.delete(token);
+}
+
+function isLoopbackRequest(req) {
+  const address = String(req.socket && req.socket.remoteAddress || "").replace(/^::ffff:/, "");
+  return address === "127.0.0.1" || address === "::1";
+}
+
+function requestNeedsNsfwSession(req, url) {
+  if (url.pathname === "/api/nsfw/auth" || url.pathname === "/api/nsfw/session" || url.pathname === "/api/nsfw/logout" || url.pathname === "/api/nsfw/setpwd") {
+    return false;
+  }
+  return Boolean(req._nsfwMode)
+    || url.pathname === "/api/nsfw/list"
+    || url.pathname === "/api/nsfw/upload"
+    || url.pathname === "/nsfw/file";
 }
 
 function normalizeOrigin(value) {
@@ -813,7 +891,10 @@ function readRequestBody(req) {
 
 async function serveStaticFile(res, filePath) {
   const stream = fs.createReadStream(filePath);
-  res.writeHead(200, { "Content-Type": getMimeType(filePath) });
+  res.writeHead(200, {
+    "Content-Type": getMimeType(filePath),
+    "Cache-Control": "no-cache"
+  });
   stream.pipe(res);
   stream.on("error", () => {
     if (!res.headersSent) {
@@ -1257,7 +1338,24 @@ function makeBackupManifestKey(sourceName, relativePath) {
 function isSameBackupFileState(previousState, stat) {
   return previousState
     && Number(previousState.size) === stat.size
-    && Number(previousState.mtimeMs) === Math.trunc(stat.mtimeMs);
+    && Number(previousState.mtimeMs) === Math.trunc(stat.mtimeMs)
+    && Number.isFinite(Number(previousState.ctimeMs))
+    && Number(previousState.ctimeMs) === Math.trunc(stat.ctimeMs);
+}
+
+function isSameSourceFileState(initialStat, finalStat) {
+  return finalStat.size === initialStat.size
+    && Math.trunc(finalStat.mtimeMs) === Math.trunc(initialStat.mtimeMs)
+    && Math.trunc(finalStat.ctimeMs) === Math.trunc(initialStat.ctimeMs)
+    && finalStat.ino === initialStat.ino;
+}
+
+async function assertBackupSourceStable(sourcePath, initialStat) {
+  const finalStat = await fsp.stat(sourcePath);
+  if (isSameSourceFileState(initialStat, finalStat)) return;
+  const error = new Error("文件在备份过程中仍被写入，已留待下次备份");
+  error.code = "BACKUP_SOURCE_CHANGED";
+  throw error;
 }
 
 async function readDailyBackupManifest(snapshotDir) {
@@ -1282,13 +1380,10 @@ async function findLatestDailySnapshot() {
 
 async function copyStableBackupFile(sourcePath, targetPath, initialStat) {
   await fsp.copyFile(sourcePath, targetPath);
-  const finalStat = await fsp.stat(sourcePath);
-  const unchanged = finalStat.size === initialStat.size
-    && Math.trunc(finalStat.mtimeMs) === Math.trunc(initialStat.mtimeMs);
-  if (!unchanged) {
+  try {
+    await assertBackupSourceStable(sourcePath, initialStat);
+  } catch (error) {
     await fsp.unlink(targetPath).catch(() => {});
-    const error = new Error("文件在备份过程中仍被写入，已留待下次备份");
-    error.code = "BACKUP_SOURCE_CHANGED";
     throw error;
   }
   await fsp.utimes(targetPath, initialStat.atime, initialStat.mtime).catch(() => {});
@@ -1336,9 +1431,12 @@ async function backupDailyDirectory(options, relativeDir = "") {
         if (previousStat && previousStat.isFile() && previousStat.size === stat.size) {
           try {
             await fsp.link(previousPath, targetPath);
+            await assertBackupSourceStable(sourcePath, stat);
             linked = true;
             summary.linked += 1;
-          } catch {
+          } catch (error) {
+            await fsp.unlink(targetPath).catch(() => {});
+            if (error.code === "BACKUP_SOURCE_CHANGED") throw error;
             linked = false;
           }
         }
@@ -1352,7 +1450,8 @@ async function backupDailyDirectory(options, relativeDir = "") {
 
       nextFiles[manifestKey] = {
         size: stat.size,
-        mtimeMs: Math.trunc(stat.mtimeMs)
+        mtimeMs: Math.trunc(stat.mtimeMs),
+        ctimeMs: Math.trunc(stat.ctimeMs)
       };
       summary.files += 1;
     } catch (error) {
@@ -2129,6 +2228,15 @@ function moyuBroadcast(msg) {
 }
 
 async function handleApi(req, res, url) {
+  if (req.method === "POST" && PROTECTED_POST_PATHS.has(url.pathname)) {
+    try {
+      assertTrustedWriteRequest(req);
+    } catch (error) {
+      sendJson(res, error.statusCode || 403, { error: error.message });
+      return true;
+    }
+  }
+
   if (req.method === "POST" && url.pathname === "/api/chat/send") {
     const body = parseJson(await readRequestBody(req));
     const text = String(body.text || "").trim().slice(0, 500);
@@ -2142,8 +2250,7 @@ async function handleApi(req, res, url) {
     return true;
   }
   if (req.method === "POST" && url.pathname === "/api/chat/clear") {
-    const ip = getClientIp(req);
-    if (ip !== "127.0.0.1" && ip !== "::1" && ip !== "::ffff:127.0.0.1") {
+    if (!isLoopbackRequest(req)) {
       sendJson(res, 403, { error: "仅本地可清除" }); return true;
     }
     moyuMessages.length = 0;
@@ -2249,8 +2356,7 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === "POST" && url.pathname === "/api/nsfw/setpwd") {
-    const ip = getClientIp(req);
-    if (ip !== "127.0.0.1" && ip !== "::1" && ip !== "::ffff:127.0.0.1") {
+    if (!isLoopbackRequest(req)) {
       sendJson(res, 403, { error: "仅本机可修改密码" }); return true;
     }
     const body = parseJson(await readRequestBody(req));
@@ -2259,16 +2365,40 @@ async function handleApi(req, res, url) {
     if (newPwd.length > 50) { sendJson(res, 400, { error: "密码太长" }); return true; }
     await fsp.writeFile(NSFW_PASSWORD_FILE, newPwd, "utf8");
     nsfwPassword = newPwd;
-    sendJson(res, 200, { ok: true });
+    nsfwSessions.clear();
+    sendJson(res, 200, { ok: true }, { "Set-Cookie": makeNsfwSessionCookie("", 0) });
     return true;
   }
   if (req.method === "POST" && url.pathname === "/api/nsfw/auth") {
     const body = parseJson(await readRequestBody(req));
     if (body.password === nsfwPassword) {
-      sendJson(res, 200, { ok: true });
+      const session = createNsfwSession();
+      sendJson(res, 200, { ok: true, expiresAt: session.expiresAt }, {
+        "Set-Cookie": makeNsfwSessionCookie(session.token, Math.max(1, Math.floor(NSFW_SESSION_TTL_MS / 1000))),
+        "Cache-Control": "no-store"
+      });
     } else {
       sendJson(res, 403, { error: "密码错误" });
     }
+    return true;
+  }
+  if (req.method === "GET" && url.pathname === "/api/nsfw/session") {
+    if (!isNsfwAuthorized(req)) {
+      sendJson(res, 401, { ok: false, error: "海外剧会话已失效" }, {
+        "Set-Cookie": makeNsfwSessionCookie("", 0),
+        "Cache-Control": "no-store"
+      });
+      return true;
+    }
+    sendJson(res, 200, { ok: true }, { "Cache-Control": "no-store" });
+    return true;
+  }
+  if (req.method === "POST" && url.pathname === "/api/nsfw/logout") {
+    clearNsfwSession(req);
+    sendJson(res, 200, { ok: true }, {
+      "Set-Cookie": makeNsfwSessionCookie("", 0),
+      "Cache-Control": "no-store"
+    });
     return true;
   }
   // NSFW 列表（复用 getPreviewType/buildListItem，指向 NSFW_DIR）
@@ -2320,22 +2450,18 @@ async function handleApi(req, res, url) {
   }
   if (req.method === "POST" && url.pathname === "/api/nsfw/upload") {
     try {
-      const Busboy = require("busboy");
-      const busboy = Busboy({ headers: req.headers, limits: { fileSize: MAX_FILE_SIZE, files: 1000 } });
-      var uploadDir = ""
-      busboy.on("field", function(name, val) { if (name === "dir") uploadDir = String(val).replace(/\.\./g, "") })
-      busboy.on("file", function(fieldname, stream, info) {
-        var fileName = info.filename
-        if (!fileName) { stream.resume(); return }
-        var targetDir = path.resolve(NSFW_DIR, uploadDir)
-        if (!targetDir.startsWith(NSFW_DIR)) { stream.resume(); return }
-        var filePath = path.join(targetDir, fileName)
-        var ws = fs.createWriteStream(filePath)
-        stream.pipe(ws)
-      })
-      busboy.on("finish", function() { sendJson(res, 200, { ok: true }) })
-      req.pipe(busboy)
-    } catch (error) { sendJson(res, 400, { error: error.message }) }
+      const contentType = String(req.headers["content-type"] || "");
+      if (!contentType.toLowerCase().startsWith("multipart/form-data")) {
+        throw new Error("上传请求格式错误");
+      }
+      const result = await handleStreamingUpload(req, NSFW_DIR);
+      const names = result.uploadedNames || [];
+      const detail = names.length === 1 ? names[0] : `${result.uploaded} 项`;
+      logAction(getDeviceName(req), getClientIp(req), "上传", detail, names);
+      sendJson(res, 200, { ok: true, uploaded: result.uploaded, backupBatchId: result.backupBatchId });
+    } catch (error) {
+      sendJson(res, error.statusCode || 400, { error: error.message, conflicts: error.conflicts || [] });
+    }
     return true;
   }
 
@@ -2351,15 +2477,6 @@ async function handleApi(req, res, url) {
     });
     res.end(JSON.stringify({ csrfToken: CSRF_TOKEN }));
     return true;
-  }
-
-  if (req.method === "POST" && PROTECTED_POST_PATHS.has(url.pathname)) {
-    try {
-      assertTrustedWriteRequest(req);
-    } catch (error) {
-      sendJson(res, error.statusCode || 403, { error: error.message });
-      return true;
-    }
   }
 
   if (req.method === "POST" && url.pathname === "/api/mkdir") {
@@ -2813,6 +2930,10 @@ const server = http.createServer(async (req, res) => {
   setNsfwMode(req);
   const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
   try {
+    if (requestNeedsNsfwSession(req, url) && !isNsfwAuthorized(req)) {
+      sendJson(res, 401, { error: "请先验证海外剧访问密码" }, { "Set-Cookie": makeNsfwSessionCookie("", 0) });
+      return;
+    }
     if (await handleApi(req, res, url)) return;
     if (req.method === "GET" && url.pathname === "/download") return void await streamFile(req, res, url, true);
     if (req.method === "GET" && url.pathname === "/api/thumb") {

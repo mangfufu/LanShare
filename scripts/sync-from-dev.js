@@ -2,6 +2,10 @@
 
 const fs = require("fs/promises");
 const path = require("path");
+const { execFile } = require("child_process");
+const { promisify } = require("util");
+
+const execFileAsync = promisify(execFile);
 
 const args = process.argv.slice(2);
 const dryRun = args.includes("--dry-run");
@@ -22,6 +26,17 @@ const devDir = path.join(workspaceRoot, "dev");
 const prodDir = workspaceRoot;
 const lanShareDir = path.join(workspaceRoot, "LanShare");
 const githubDir = path.join(workspaceRoot, "github");
+const githubManagedPaths = [
+  "server.js",
+  "static",
+  "scripts",
+  "package.json",
+  "package-lock.json",
+  "README.md",
+  "CLAUDE.md",
+  "CHANGELOG.md",
+  "交接文档.md"
+];
 
 const copied = [];
 
@@ -38,6 +53,60 @@ async function ensureRequiredPath(targetPath, label) {
   if (!(await exists(targetPath))) {
     throw new Error(`${label} 不存在: ${targetPath}`);
   }
+}
+
+async function runGit(gitArgs) {
+  const safeDirectory = githubDir.replace(/\\/g, "/");
+  try {
+    const result = await execFileAsync(
+      "git",
+      ["-c", `safe.directory=${safeDirectory}`, "-C", githubDir, ...gitArgs],
+      { encoding: "utf8", maxBuffer: 10 * 1024 * 1024, windowsHide: true }
+    );
+    return {
+      stdout: (result.stdout || "").trim(),
+      stderr: (result.stderr || "").trim()
+    };
+  } catch (error) {
+    const details = String(error.stderr || error.stdout || error.message || "未知错误").trim();
+    throw new Error(`Git ${gitArgs[0]} 失败${details ? `：${details}` : ""}`);
+  }
+}
+
+async function ensureGithubPublishReady() {
+  await ensureRequiredPath(path.join(githubDir, ".git"), "github Git 仓库");
+  const staged = await runGit(["diff", "--cached", "--name-only"]);
+  if (staged.stdout) {
+    throw new Error(`github 仓库存在预先暂存的修改，拒绝自动提交：${staged.stdout.replace(/\r?\n/g, ", ")}`);
+  }
+}
+
+async function publishGithub() {
+  const packageInfo = JSON.parse(await fs.readFile(path.join(prodDir, "package.json"), "utf8"));
+  const version = packageInfo.version || "unknown";
+
+  await runGit(["add", "-A", "--", ...githubManagedPaths]);
+  const status = await runGit(["status", "--porcelain", "--", ...githubManagedPaths]);
+  let committed = false;
+
+  if (status.stdout) {
+    await runGit(["commit", "-m", `chore: sync v${version}`]);
+    committed = true;
+  }
+
+  try {
+    await runGit(["push", "origin", "HEAD"]);
+  } catch (error) {
+    const localState = committed ? "本地 Git commit 已完成" : "本地没有新提交";
+    throw new Error(`${localState}，但自动推送失败：${error.message}`);
+  }
+
+  const branch = await runGit(["branch", "--show-current"]);
+  console.log(
+    committed
+      ? `GitHub 自动提交并推送完成：${branch.stdout || "当前分支"}，chore: sync v${version}`
+      : `GitHub 已是最新状态：${branch.stdout || "当前分支"}`
+  );
 }
 
 async function copyFile(sourcePath, targetPath) {
@@ -166,6 +235,10 @@ async function main() {
   await ensureRequiredPath(lanShareDir, "LanShare 目录");
   await ensureRequiredPath(githubDir, "github 目录");
 
+  if (!dryRun) {
+    await ensureGithubPublishReady();
+  }
+
   await syncServerFiles();
   await syncStaticFiles();
   await syncProductionExtras(lanShareDir);
@@ -175,10 +248,15 @@ async function main() {
   for (const item of copied) {
     console.log(`- ${item}`);
   }
-  console.log("注意：脚本不会自动 git commit 或 git push。");
+
+  if (dryRun) {
+    console.log("预览模式不会执行 Git commit 或 Git push；正式同步会自动提交并推送 GitHub。");
+  } else {
+    await publishGithub();
+  }
 }
 
 main().catch((error) => {
-  console.error(`同步失败: ${error.message}`);
+  console.error(`同步或发布失败: ${error.message}`);
   process.exit(1);
 });

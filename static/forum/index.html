@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>论坛 · 局域网文件服务器</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/forum/styles.css" />
+  </head>
+  <body data-ui-style="editorial">
+    <header class="forum-header">
+      <a class="forum-brand" href="/">
+        <span class="forum-brand-mark">LAN</span>
+        <span>
+          <strong>局域网文件服务器</strong>
+          <small>FORUM</small>
+        </span>
+      </a>
+      <div class="forum-header-actions">
+        <button id="themeButton" class="icon-button" type="button" title="切换主题" aria-label="切换主题">◐</button>
+        <div id="accountBadge" class="account-badge">读取中</div>
+      </div>
+    </header>
+    <nav class="forum-main-nav" aria-label="主导航">
+      <a href="/">文件管理</a>
+      <a class="is-active" href="/forum">论坛</a>
+    </nav>
+
+    <main class="forum-shell">
+      <aside class="forum-sidebar">
+        <div class="sidebar-title">浏览</div>
+        <button class="sidebar-link is-active" type="button" data-filter="all">全部帖子</button>
+        <button class="sidebar-link" type="button" data-filter="unread">未读</button>
+        <button class="sidebar-link" type="button" data-filter="mine">我的帖子</button>
+        <button class="sidebar-link" type="button" data-filter="participated">我参与的</button>
+        <button class="sidebar-link" type="button" data-filter="bookmarked">我的收藏</button>
+        <div class="sidebar-title category-title">逛逛分区</div>
+        <div id="categoryNav" class="category-nav" aria-label="帖子分类"></div>
+        <button class="sidebar-link" type="button" data-filter="polls">投票</button>
+      </aside>
+
+      <section class="forum-main">
+        <div id="forumListView">
+          <div class="forum-hero">
+            <div>
+              <span class="eyebrow">TEAM DISCUSSION</span>
+              <h1>论坛</h1>
+              <p>项目讨论、通知和问题协作。</p>
+            </div>
+            <button id="newPostButton" class="primary-button is-hidden" type="button">发布帖子</button>
+          </div>
+
+          <form id="searchForm" class="forum-search">
+            <input id="searchInput" type="search" maxlength="80" placeholder="搜索标题、正文或回复" />
+            <button type="submit">搜索</button>
+          </form>
+
+          <div class="forum-list-toolbar">
+            <div id="sortTabs" class="sort-tabs" aria-label="帖子排序">
+              <button type="button" data-sort="hot">热度</button>
+              <button class="is-active" type="button" data-sort="active">最新回复</button>
+              <button type="button" data-sort="new">最新发布</button>
+            </div>
+            <span id="resultSummary" class="result-summary">读取中</span>
+          </div>
+
+          <div id="postList" class="post-list">
+            <div class="empty-state">正在读取帖子…</div>
+          </div>
+          <button id="loadMorePosts" class="load-more is-hidden" type="button">加载更多</button>
+        </div>
+
+        <div id="forumDetailView" class="is-hidden">
+          <button id="backToListButton" class="back-button" type="button">← 返回帖子列表</button>
+          <article id="postDetail" class="post-detail">
+            <div class="empty-state">正在读取帖子…</div>
+          </article>
+          <section class="reply-section">
+            <div class="reply-section-head">
+              <h2>楼层回复</h2>
+              <span id="replyCountLabel">0 楼</span>
+            </div>
+            <div id="replyList" class="reply-list"></div>
+            <button id="loadMoreReplies" class="load-more is-hidden" type="button">加载更多楼层</button>
+            <form id="replyForm" class="reply-form is-hidden">
+              <div id="replyTarget" class="reply-target is-hidden">
+                <span></span>
+                <button id="clearReplyTarget" type="button">取消</button>
+              </div>
+              <textarea id="replyContent" maxlength="2000" rows="4" placeholder="写下回复…" required></textarea>
+              <div class="reply-form-actions">
+                <span id="replyIdentityHint"></span>
+                <button class="primary-button" type="submit">发表回复</button>
+              </div>
+            </form>
+          </section>
+        </div>
+      </section>
+    </main>
+
+    <dialog id="postEditorDialog" class="forum-dialog">
+      <form id="postEditorForm">
+        <header>
+          <div>
+            <span class="eyebrow">NEW DISCUSSION</span>
+            <h2 id="postEditorTitle">发布帖子</h2>
+          </div>
+          <button id="closePostEditor" class="icon-button" type="button" aria-label="关闭">×</button>
+        </header>
+        <label>
+          <span>标题</span>
+          <input id="postTitleInput" maxlength="80" required />
+        </label>
+        <label>
+          <span>发到</span>
+          <span class="select-control">
+            <select id="postCategoryInput" required></select>
+          </span>
+        </label>
+        <label>
+          <span>正文</span>
+          <textarea id="postContentInput" maxlength="10000" rows="12" required></textarea>
+        </label>
+        <label id="pollPostLabel" class="check-row">
+          <input id="pollPostInput" type="checkbox" />
+          <span>发起投票</span>
+        </label>
+        <section id="pollEditor" class="poll-editor is-hidden">
+          <label>
+            <span>投票问题</span>
+            <input id="pollQuestionInput" maxlength="80" placeholder="想问大家什么？" />
+          </label>
+          <div>
+            <span class="poll-field-label">选项</span>
+            <div id="pollOptionList" class="poll-option-list"></div>
+            <button id="addPollOptionButton" class="poll-add-option" type="button">＋ 添加选项</button>
+          </div>
+          <label>
+            <span>截止</span>
+            <span class="select-control">
+              <select id="pollDurationInput">
+                <option value="0">不限时</option>
+                <option value="24">1 天后</option>
+                <option value="72">3 天后</option>
+                <option value="168">7 天后</option>
+                <option value="custom">自定义时长</option>
+              </select>
+            </span>
+          </label>
+          <div id="pollCustomDuration" class="poll-custom-duration is-hidden">
+            <label>
+              <span>时长</span>
+              <input id="pollCustomDurationValue" type="number" min="1" max="365" step="1" inputmode="numeric" value="1" />
+            </label>
+            <label>
+              <span>单位</span>
+              <span class="select-control">
+                <select id="pollCustomDurationUnit">
+                  <option value="days">天</option>
+                  <option value="hours">小时</option>
+                </select>
+              </span>
+            </label>
+          </div>
+          <small>每个账号一票，可以改投。</small>
+        </section>
+        <label id="anonymousPostLabel" class="check-row">
+          <input id="anonymousPostInput" type="checkbox" />
+          <span>匿名发布</span>
+        </label>
+        <div class="dialog-actions">
+          <span id="postEditorMessage"></span>
+          <button class="primary-button" type="submit">保存</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="confirmDialog" class="forum-dialog confirm-dialog">
+      <div class="confirm-body">
+        <span class="eyebrow">CONFIRM</span>
+        <h2 id="confirmTitle">确认操作</h2>
+        <p id="confirmMessage"></p>
+        <div class="dialog-actions">
+          <button id="confirmCancel" type="button">取消</button>
+          <button id="confirmAccept" class="danger-button" type="button">确认</button>
+        </div>
+      </div>
+    </dialog>
+
+    <div id="reactionPicker" class="reaction-picker is-hidden" role="dialog" aria-label="选择表情反应"></div>
+    <div id="toastHost" class="toast-host" aria-live="polite"></div>
+    <script src="/forum/app.js"></script>
+  </body>
+</html>

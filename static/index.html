@@ -37,6 +37,7 @@
     <main class="page">
       <div class="tab-bar">
         <button class="tab active" data-tab="files">文件管理</button>
+        <a class="tab forum-tab-link" href="/forum">论坛</a>
         <button class="tab" data-tab="audio">音频提取</button>
         <button class="tab" data-tab="video">视频截帧</button>
       </div>
@@ -155,40 +156,12 @@
           </div>
           <div class="forum-board-actions">
             <span id="forumPostCount" class="forum-board-count">0 条</span>
-            <button id="forumManageToggle" class="workspace-text-button is-hidden" type="button" aria-expanded="false">多选</button>
-            <button id="forumComposeToggle" class="workspace-text-button is-hidden" type="button" aria-expanded="false">发布</button>
+            <a class="workspace-text-button forum-page-link" href="/forum">进入论坛</a>
           </div>
         </header>
 
-        <form id="forumComposeForm" class="forum-compose is-hidden">
-          <div class="forum-compose-title">
-            <span>NEW UPDATE</span>
-            <strong>发布新动态</strong>
-          </div>
-          <label>
-            <span>标题</span>
-            <input id="forumPostTitle" type="text" maxlength="80" placeholder="动态标题" required />
-          </label>
-          <label>
-            <span>正文</span>
-            <textarea id="forumPostContent" maxlength="1200" rows="3" placeholder="记录进展、提醒或想讨论的事情…" required></textarea>
-          </label>
-          <div class="forum-compose-actions">
-            <span id="forumComposeMessage" class="forum-compose-message" aria-live="polite"></span>
-            <button class="workspace-text-button" type="submit">确认发布</button>
-          </div>
-        </form>
-
         <div id="forumPostList" class="forum-post-list">
           <div class="workspace-empty">正在读取动态…</div>
-        </div>
-        <div id="forumBatchBar" class="forum-batch-bar is-hidden">
-          <span id="forumBatchCount">已选择 0 条</span>
-          <div>
-            <button id="forumSelectAllToggle" class="workspace-text-button" type="button">全选</button>
-            <button id="forumBatchCancel" class="workspace-text-button" type="button">取消</button>
-            <button id="forumBatchDelete" class="workspace-text-button forum-batch-delete" type="button" disabled>删除所选</button>
-          </div>
         </div>
       </section>
     </aside>

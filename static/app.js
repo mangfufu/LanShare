@@ -4650,8 +4650,14 @@ document.querySelectorAll(".sort-th").forEach((th) => {
   th.addEventListener("click", () => toggleSort(th.dataset.sort));
 });
 closePreviewBtn.addEventListener("click", closePreview);
+previewDialog.addEventListener("pointerdown", (event) => {
+  previewDialog._backdropPointerDown = event.target === previewDialog;
+});
 previewDialog.addEventListener("click", (event) => {
-  if (event.target === previewDialog) closePreview();
+  const trueBackdropClick = event.target === previewDialog
+    && previewDialog._backdropPointerDown === true;
+  previewDialog._backdropPointerDown = false;
+  if (trueBackdropClick) closePreview();
 });
 document.addEventListener("keydown", (event) => {
   if (!previewDialog.open) return;
@@ -4684,8 +4690,14 @@ moveSearchInput.addEventListener("input", (event) => {
   renderMoveDirectoryList();
 });
 moveCreateFolderBtn.addEventListener("click", createMoveTargetFolder);
+moveDialog.addEventListener("pointerdown", (event) => {
+  moveDialog._backdropPointerDown = event.target === moveDialog;
+});
 moveDialog.addEventListener("click", (event) => {
-  if (event.target === moveDialog) closeMoveDialog();
+  const trueBackdropClick = event.target === moveDialog
+    && moveDialog._backdropPointerDown === true;
+  moveDialog._backdropPointerDown = false;
+  if (trueBackdropClick) closeMoveDialog();
 });
 moveHereBtn.addEventListener("click", async () => {
   if (!state.movePaths.length) return;
@@ -5722,6 +5734,12 @@ function renderForumPosts() {
     title.textContent = post.title;
     const meta = document.createElement("span");
     meta.className = "forum-post-meta";
+    if (post.isPoll) {
+      const pollBadge = document.createElement("span");
+      pollBadge.className = "forum-post-poll-badge";
+      pollBadge.textContent = "投票";
+      meta.appendChild(pollBadge);
+    }
     const author = document.createElement("span");
     author.textContent = post.author;
     const time = document.createElement("span");
@@ -5925,36 +5943,103 @@ function updateForumPostsLive(previousReplyCounts) {
   });
 }
 
+let miniForumEventSource = null;
+let miniForumRefreshTimer = null;
+
+function renderMiniForumPreview(total = state.forumPosts.length) {
+  forumPostList.innerHTML = "";
+  if (forumPostCount) forumPostCount.textContent = `${total} 帖`;
+  if (!state.forumPosts.length) {
+    forumPostList.innerHTML = '<div class="workspace-empty">小论坛还是空的</div>';
+    return;
+  }
+  const fragment = document.createDocumentFragment();
+  state.forumPosts.forEach((post) => {
+    const link = document.createElement("a");
+    link.className = `mini-forum-post${post.isUnread ? " is-unread" : ""}`;
+    link.href = `/forum/post/${encodeURIComponent(post.id)}`;
+    const head = document.createElement("span");
+    head.className = "mini-forum-post-head";
+    const badges = document.createElement("span");
+    badges.className = "mini-forum-post-badges";
+    if (post.isPinned) {
+      const pinned = document.createElement("span");
+      pinned.className = "mini-forum-badge is-pinned";
+      pinned.textContent = "置顶";
+      badges.appendChild(pinned);
+    }
+    if (post.isPoll) {
+      const poll = document.createElement("span");
+      poll.className = "mini-forum-badge is-poll";
+      poll.textContent = "投票";
+      badges.appendChild(poll);
+    }
+    const category = document.createElement("span");
+    category.className = "mini-forum-badge";
+    category.textContent = post.categoryName || "茶水间";
+    badges.appendChild(category);
+    const time = document.createElement("span");
+    time.className = "mini-forum-post-time";
+    time.textContent = formatWorkspaceProjectTime(post.lastReplyAt || post.createdAt);
+    head.append(badges, time);
+
+    const title = document.createElement("strong");
+    title.className = "mini-forum-post-title";
+    title.textContent = post.title;
+    const foot = document.createElement("span");
+    foot.className = "mini-forum-post-foot";
+    const meta = document.createElement("span");
+    meta.textContent = `${post.author} · ${post.replyCount || 0} 回复`;
+    const reactions = document.createElement("span");
+    reactions.className = "mini-forum-post-reactions";
+    (post.reactions || []).slice(0, 3).forEach((reaction) => {
+      const item = document.createElement("span");
+      item.textContent = `${reaction.emoji} ${reaction.count}`;
+      reactions.appendChild(item);
+    });
+    foot.append(meta, reactions);
+    link.append(head, title, foot);
+    fragment.appendChild(link);
+  });
+  forumPostList.appendChild(fragment);
+}
+
+function ensureMiniForumEvents() {
+  if (miniForumEventSource || typeof EventSource !== "function") return;
+  miniForumEventSource = new EventSource("/api/forum/events");
+  miniForumEventSource.addEventListener("forum", () => {
+    clearTimeout(miniForumRefreshTimer);
+    miniForumRefreshTimer = setTimeout(() => loadForumPosts({ background: true }), 180);
+  });
+}
+
+function disconnectMiniForumEvents() {
+  clearTimeout(miniForumRefreshTimer);
+  miniForumRefreshTimer = null;
+  if (!miniForumEventSource) return;
+  miniForumEventSource.close();
+  miniForumEventSource = null;
+}
+
+window.addEventListener("pagehide", disconnectMiniForumEvents);
+window.addEventListener("pageshow", (event) => {
+  if (!event.persisted || !forumPostList) return;
+  ensureMiniForumEvents();
+  loadForumPosts({ background: true });
+});
+
 async function loadForumPosts({ background = false } = {}) {
   if (!forumPostList) return;
   try {
-    const response = await fetch("/api/forum/posts?limit=16", {
+    ensureMiniForumEvents();
+    const response = await fetch("/api/forum/posts?limit=5&sort=active", {
       cache: "no-store",
       headers: { "X-Device-Name": encodeURIComponent(state.nickname || "匿名") }
     });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || "读取动态失败");
-    const incomingPosts = Array.isArray(data.posts) ? data.posts : [];
-    const previousReplyCounts = new Map(
-      state.forumPosts.map((post) => [post.id, Number(post.replyCount || 0)])
-    );
-    const previousById = new Map(state.forumPosts.map((post) => [post.id, post]));
-    const sameStructure = incomingPosts.length === state.forumPosts.length
-      && incomingPosts.every((post, index) =>
-        post.id === state.forumPosts[index]?.id
-        && Boolean(post.canDelete) === Boolean(state.forumPosts[index]?.canDelete)
-      );
-    state.forumPosts = incomingPosts.map((post) => {
-      const existingPost = previousById.get(post.id);
-      if (!existingPost) return post;
-      Object.assign(existingPost, post);
-      return existingPost;
-    });
-    if (background && sameStructure) {
-      updateForumPostsLive(previousReplyCounts);
-    } else {
-      renderForumPosts();
-    }
+    state.forumPosts = Array.isArray(data.posts) ? data.posts : [];
+    renderMiniForumPreview(Number(data.total) || state.forumPosts.length);
   } catch (error) {
     if (background) return;
     forumPostList.innerHTML = "";
@@ -6070,7 +6155,7 @@ setInterval(() => {
   if (state.forumManageMode) return;
   if (forumReactionPickerPortal && !forumReactionPickerPortal.classList.contains("is-hidden")) return;
   loadForumPosts({ background: true });
-}, 3000);
+}, 30000);
 
 // --- Floating characters (per-character bounce) + cursor particles + click burst ---
 

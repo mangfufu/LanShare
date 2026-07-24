@@ -199,8 +199,16 @@ const PROTECTED_POST_PATHS = new Set([
   "/api/forum/posts",
   "/api/forum/posts/delete",
   "/api/forum/posts/delete-batch",
+  "/api/forum/posts/update",
+  "/api/forum/posts/moderate",
   "/api/forum/reactions",
   "/api/forum/replies",
+  "/api/forum/replies/update",
+  "/api/forum/replies/delete",
+  "/api/forum/replies/reactions",
+  "/api/forum/bookmarks",
+  "/api/forum/polls/vote",
+  "/api/forum/read",
   "/api/nsfw/setpwd",
   "/api/nsfw/auth",
   "/api/nsfw/logout",
@@ -224,8 +232,12 @@ const EDITOR_POST_PATHS = new Set([
   "/api/forum/posts",
   "/api/forum/posts/delete",
   "/api/forum/posts/delete-batch",
+  "/api/forum/posts/update",
   "/api/forum/reactions",
   "/api/forum/replies",
+  "/api/forum/replies/update",
+  "/api/forum/replies/delete",
+  "/api/forum/replies/reactions",
   "/api/nsfw/auth",
   "/api/nsfw/logout",
   "/api/nsfw/upload",
@@ -250,21 +262,50 @@ const ADMIN_POST_PATHS = new Set([
   "/api/admin/users/name",
   "/api/admin/users/role",
   "/api/admin/users/reset-password",
-  "/api/admin/users/delete"
+  "/api/admin/users/delete",
+  "/api/forum/posts/moderate"
 ]);
 const FORUM_WRITE_POST_PATHS = new Set([
   "/api/chat/send",
   "/api/forum/posts",
   "/api/forum/reactions",
-  "/api/forum/replies"
+  "/api/forum/replies",
+  "/api/forum/posts/update",
+  "/api/forum/replies/update",
+  "/api/forum/replies/reactions"
 ]);
 const FORUM_DELETE_POST_PATHS = new Set([
   "/api/forum/posts/delete",
-  "/api/forum/posts/delete-batch"
+  "/api/forum/posts/delete-batch",
+  "/api/forum/replies/delete"
 ]);
 
 let authDb = null;
 let forumDb = null;
+const forumEventClients = new Set();
+let forumEventId = 1;
+
+function broadcastForumEvent(type, payload = {}) {
+  const event = {
+    id: forumEventId++,
+    type,
+    at: Date.now(),
+    ...payload
+  };
+  const line = `id: ${event.id}\nevent: forum\ndata: ${JSON.stringify(event)}\n\n`;
+  for (const client of [...forumEventClients]) {
+    if (client.destroyed || client.writableEnded) {
+      forumEventClients.delete(client);
+      continue;
+    }
+    try {
+      client.write(line);
+    } catch {
+      forumEventClients.delete(client);
+      if (!client.destroyed) client.destroy();
+    }
+  }
+}
 
 function initAuthDatabase() {
   if (authDb) return authDb;
@@ -676,6 +717,73 @@ function initForumDatabase() {
       PRIMARY KEY (post_id, emoji, owner_token),
       FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE
     );
+    CREATE TABLE IF NOT EXISTS forum_categories (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE,
+      slug TEXT NOT NULL UNIQUE,
+      description TEXT NOT NULL DEFAULT '',
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      created_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS forum_reads (
+      user_id INTEGER NOT NULL,
+      post_id INTEGER NOT NULL,
+      last_read_reply_id INTEGER NOT NULL DEFAULT 0,
+      read_at INTEGER NOT NULL,
+      PRIMARY KEY (user_id, post_id),
+      FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE
+    );
+    CREATE TABLE IF NOT EXISTS forum_views (
+      post_id INTEGER NOT NULL,
+      user_id INTEGER NOT NULL,
+      viewed_at INTEGER NOT NULL,
+      PRIMARY KEY (post_id, user_id),
+      FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE
+    );
+    CREATE TABLE IF NOT EXISTS forum_reply_reactions (
+      reply_id INTEGER NOT NULL,
+      emoji TEXT NOT NULL,
+      owner_token TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY (reply_id, emoji, owner_token),
+      FOREIGN KEY (reply_id) REFERENCES replies(id) ON DELETE CASCADE
+    );
+    CREATE TABLE IF NOT EXISTS forum_bookmarks (
+      post_id INTEGER NOT NULL,
+      user_id INTEGER NOT NULL,
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY (post_id, user_id),
+      FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE
+    );
+    CREATE TABLE IF NOT EXISTS forum_polls (
+      post_id INTEGER PRIMARY KEY,
+      question TEXT NOT NULL,
+      closes_at INTEGER,
+      created_at INTEGER NOT NULL,
+      FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE
+    );
+    CREATE TABLE IF NOT EXISTS forum_poll_options (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      post_id INTEGER NOT NULL,
+      label TEXT NOT NULL,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE
+    );
+    CREATE TABLE IF NOT EXISTS forum_poll_votes (
+      post_id INTEGER NOT NULL,
+      option_id INTEGER NOT NULL,
+      user_id INTEGER NOT NULL,
+      created_at INTEGER NOT NULL,
+      change_count INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (post_id, user_id),
+      FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE,
+      FOREIGN KEY (option_id) REFERENCES forum_poll_options(id) ON DELETE CASCADE
+    );
+    CREATE TABLE IF NOT EXISTS forum_meta (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS file_attributions (
       root_key TEXT NOT NULL,
       path TEXT NOT NULL,
@@ -687,6 +795,12 @@ function initForumDatabase() {
     CREATE INDEX IF NOT EXISTS idx_posts_created_at ON posts(created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_replies_post_id ON replies(post_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_forum_reactions_post_id ON forum_reactions(post_id, emoji);
+    CREATE INDEX IF NOT EXISTS idx_forum_reads_user_id ON forum_reads(user_id, read_at);
+    CREATE INDEX IF NOT EXISTS idx_forum_views_post_id ON forum_views(post_id);
+    CREATE INDEX IF NOT EXISTS idx_forum_reply_reactions_reply_id ON forum_reply_reactions(reply_id, emoji);
+    CREATE INDEX IF NOT EXISTS idx_forum_bookmarks_user_id ON forum_bookmarks(user_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_forum_poll_options_post_id ON forum_poll_options(post_id, sort_order, id);
+    CREATE INDEX IF NOT EXISTS idx_forum_poll_votes_option_id ON forum_poll_votes(option_id);
     CREATE INDEX IF NOT EXISTS idx_file_attributions_root_path ON file_attributions(root_key, path);
   `);
   const postColumns = forumDb.prepare("PRAGMA table_info(posts)").all();
@@ -695,6 +809,20 @@ function initForumDatabase() {
   }
   if (!postColumns.some((column) => column.name === "author_user_id")) {
     forumDb.exec("ALTER TABLE posts ADD COLUMN author_user_id INTEGER");
+  }
+  const postColumnMigrations = [
+    ["category_id", "ALTER TABLE posts ADD COLUMN category_id INTEGER"],
+    ["is_anonymous", "ALTER TABLE posts ADD COLUMN is_anonymous INTEGER NOT NULL DEFAULT 0"],
+    ["is_pinned", "ALTER TABLE posts ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0"],
+    ["is_locked", "ALTER TABLE posts ADD COLUMN is_locked INTEGER NOT NULL DEFAULT 0"],
+    ["view_count", "ALTER TABLE posts ADD COLUMN view_count INTEGER NOT NULL DEFAULT 0"],
+    ["reply_count", "ALTER TABLE posts ADD COLUMN reply_count INTEGER NOT NULL DEFAULT 0"],
+    ["reaction_user_count", "ALTER TABLE posts ADD COLUMN reaction_user_count INTEGER NOT NULL DEFAULT 0"],
+    ["last_reply_at", "ALTER TABLE posts ADD COLUMN last_reply_at INTEGER"],
+    ["last_activity_at", "ALTER TABLE posts ADD COLUMN last_activity_at INTEGER"]
+  ];
+  for (const [name, statement] of postColumnMigrations) {
+    if (!postColumns.some((column) => column.name === name)) forumDb.exec(statement);
   }
   const replyColumns = forumDb.prepare("PRAGMA table_info(replies)").all();
   if (!replyColumns.some((column) => column.name === "parent_reply_id")) {
@@ -705,12 +833,100 @@ function initForumDatabase() {
   if (!replyColumns.some((column) => column.name === "author_user_id")) {
     forumDb.exec("ALTER TABLE replies ADD COLUMN author_user_id INTEGER");
   }
+  if (!replyColumns.some((column) => column.name === "updated_at")) {
+    forumDb.exec("ALTER TABLE replies ADD COLUMN updated_at INTEGER");
+  }
+  if (!replyColumns.some((column) => column.name === "is_anonymous")) {
+    forumDb.exec("ALTER TABLE replies ADD COLUMN is_anonymous INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!replyColumns.some((column) => column.name === "deleted_at")) {
+    forumDb.exec("ALTER TABLE replies ADD COLUMN deleted_at INTEGER");
+  }
   const attributionColumns = forumDb.prepare("PRAGMA table_info(file_attributions)").all();
   if (!attributionColumns.some((column) => column.name === "uploader_user_id")) {
     forumDb.exec("ALTER TABLE file_attributions ADD COLUMN uploader_user_id INTEGER");
   }
+  const pollVoteColumns = forumDb.prepare("PRAGMA table_info(forum_poll_votes)").all();
+  if (!pollVoteColumns.some((column) => column.name === "change_count")) {
+    forumDb.exec(
+      "ALTER TABLE forum_poll_votes ADD COLUMN change_count INTEGER NOT NULL DEFAULT 0"
+    );
+  }
   forumDb.exec("CREATE INDEX IF NOT EXISTS idx_replies_parent_reply_id ON replies(parent_reply_id)");
   forumDb.exec("CREATE INDEX IF NOT EXISTS idx_file_attributions_user_id ON file_attributions(uploader_user_id)");
+  const categorySeed = forumDb.prepare(`
+    INSERT OR IGNORE INTO forum_categories (name, slug, description, sort_order, enabled, created_at)
+    VALUES (?, ?, ?, ?, 1, ?)
+  `);
+  const categoryCreatedAt = Date.now();
+  [
+    ["茶水间", "general", "什么都能聊一点", 10],
+    ["一起开工", "projects", "项目进度、方案和协作现场", 20],
+    ["敲黑板", "notices", "重要消息，路过别错过", 30],
+    ["求个支援", "help", "卡住了就来这里喊人", 40]
+  ].forEach((category) => categorySeed.run(...category, categoryCreatedAt));
+  const updateCategory = forumDb.prepare(`
+    UPDATE forum_categories
+    SET name = ?, description = ?, sort_order = ?, enabled = 1
+    WHERE slug = ?
+  `);
+  [
+    ["茶水间", "什么都能聊一点", 10, "general"],
+    ["一起开工", "项目进度、方案和协作现场", 20, "projects"],
+    ["敲黑板", "重要消息，路过别错过", 30, "notices"],
+    ["求个支援", "卡住了就来这里喊人", 40, "help"]
+  ].forEach((category) => updateCategory.run(...category));
+  const generalCategory = forumDb.prepare(
+    "SELECT id FROM forum_categories WHERE slug = 'general'"
+  ).get();
+  const forumSchemaVersion = "5";
+  const storedForumSchemaVersion = forumDb
+    .prepare("SELECT value FROM forum_meta WHERE key = 'schema_version'")
+    .get();
+  if (storedForumSchemaVersion?.value !== forumSchemaVersion) {
+    forumDb.exec("BEGIN IMMEDIATE");
+    try {
+      if (generalCategory) {
+        forumDb.prepare("UPDATE posts SET category_id = ? WHERE category_id IS NULL")
+          .run(generalCategory.id);
+      }
+      forumDb.exec(`
+        UPDATE posts
+        SET
+          reply_count = (
+            SELECT COUNT(*) FROM replies
+            WHERE replies.post_id = posts.id AND replies.deleted_at IS NULL
+          ),
+          reaction_user_count = (
+            SELECT COUNT(DISTINCT owner_token) FROM forum_reactions
+            WHERE forum_reactions.post_id = posts.id
+          ),
+          view_count = (
+            SELECT COUNT(*) FROM forum_views
+            WHERE forum_views.post_id = posts.id
+          ),
+          last_reply_at = (
+            SELECT MAX(created_at) FROM replies
+            WHERE replies.post_id = posts.id AND replies.deleted_at IS NULL
+          ),
+          last_activity_at = COALESCE(
+            (SELECT MAX(created_at) FROM replies
+             WHERE replies.post_id = posts.id AND replies.deleted_at IS NULL),
+            updated_at,
+            created_at
+          )
+      `);
+      forumDb.prepare(`
+        INSERT INTO forum_meta (key, value)
+        VALUES ('schema_version', ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+      `).run(forumSchemaVersion);
+      forumDb.exec("COMMIT");
+    } catch (error) {
+      try { forumDb.exec("ROLLBACK"); } catch {}
+      throw error;
+    }
+  }
   const unlinkedUploaderNames = forumDb.prepare(`
     SELECT DISTINCT uploader
     FROM file_attributions
@@ -1032,6 +1248,113 @@ function readForumReactions(database, postIds, ownerToken) {
     );
   }
   return byPost;
+}
+
+function readForumReplyReactions(database, replyIds, ownerToken) {
+  const uniqueReplyIds = [...new Set((replyIds || []).map(Number).filter((id) => Number.isInteger(id) && id > 0))];
+  if (!uniqueReplyIds.length) return new Map();
+  const placeholders = uniqueReplyIds.map(() => "?").join(",");
+  const counts = database.prepare(`
+    SELECT reply_id AS replyId, emoji, COUNT(*) AS count
+    FROM forum_reply_reactions
+    WHERE reply_id IN (${placeholders})
+    GROUP BY reply_id, emoji
+  `).all(...uniqueReplyIds);
+  const ownReactions = ownerToken
+    ? database.prepare(`
+        SELECT reply_id AS replyId, emoji
+        FROM forum_reply_reactions
+        WHERE owner_token = ? AND reply_id IN (${placeholders})
+      `).all(ownerToken, ...uniqueReplyIds)
+    : [];
+  const ownKeys = new Set(ownReactions.map((row) => `${row.replyId}:${row.emoji}`));
+  const byReply = new Map(uniqueReplyIds.map((replyId) => [replyId, []]));
+  const emojiOrder = new Map(FORUM_REACTION_EMOJIS.map((emoji, index) => [emoji, index]));
+  for (const row of counts) {
+    if (!emojiOrder.has(row.emoji)) continue;
+    byReply.get(row.replyId)?.push({
+      emoji: row.emoji,
+      count: Number(row.count) || 0,
+      reacted: ownKeys.has(`${row.replyId}:${row.emoji}`)
+    });
+  }
+  for (const reactions of byReply.values()) {
+    reactions.sort((left, right) =>
+      right.count - left.count
+      || emojiOrder.get(left.emoji) - emojiOrder.get(right.emoji)
+    );
+  }
+  return byReply;
+}
+
+function readForumCategories(database = initForumDatabase()) {
+  return database.prepare(`
+    SELECT id, name, slug, description, sort_order AS sortOrder
+    FROM forum_categories
+    WHERE enabled = 1
+    ORDER BY sort_order, id
+  `).all();
+}
+
+function normalizeForumPoll(input) {
+  if (!input || input.enabled !== true) return null;
+  const question = String(input.question || "").trim().slice(0, 80);
+  const options = (Array.isArray(input.options) ? input.options : [])
+    .map((option) => String(option || "").trim().slice(0, 60))
+    .filter(Boolean);
+  if (!question) throw new Error("请填写投票问题");
+  if (options.length < 2) throw new Error("投票至少需要两个选项");
+  if (options.length > 8) throw new Error("投票最多支持八个选项");
+  const uniqueOptions = new Set(options.map((option) => option.toLocaleLowerCase("zh-CN")));
+  if (uniqueOptions.size !== options.length) throw new Error("投票选项不能重复");
+  const requestedDuration = Number(input.durationHours);
+  if (!Number.isFinite(requestedDuration) || !Number.isInteger(requestedDuration)
+    || requestedDuration < 0 || requestedDuration > 8760) {
+    throw new Error("投票时长需为 1 小时至 365 天，或设置为不限时");
+  }
+  const durationHours = requestedDuration;
+  return { question, options, durationHours };
+}
+
+function readForumPoll(database, postId, userId) {
+  const poll = database.prepare(`
+    SELECT post_id AS postId, question, closes_at AS closesAt, created_at AS createdAt
+    FROM forum_polls
+    WHERE post_id = ?
+  `).get(postId);
+  if (!poll) return null;
+  const options = database.prepare(`
+    SELECT
+      option.id,
+      option.label,
+      option.sort_order AS sortOrder,
+      COUNT(vote.user_id) AS voteCount
+    FROM forum_poll_options option
+    LEFT JOIN forum_poll_votes vote ON vote.option_id = option.id
+    WHERE option.post_id = ?
+    GROUP BY option.id, option.label, option.sort_order
+    ORDER BY option.sort_order, option.id
+  `).all(postId);
+  const ownVote = database.prepare(`
+    SELECT option_id AS optionId, change_count AS changeCount
+    FROM forum_poll_votes
+    WHERE post_id = ? AND user_id = ?
+  `).get(postId, userId);
+  const totalVotes = options.reduce((total, option) => total + Number(option.voteCount || 0), 0);
+  return {
+    ...poll,
+    closesAt: poll.closesAt || null,
+    isClosed: Boolean(poll.closesAt && Number(poll.closesAt) <= Date.now()),
+    selectedOptionId: ownVote ? Number(ownVote.optionId) : null,
+    changeCount: ownVote ? Number(ownVote.changeCount || 0) : 0,
+    remainingChanges: ownVote ? Math.max(0, 1 - Number(ownVote.changeCount || 0)) : 1,
+    totalVotes,
+    options: options.map((option) => ({
+      ...option,
+      id: Number(option.id),
+      voteCount: Number(option.voteCount || 0)
+    }))
+  };
 }
 
 function cleanupExpiredNsfwSessions(now = Date.now()) {
@@ -3746,6 +4069,13 @@ function requirePermission(req, permission) {
 }
 
 function assertApiPermission(req, url) {
+  if (
+    req.method === "POST"
+    && (url.pathname === "/api/forum/bookmarks" || url.pathname === "/api/forum/polls/vote")
+  ) {
+    requirePermission(req, "forum.read");
+    return;
+  }
   if (req.method === "POST" && ADMIN_POST_PATHS.has(url.pathname)) {
     requirePermission(req, "*");
     return;
@@ -4319,11 +4649,15 @@ async function handleAuthApi(req, res, url) {
       const deletedSelf = Number(target.id) === req.authUser.id;
       database.prepare("DELETE FROM users WHERE id = ?").run(userId);
       try {
-        initForumDatabase()
-          .prepare("DELETE FROM forum_reactions WHERE owner_token = ?")
+        const forumDatabase = initForumDatabase();
+        forumDatabase.prepare("DELETE FROM forum_reactions WHERE owner_token = ?")
           .run(`user:${userId}`);
+        forumDatabase.prepare("DELETE FROM forum_reply_reactions WHERE owner_token = ?")
+          .run(`user:${userId}`);
+        forumDatabase.prepare("DELETE FROM forum_bookmarks WHERE user_id = ?").run(userId);
+        forumDatabase.prepare("DELETE FROM forum_poll_votes WHERE user_id = ?").run(userId);
       } catch (error) {
-        console.error(`删除账号表情反应失败 ${target.username}: ${error.message}`);
+        console.error(`删除账号论坛数据失败 ${target.username}: ${error.message}`);
       }
       logAction(
         req.authUser.name,
@@ -4441,10 +4775,208 @@ async function handleApi(req, res, url) {
     return true;
   }
 
+  if (req.method === "GET" && url.pathname === "/api/forum/categories") {
+    try {
+      sendJson(res, 200, { categories: readForumCategories() }, { "Cache-Control": "no-store" });
+    } catch (error) {
+      sendJson(res, 500, { error: error.message });
+    }
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/forum/events") {
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "Cache-Control": "no-cache, no-transform",
+      "Connection": "keep-alive",
+      "X-Accel-Buffering": "no"
+    });
+    res.write(`event: ready\ndata: ${JSON.stringify({ ok: true, at: Date.now() })}\n\n`);
+    forumEventClients.add(res);
+    let cleaned = false;
+    let heartbeat = null;
+    const cleanup = () => {
+      if (cleaned) return;
+      cleaned = true;
+      if (heartbeat) clearInterval(heartbeat);
+      forumEventClients.delete(res);
+    };
+    heartbeat = setInterval(() => {
+      if (res.destroyed || res.writableEnded) {
+        cleanup();
+        return;
+      }
+      try {
+        res.write(`: heartbeat ${Date.now()}\n\n`);
+      } catch {
+        cleanup();
+      }
+    }, 25000);
+    if (heartbeat.unref) heartbeat.unref();
+    req.once("aborted", cleanup);
+    req.once("close", cleanup);
+    res.once("close", cleanup);
+    res.once("error", cleanup);
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/forum/post") {
+    try {
+      const postId = Number(url.searchParams.get("id"));
+      if (!Number.isInteger(postId) || postId <= 0) {
+        sendJson(res, 400, { error: "帖子编号无效" });
+        return true;
+      }
+      const database = initForumDatabase();
+      const row = database.prepare(`
+        SELECT
+          p.id, p.title, p.content, p.author,
+          p.author_user_id AS authorUserId,
+          p.created_at AS createdAt,
+          p.updated_at AS updatedAt,
+          p.is_anonymous AS isAnonymous,
+          p.is_pinned AS isPinned,
+          p.is_locked AS isLocked,
+          p.view_count AS viewCount,
+          p.reply_count AS replyCount,
+          p.reaction_user_count AS reactionUserCount,
+          p.last_reply_at AS lastReplyAt,
+          p.last_activity_at AS lastActivityAt,
+          c.id AS categoryId,
+          c.name AS categoryName,
+          c.slug AS categorySlug
+        FROM posts p
+        LEFT JOIN forum_categories c ON c.id = p.category_id
+        WHERE p.id = ?
+      `).get(postId);
+      if (!row) {
+        sendJson(res, 404, { error: "帖子不存在" });
+        return true;
+      }
+      const insertedView = database.prepare(`
+        INSERT OR IGNORE INTO forum_views (post_id, user_id, viewed_at)
+        VALUES (?, ?, ?)
+      `).run(postId, req.authUser.id, Date.now());
+      if (Number(insertedView.changes) > 0) {
+        database.prepare("UPDATE posts SET view_count = view_count + 1 WHERE id = ?").run(postId);
+        row.viewCount = Number(row.viewCount || 0) + 1;
+      }
+      const adminRequest = hasPermission(req.authUser, "*");
+      const ownPost = Number(row.authorUserId) === req.authUser.id;
+      const reactions = readForumReactions(
+        database,
+        [postId],
+        getForumReactionOwnerKey(req)
+      ).get(postId) || [];
+      const isBookmarked = Boolean(database.prepare(`
+        SELECT 1 FROM forum_bookmarks
+        WHERE post_id = ? AND user_id = ?
+      `).get(postId, req.authUser.id));
+      const poll = readForumPoll(database, postId, req.authUser.id);
+      const { authorUserId, ...publicRow } = row;
+      sendJson(res, 200, {
+        post: {
+          ...publicRow,
+          author: row.isAnonymous ? "匿名用户" : row.author,
+          isAnonymous: Boolean(row.isAnonymous),
+          isPinned: Boolean(row.isPinned),
+          isLocked: Boolean(row.isLocked),
+          canEdit: adminRequest || ownPost,
+          canDelete: adminRequest || ownPost,
+          canModerate: adminRequest,
+          isOwn: ownPost,
+          isBookmarked,
+          poll,
+          reactions
+        }
+      }, { "Cache-Control": "no-store" });
+    } catch (error) {
+      sendJson(res, 500, { error: error.message });
+    }
+    return true;
+  }
+
   if (req.method === "GET" && url.pathname === "/api/forum/posts") {
     try {
-      const limit = Math.min(30, Math.max(1, Number(url.searchParams.get("limit")) || 12));
+      const limit = Math.min(50, Math.max(1, Number(url.searchParams.get("limit")) || 20));
+      const offset = Math.min(100000, Math.max(0, Number(url.searchParams.get("offset")) || 0));
+      const sort = ["hot", "active", "new"].includes(url.searchParams.get("sort"))
+        ? url.searchParams.get("sort")
+        : "active";
+      const query = String(url.searchParams.get("q") || "").trim().slice(0, 80);
+      const category = String(url.searchParams.get("category") || "").trim().slice(0, 40);
+      const mine = url.searchParams.get("mine") === "1";
+      const unreadOnly = url.searchParams.get("unread") === "1";
+      const participatedOnly = url.searchParams.get("participated") === "1";
+      const bookmarkedOnly = url.searchParams.get("bookmarked") === "1";
+      const pollsOnly = url.searchParams.get("polls") === "1";
       const database = initForumDatabase();
+      const where = [];
+      const whereParams = [];
+      if (query) {
+        where.push(`(
+          p.title LIKE ? ESCAPE '\\'
+          OR p.content LIKE ? ESCAPE '\\'
+          OR EXISTS (
+            SELECT 1 FROM replies search_reply
+            WHERE search_reply.post_id = p.id
+              AND search_reply.deleted_at IS NULL
+              AND search_reply.content LIKE ? ESCAPE '\\'
+          )
+        )`);
+        const escapedQuery = `%${query.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_")}%`;
+        whereParams.push(escapedQuery, escapedQuery, escapedQuery);
+      }
+      if (category) {
+        where.push("c.slug = ?");
+        whereParams.push(category);
+      }
+      if (mine) {
+        where.push("p.author_user_id = ?");
+        whereParams.push(req.authUser.id);
+      }
+      if (unreadOnly) {
+        where.push(`COALESCE((
+          SELECT MAX(unread_reply.id) FROM replies unread_reply
+          WHERE unread_reply.post_id = p.id AND unread_reply.deleted_at IS NULL
+        ), 0) > COALESCE(fr.last_read_reply_id, 0)`);
+      }
+      if (participatedOnly) {
+        where.push(`(
+          p.author_user_id = ?
+          OR EXISTS (
+            SELECT 1 FROM replies participated_reply
+            WHERE participated_reply.post_id = p.id
+              AND participated_reply.author_user_id = ?
+              AND participated_reply.deleted_at IS NULL
+          )
+        )`);
+        whereParams.push(req.authUser.id, req.authUser.id);
+      }
+      if (bookmarkedOnly) {
+        where.push(`EXISTS (
+          SELECT 1 FROM forum_bookmarks filtered_bookmark
+          WHERE filtered_bookmark.post_id = p.id
+            AND filtered_bookmark.user_id = ?
+        )`);
+        whereParams.push(req.authUser.id);
+      }
+      if (pollsOnly) {
+        where.push(`EXISTS (
+          SELECT 1 FROM forum_polls filtered_poll
+          WHERE filtered_poll.post_id = p.id
+        )`);
+      }
+      const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+      const orderSql = sort === "new"
+        ? "p.is_pinned DESC, p.created_at DESC, p.id DESC"
+        : sort === "hot"
+          ? `p.is_pinned DESC,
+             ((3 + p.reply_count * 4 + p.reaction_user_count * 2 + p.view_count * 0.15)
+              / (1 + MAX(0, (? - COALESCE(p.last_activity_at, p.created_at)) / 259200000.0))) DESC,
+             p.id DESC`
+          : "p.is_pinned DESC, COALESCE(p.last_reply_at, p.created_at) DESC, p.id DESC";
+      const orderParams = sort === "hot" ? [Date.now()] : [];
       const rows = database.prepare(`
         SELECT
           p.id,
@@ -4455,30 +4987,190 @@ async function handleApi(req, res, url) {
           p.owner_token AS ownerToken,
           p.created_at AS createdAt,
           p.updated_at AS updatedAt,
-          COUNT(r.id) AS replyCount
+          p.is_anonymous AS isAnonymous,
+          p.is_pinned AS isPinned,
+          p.is_locked AS isLocked,
+          p.view_count AS viewCount,
+          p.reply_count AS replyCount,
+          p.reaction_user_count AS reactionUserCount,
+          p.last_reply_at AS lastReplyAt,
+          p.last_activity_at AS lastActivityAt,
+          c.id AS categoryId,
+          c.name AS categoryName,
+          c.slug AS categorySlug,
+          EXISTS (
+            SELECT 1 FROM forum_bookmarks own_bookmark
+            WHERE own_bookmark.post_id = p.id
+              AND own_bookmark.user_id = ?
+          ) AS isBookmarked,
+          EXISTS (
+            SELECT 1 FROM forum_polls list_poll
+            WHERE list_poll.post_id = p.id
+          ) AS isPoll,
+          (
+            SELECT COUNT(*) FROM forum_poll_votes list_vote
+            WHERE list_vote.post_id = p.id
+          ) AS pollVoteCount,
+          COALESCE(fr.last_read_reply_id, 0) AS lastReadReplyId,
+          COALESCE((
+            SELECT MAX(latest_reply.id) FROM replies latest_reply
+            WHERE latest_reply.post_id = p.id AND latest_reply.deleted_at IS NULL
+          ), 0) AS latestReplyId
         FROM posts p
-        LEFT JOIN replies r ON r.post_id = p.id
-        GROUP BY p.id
-        ORDER BY p.created_at DESC, p.id DESC
-        LIMIT ?
-      `).all(limit);
+        LEFT JOIN forum_categories c ON c.id = p.category_id
+        LEFT JOIN forum_reads fr ON fr.post_id = p.id AND fr.user_id = ?
+        ${whereSql}
+        ORDER BY ${orderSql}
+        LIMIT ? OFFSET ?
+      `).all(req.authUser.id, req.authUser.id, ...whereParams, ...orderParams, limit, offset);
+      const total = Number(database.prepare(`
+        SELECT COUNT(*) AS count
+        FROM posts p
+        LEFT JOIN forum_categories c ON c.id = p.category_id
+        LEFT JOIN forum_reads fr ON fr.post_id = p.id AND fr.user_id = ?
+        ${whereSql}
+      `).get(req.authUser.id, ...whereParams).count) || 0;
       const ownerToken = getForumOwnerToken(req);
       const reactionOwnerKey = getForumReactionOwnerKey(req);
       const adminRequest = hasPermission(req.authUser, "*");
       const canDeleteOwn = hasPermission(req.authUser, "forum.delete_own");
       const reactionsByPost = readForumReactions(database, rows.map((post) => post.id), reactionOwnerKey);
-      const posts = rows.map(({ ownerToken: postOwnerToken, authorUserId, ...post }) => ({
-        ...post,
-        canDelete: adminRequest
-          || Boolean(canDeleteOwn && (
-            (authorUserId && Number(authorUserId) === req.authUser.id)
-            || (!authorUserId && ownerToken && postOwnerToken && ownerToken === postOwnerToken)
-          )),
-        reactions: reactionsByPost.get(post.id) || []
-      }));
-      sendJson(res, 200, { posts }, { "Cache-Control": "no-store" });
+      const posts = rows.map(({ ownerToken: postOwnerToken, authorUserId, ...post }) => {
+        const ownPost = Boolean(
+          (authorUserId && Number(authorUserId) === req.authUser.id)
+          || (!authorUserId && ownerToken && postOwnerToken && ownerToken === postOwnerToken)
+        );
+        return {
+          ...post,
+          author: post.isAnonymous ? "匿名用户" : post.author,
+          isAnonymous: Boolean(post.isAnonymous),
+          isPinned: Boolean(post.isPinned),
+          isLocked: Boolean(post.isLocked),
+          isUnread: Number(post.latestReplyId) > Number(post.lastReadReplyId),
+          canEdit: adminRequest || Boolean(canDeleteOwn && ownPost),
+          canDelete: adminRequest || Boolean(canDeleteOwn && ownPost),
+          canModerate: adminRequest,
+          isOwn: ownPost,
+          isBookmarked: Boolean(post.isBookmarked),
+          isPoll: Boolean(post.isPoll),
+          pollVoteCount: Number(post.pollVoteCount || 0),
+          reactions: reactionsByPost.get(post.id) || []
+        };
+      });
+      sendJson(res, 200, {
+        posts,
+        total,
+        hasMore: offset + posts.length < total,
+        offset,
+        limit,
+        sort
+      }, { "Cache-Control": "no-store" });
     } catch (error) {
       sendJson(res, 500, { error: error.message });
+    }
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/forum/bookmarks") {
+    try {
+      const body = parseJson(await readRequestBody(req));
+      const postId = Number(body.postId);
+      if (!Number.isInteger(postId) || postId <= 0) {
+        sendJson(res, 400, { error: "帖子编号无效" });
+        return true;
+      }
+      const database = initForumDatabase();
+      if (!database.prepare("SELECT 1 FROM posts WHERE id = ?").get(postId)) {
+        sendJson(res, 404, { error: "帖子不存在" });
+        return true;
+      }
+      const existing = database.prepare(`
+        SELECT 1 FROM forum_bookmarks
+        WHERE post_id = ? AND user_id = ?
+      `).get(postId, req.authUser.id);
+      if (existing) {
+        database.prepare(`
+          DELETE FROM forum_bookmarks
+          WHERE post_id = ? AND user_id = ?
+        `).run(postId, req.authUser.id);
+      } else {
+        database.prepare(`
+          INSERT INTO forum_bookmarks (post_id, user_id, created_at)
+          VALUES (?, ?, ?)
+        `).run(postId, req.authUser.id, Date.now());
+      }
+      sendJson(res, 200, { ok: true, bookmarked: !existing });
+    } catch (error) {
+      sendJson(res, 400, { error: error.message });
+    }
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/forum/polls/vote") {
+    try {
+      const body = parseJson(await readRequestBody(req));
+      const postId = Number(body.postId);
+      const optionId = Number(body.optionId);
+      if (
+        !Number.isInteger(postId) || postId <= 0
+        || !Number.isInteger(optionId) || optionId <= 0
+      ) {
+        sendJson(res, 400, { error: "投票选项无效" });
+        return true;
+      }
+      const database = initForumDatabase();
+      const target = database.prepare(`
+        SELECT poll.post_id AS postId, poll.closes_at AS closesAt
+        FROM forum_polls poll
+        JOIN forum_poll_options option
+          ON option.post_id = poll.post_id AND option.id = ?
+        WHERE poll.post_id = ?
+      `).get(optionId, postId);
+      if (!target) {
+        sendJson(res, 404, { error: "投票或选项不存在" });
+        return true;
+      }
+      if (target.closesAt && Number(target.closesAt) <= Date.now()) {
+        sendJson(res, 409, { error: "投票已经截止" });
+        return true;
+      }
+      let changed = false;
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        const existingVote = database.prepare(`
+          SELECT option_id AS optionId, change_count AS changeCount
+          FROM forum_poll_votes
+          WHERE post_id = ? AND user_id = ?
+        `).get(postId, req.authUser.id);
+        if (!existingVote) {
+          database.prepare(`
+            INSERT INTO forum_poll_votes (
+              post_id, option_id, user_id, created_at, change_count
+            )
+            VALUES (?, ?, ?, ?, 0)
+          `).run(postId, optionId, req.authUser.id, Date.now());
+          changed = true;
+        } else if (Number(existingVote.optionId) !== optionId) {
+          if (Number(existingVote.changeCount || 0) >= 1) {
+            throw Object.assign(new Error("每个账号只能改投一次"), { statusCode: 409 });
+          }
+          database.prepare(`
+            UPDATE forum_poll_votes
+            SET option_id = ?, change_count = change_count + 1
+            WHERE post_id = ? AND user_id = ?
+          `).run(optionId, postId, req.authUser.id);
+          changed = true;
+        }
+        database.exec("COMMIT");
+      } catch (error) {
+        try { database.exec("ROLLBACK"); } catch {}
+        throw error;
+      }
+      const poll = readForumPoll(database, postId, req.authUser.id);
+      sendJson(res, 200, { ok: true, poll });
+      if (changed) broadcastForumEvent("poll_vote_changed", { postId });
+    } catch (error) {
+      sendJson(res, error.statusCode || 400, { error: error.message });
     }
     return true;
   }
@@ -4514,8 +5206,18 @@ async function handleApi(req, res, url) {
           .run(postId, emoji, ownerToken, Date.now());
         active = true;
       }
+      database.prepare(`
+        UPDATE posts
+        SET reaction_user_count = (
+          SELECT COUNT(DISTINCT owner_token)
+          FROM forum_reactions
+          WHERE post_id = ?
+        )
+        WHERE id = ?
+      `).run(postId, postId);
       const reactions = readForumReactions(database, [postId], ownerToken).get(postId) || [];
       sendJson(res, 200, { ok: true, active, reactions });
+      broadcastForumEvent("reaction_changed", { postId });
     } catch (error) {
       sendJson(res, 400, { error: error.message });
     }
@@ -4526,7 +5228,10 @@ async function handleApi(req, res, url) {
     try {
       const body = parseJson(await readRequestBody(req));
       const title = String(body.title || "").trim().slice(0, 80);
-      const content = String(body.content || "").trim().slice(0, 1200);
+      const content = String(body.content || "").trim().slice(0, 10000);
+      const categoryId = Number(body.categoryId);
+      const isAnonymous = body.isAnonymous === true;
+      const poll = normalizeForumPoll(body.poll);
       if (!title || !content) {
         sendJson(res, 400, { error: "标题和正文不能为空" });
         return true;
@@ -4534,15 +5239,164 @@ async function handleApi(req, res, url) {
       const createdAt = Date.now();
       const ownerToken = getForumOwnerToken(req) || createForumOwnerToken();
       const database = initForumDatabase();
-      const result = database
-        .prepare(`
-          INSERT INTO posts (title, content, author, author_user_id, owner_token, created_at)
-          VALUES (?, ?, ?, ?, ?, ?)
-        `)
-        .run(title, content, getForumAuthor(req), req.authUser.id, ownerToken, createdAt);
-      sendJson(res, 201, { id: Number(result.lastInsertRowid), createdAt }, {
+      const category = Number.isInteger(categoryId) && categoryId > 0
+        ? database.prepare("SELECT id FROM forum_categories WHERE id = ? AND enabled = 1").get(categoryId)
+        : database.prepare("SELECT id FROM forum_categories WHERE slug = 'general'").get();
+      if (!category) {
+        sendJson(res, 400, { error: "帖子分类无效" });
+        return true;
+      }
+      let postId;
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        const result = database
+          .prepare(`
+            INSERT INTO posts (
+              title, content, author, author_user_id, owner_token, created_at,
+              category_id, is_anonymous, reply_count, reaction_user_count,
+              view_count, last_activity_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, ?)
+          `)
+          .run(
+            title,
+            content,
+            getForumAuthor(req),
+            req.authUser.id,
+            ownerToken,
+            createdAt,
+            category.id,
+            isAnonymous ? 1 : 0,
+            createdAt
+          );
+        postId = Number(result.lastInsertRowid);
+        if (poll) {
+          const closesAt = poll.durationHours
+            ? createdAt + poll.durationHours * 60 * 60 * 1000
+            : null;
+          database.prepare(`
+            INSERT INTO forum_polls (post_id, question, closes_at, created_at)
+            VALUES (?, ?, ?, ?)
+          `).run(postId, poll.question, closesAt, createdAt);
+          const insertOption = database.prepare(`
+            INSERT INTO forum_poll_options (post_id, label, sort_order)
+            VALUES (?, ?, ?)
+          `);
+          poll.options.forEach((option, index) => insertOption.run(postId, option, index + 1));
+        }
+        database.exec("COMMIT");
+      } catch (error) {
+        try { database.exec("ROLLBACK"); } catch {}
+        throw error;
+      }
+      sendJson(res, 201, { id: postId, createdAt }, {
         "Set-Cookie": makeForumOwnerCookie(ownerToken)
       });
+      broadcastForumEvent("post_created", { postId });
+    } catch (error) {
+      sendJson(res, 400, { error: error.message });
+    }
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/forum/posts/update") {
+    try {
+      const body = parseJson(await readRequestBody(req));
+      const postId = Number(body.id);
+      const title = String(body.title || "").trim().slice(0, 80);
+      const content = String(body.content || "").trim().slice(0, 10000);
+      const categoryId = Number(body.categoryId);
+      if (!Number.isInteger(postId) || postId <= 0 || !title || !content) {
+        sendJson(res, 400, { error: "帖子内容无效" });
+        return true;
+      }
+      const database = initForumDatabase();
+      const post = database.prepare(`
+        SELECT id, author_user_id AS authorUserId, is_locked AS isLocked
+        FROM posts WHERE id = ?
+      `).get(postId);
+      if (!post) {
+        sendJson(res, 404, { error: "帖子不存在" });
+        return true;
+      }
+      const adminRequest = hasPermission(req.authUser, "*");
+      if (!adminRequest && Number(post.authorUserId) !== req.authUser.id) {
+        sendJson(res, 403, { error: "只能编辑自己发布的帖子" });
+        return true;
+      }
+      if (!adminRequest && post.isLocked) {
+        sendJson(res, 403, { error: "帖子已锁定，无法编辑" });
+        return true;
+      }
+      const category = database.prepare(
+        "SELECT id FROM forum_categories WHERE id = ? AND enabled = 1"
+      ).get(categoryId);
+      if (!category) {
+        sendJson(res, 400, { error: "帖子分类无效" });
+        return true;
+      }
+      const updatedAt = Date.now();
+      database.prepare(`
+        UPDATE posts
+        SET title = ?, content = ?, category_id = ?, updated_at = ?, last_activity_at = ?
+        WHERE id = ?
+      `).run(title, content, category.id, updatedAt, updatedAt, postId);
+      sendJson(res, 200, { ok: true, updatedAt });
+      broadcastForumEvent("post_updated", { postId });
+    } catch (error) {
+      sendJson(res, 400, { error: error.message });
+    }
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/forum/posts/moderate") {
+    try {
+      const body = parseJson(await readRequestBody(req));
+      const postId = Number(body.id);
+      if (!Number.isInteger(postId) || postId <= 0) {
+        sendJson(res, 400, { error: "帖子编号无效" });
+        return true;
+      }
+      const database = initForumDatabase();
+      const post = database.prepare("SELECT id FROM posts WHERE id = ?").get(postId);
+      if (!post) {
+        sendJson(res, 404, { error: "帖子不存在" });
+        return true;
+      }
+      const updates = [];
+      const params = [];
+      if (typeof body.isPinned === "boolean") {
+        updates.push("is_pinned = ?");
+        params.push(body.isPinned ? 1 : 0);
+      }
+      if (typeof body.isLocked === "boolean") {
+        updates.push("is_locked = ?");
+        params.push(body.isLocked ? 1 : 0);
+      }
+      if (body.categoryId != null) {
+        const categoryId = Number(body.categoryId);
+        const category = database.prepare(
+          "SELECT id FROM forum_categories WHERE id = ? AND enabled = 1"
+        ).get(categoryId);
+        if (!category) {
+          sendJson(res, 400, { error: "帖子分类无效" });
+          return true;
+        }
+        updates.push("category_id = ?");
+        params.push(category.id);
+      }
+      if (!updates.length) {
+        sendJson(res, 400, { error: "没有需要修改的管理项" });
+        return true;
+      }
+      params.push(Date.now(), postId);
+      database.prepare(`
+        UPDATE posts
+        SET ${updates.join(", ")}, updated_at = ?
+        WHERE id = ?
+      `).run(...params);
+      sendJson(res, 200, { ok: true });
+      broadcastForumEvent("post_moderated", { postId });
     } catch (error) {
       sendJson(res, 400, { error: error.message });
     }
@@ -4577,6 +5431,7 @@ async function handleApi(req, res, url) {
       }
       database.prepare("DELETE FROM posts WHERE id = ?").run(postId);
       sendJson(res, 200, { ok: true });
+      broadcastForumEvent("post_deleted", { postId });
     } catch (error) {
       sendJson(res, 400, { error: error.message });
     }
@@ -4620,6 +5475,7 @@ async function handleApi(req, res, url) {
       }
       database.prepare(`DELETE FROM posts WHERE id IN (${placeholders})`).run(...postIds);
       sendJson(res, 200, { ok: true, deleted: postIds.length });
+      broadcastForumEvent("posts_deleted", { postIds });
     } catch (error) {
       sendJson(res, 400, { error: error.message });
     }
@@ -4633,9 +5489,22 @@ async function handleApi(req, res, url) {
         sendJson(res, 400, { error: "动态编号无效" });
         return true;
       }
-      const limit = Math.min(50, Math.max(1, Number(url.searchParams.get("limit")) || 4));
+      const limit = Math.min(50, Math.max(1, Number(url.searchParams.get("limit")) || 20));
       const offset = Math.min(100000, Math.max(0, Number(url.searchParams.get("offset")) || 0));
       const database = initForumDatabase();
+      const post = database.prepare(`
+        SELECT
+          id,
+          author_user_id AS authorUserId,
+          is_anonymous AS isAnonymous,
+          is_locked AS isLocked
+        FROM posts
+        WHERE id = ?
+      `).get(postId);
+      if (!post) {
+        sendJson(res, 404, { error: "帖子不存在" });
+        return true;
+      }
       const total = Number(
         database.prepare("SELECT COUNT(*) AS count FROM replies WHERE post_id = ?").get(postId).count
       ) || 0;
@@ -4648,7 +5517,11 @@ async function handleApi(req, res, url) {
               parent_reply_id,
               content,
               author,
+              author_user_id,
               created_at,
+              updated_at,
+              is_anonymous,
+              deleted_at,
               ROW_NUMBER() OVER (ORDER BY created_at, id) + 1 AS floor_number
             FROM replies
             WHERE post_id = ?
@@ -4659,9 +5532,15 @@ async function handleApi(req, res, url) {
             reply.parent_reply_id AS parentReplyId,
             reply.content,
             reply.author,
+            reply.author_user_id AS authorUserId,
             reply.created_at AS createdAt,
+            reply.updated_at AS updatedAt,
+            reply.is_anonymous AS isAnonymous,
+            reply.deleted_at AS deletedAt,
             reply.floor_number AS floorNumber,
             parent.author AS replyToAuthor,
+            parent.author_user_id AS replyToAuthorUserId,
+            parent.is_anonymous AS replyToIsAnonymous,
             parent.floor_number AS replyToFloor
           FROM numbered_replies reply
           LEFT JOIN numbered_replies parent ON parent.id = reply.parent_reply_id
@@ -4669,10 +5548,51 @@ async function handleApi(req, res, url) {
           LIMIT ? OFFSET ?
         `)
         .all(postId, limit, offset);
+      const adminRequest = hasPermission(req.authUser, "*");
+      const replyReactions = readForumReplyReactions(
+        database,
+        rows.map((reply) => reply.id),
+        getForumReactionOwnerKey(req)
+      );
+      const replies = rows.map((reply) => {
+        const ownReply = Number(reply.authorUserId) === req.authUser.id;
+        const replyIsAnonymous = Boolean(reply.isAnonymous);
+        const isAnonymousOwner = replyIsAnonymous
+          && Boolean(post.isAnonymous)
+          && Number(reply.authorUserId) === Number(post.authorUserId);
+        const parentIsAnonymousOwner = Boolean(reply.replyToIsAnonymous)
+          && Boolean(post.isAnonymous)
+          && Number(reply.replyToAuthorUserId) === Number(post.authorUserId);
+        return {
+          id: Number(reply.id),
+          postId: Number(reply.postId),
+          parentReplyId: reply.parentReplyId == null ? null : Number(reply.parentReplyId),
+          content: reply.deletedAt ? "该回复已删除" : reply.content,
+          author: reply.deletedAt
+            ? "已删除"
+            : isAnonymousOwner
+              ? "匿名楼主"
+              : replyIsAnonymous ? "匿名用户" : reply.author,
+          createdAt: Number(reply.createdAt),
+          updatedAt: reply.updatedAt == null ? null : Number(reply.updatedAt),
+          deletedAt: reply.deletedAt == null ? null : Number(reply.deletedAt),
+          floorNumber: Number(reply.floorNumber),
+          replyToAuthor: parentIsAnonymousOwner
+            ? "匿名楼主"
+            : reply.replyToIsAnonymous ? "匿名用户" : reply.replyToAuthor,
+          replyToFloor: reply.replyToFloor == null ? null : Number(reply.replyToFloor),
+          isAnonymous: replyIsAnonymous,
+          isOwn: ownReply,
+          canEdit: !reply.deletedAt && !post.isLocked && (adminRequest || ownReply),
+          canDelete: !reply.deletedAt && (adminRequest || ownReply),
+          reactions: replyReactions.get(reply.id) || []
+        };
+      });
       sendJson(res, 200, {
-        replies: rows,
+        replies,
         total,
-        hasMore: offset + rows.length < total
+        hasMore: offset + rows.length < total,
+        postLocked: Boolean(post.isLocked)
       }, { "Cache-Control": "no-store" });
     } catch (error) {
       sendJson(res, 500, { error: error.message });
@@ -4687,7 +5607,7 @@ async function handleApi(req, res, url) {
       const parentReplyId = body.parentReplyId == null || body.parentReplyId === ""
         ? null
         : Number(body.parentReplyId);
-      const content = String(body.content || "").trim().slice(0, 500);
+      const content = String(body.content || "").trim().slice(0, 2000);
       if (!Number.isInteger(postId) || postId <= 0 || !content) {
         sendJson(res, 400, { error: "回复内容不能为空" });
         return true;
@@ -4697,15 +5617,31 @@ async function handleApi(req, res, url) {
         return true;
       }
       const database = initForumDatabase();
-      const post = database.prepare("SELECT id FROM posts WHERE id = ?").get(postId);
+      const post = database.prepare(`
+        SELECT
+          id,
+          author_user_id AS authorUserId,
+          is_anonymous AS isAnonymous,
+          is_locked AS isLocked
+        FROM posts
+        WHERE id = ?
+      `).get(postId);
       if (!post) {
-        sendJson(res, 404, { error: "动态不存在" });
+        sendJson(res, 404, { error: "帖子不存在" });
+        return true;
+      }
+      if (post.isLocked) {
+        sendJson(res, 403, { error: "帖子已锁定，无法回复" });
         return true;
       }
       let parentReply = null;
       if (parentReplyId !== null) {
         parentReply = database
-          .prepare("SELECT id, author FROM replies WHERE id = ? AND post_id = ?")
+          .prepare(`
+            SELECT id, author, author_user_id AS authorUserId, is_anonymous AS isAnonymous
+            FROM replies
+            WHERE id = ? AND post_id = ? AND deleted_at IS NULL
+          `)
           .get(parentReplyId, postId);
         if (!parentReply) {
           sendJson(res, 404, { error: "要回复的楼层不存在" });
@@ -4713,18 +5649,228 @@ async function handleApi(req, res, url) {
         }
       }
       const createdAt = Date.now();
+      const isAnonymous = Boolean(post.isAnonymous)
+        && Number(post.authorUserId) === req.authUser.id;
       const result = database
         .prepare(`
-          INSERT INTO replies (post_id, parent_reply_id, content, author, author_user_id, created_at)
-          VALUES (?, ?, ?, ?, ?, ?)
+          INSERT INTO replies (
+            post_id, parent_reply_id, content, author, author_user_id,
+            created_at, is_anonymous
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?)
         `)
-        .run(postId, parentReplyId, content, getForumAuthor(req), req.authUser.id, createdAt);
+        .run(
+          postId,
+          parentReplyId,
+          content,
+          getForumAuthor(req),
+          req.authUser.id,
+          createdAt,
+          isAnonymous ? 1 : 0
+        );
+      const replyId = Number(result.lastInsertRowid);
+      database.prepare(`
+        UPDATE posts
+        SET reply_count = reply_count + 1,
+            last_reply_at = ?,
+            last_activity_at = ?
+        WHERE id = ?
+      `).run(createdAt, createdAt, postId);
+      database.prepare(`
+        INSERT INTO forum_reads (user_id, post_id, last_read_reply_id, read_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(user_id, post_id) DO UPDATE SET
+          last_read_reply_id = excluded.last_read_reply_id,
+          read_at = excluded.read_at
+      `).run(req.authUser.id, postId, replyId, createdAt);
       sendJson(res, 201, {
-        id: Number(result.lastInsertRowid),
+        id: replyId,
         createdAt,
         parentReplyId,
-        replyToAuthor: parentReply ? parentReply.author : null
+        replyToAuthor: parentReply
+          ? parentReply.isAnonymous ? "匿名用户" : parentReply.author
+          : null
       });
+      broadcastForumEvent("reply_created", { postId, replyId });
+    } catch (error) {
+      sendJson(res, 400, { error: error.message });
+    }
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/forum/replies/update") {
+    try {
+      const body = parseJson(await readRequestBody(req));
+      const replyId = Number(body.id);
+      const content = String(body.content || "").trim().slice(0, 2000);
+      if (!Number.isInteger(replyId) || replyId <= 0 || !content) {
+        sendJson(res, 400, { error: "回复内容无效" });
+        return true;
+      }
+      const database = initForumDatabase();
+      const reply = database.prepare(`
+        SELECT
+          r.id,
+          r.post_id AS postId,
+          r.author_user_id AS authorUserId,
+          r.deleted_at AS deletedAt,
+          p.is_locked AS postLocked
+        FROM replies r
+        JOIN posts p ON p.id = r.post_id
+        WHERE r.id = ?
+      `).get(replyId);
+      if (!reply || reply.deletedAt) {
+        sendJson(res, 404, { error: "回复不存在" });
+        return true;
+      }
+      const adminRequest = hasPermission(req.authUser, "*");
+      if (!adminRequest && Number(reply.authorUserId) !== req.authUser.id) {
+        sendJson(res, 403, { error: "只能编辑自己的回复" });
+        return true;
+      }
+      if (!adminRequest && reply.postLocked) {
+        sendJson(res, 403, { error: "帖子已锁定，无法编辑回复" });
+        return true;
+      }
+      const updatedAt = Date.now();
+      database.prepare("UPDATE replies SET content = ?, updated_at = ? WHERE id = ?")
+        .run(content, updatedAt, replyId);
+      database.prepare("UPDATE posts SET last_activity_at = ? WHERE id = ?")
+        .run(updatedAt, reply.postId);
+      sendJson(res, 200, { ok: true, updatedAt });
+      broadcastForumEvent("reply_updated", { postId: Number(reply.postId), replyId });
+    } catch (error) {
+      sendJson(res, 400, { error: error.message });
+    }
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/forum/replies/delete") {
+    try {
+      const body = parseJson(await readRequestBody(req));
+      const replyId = Number(body.id);
+      if (!Number.isInteger(replyId) || replyId <= 0) {
+        sendJson(res, 400, { error: "回复编号无效" });
+        return true;
+      }
+      const database = initForumDatabase();
+      const reply = database.prepare(`
+        SELECT id, post_id AS postId, author_user_id AS authorUserId, deleted_at AS deletedAt
+        FROM replies WHERE id = ?
+      `).get(replyId);
+      if (!reply || reply.deletedAt) {
+        sendJson(res, 404, { error: "回复不存在" });
+        return true;
+      }
+      const adminRequest = hasPermission(req.authUser, "*");
+      if (!adminRequest && Number(reply.authorUserId) !== req.authUser.id) {
+        sendJson(res, 403, { error: "只能删除自己的回复" });
+        return true;
+      }
+      const deletedAt = Date.now();
+      database.prepare("UPDATE replies SET deleted_at = ?, updated_at = ? WHERE id = ?")
+        .run(deletedAt, deletedAt, replyId);
+      database.prepare("DELETE FROM forum_reply_reactions WHERE reply_id = ?").run(replyId);
+      database.prepare(`
+        UPDATE posts
+        SET
+          reply_count = (
+            SELECT COUNT(*) FROM replies
+            WHERE post_id = ? AND deleted_at IS NULL
+          ),
+          last_reply_at = (
+            SELECT MAX(created_at) FROM replies
+            WHERE post_id = ? AND deleted_at IS NULL
+          ),
+          last_activity_at = COALESCE(
+            (SELECT MAX(created_at) FROM replies
+             WHERE post_id = ? AND deleted_at IS NULL),
+            updated_at,
+            created_at
+          )
+        WHERE id = ?
+      `).run(reply.postId, reply.postId, reply.postId, reply.postId);
+      sendJson(res, 200, { ok: true });
+      broadcastForumEvent("reply_deleted", { postId: Number(reply.postId), replyId });
+    } catch (error) {
+      sendJson(res, 400, { error: error.message });
+    }
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/forum/replies/reactions") {
+    try {
+      const body = parseJson(await readRequestBody(req));
+      const replyId = Number(body.replyId);
+      const emoji = String(body.emoji || "");
+      if (!Number.isInteger(replyId) || replyId <= 0 || !FORUM_REACTION_EMOJIS.includes(emoji)) {
+        sendJson(res, 400, { error: "反应内容无效" });
+        return true;
+      }
+      const database = initForumDatabase();
+      const reply = database.prepare(`
+        SELECT id, post_id AS postId FROM replies
+        WHERE id = ? AND deleted_at IS NULL
+      `).get(replyId);
+      if (!reply) {
+        sendJson(res, 404, { error: "回复不存在" });
+        return true;
+      }
+      const ownerToken = getForumReactionOwnerKey(req);
+      const existing = database.prepare(`
+        SELECT 1 FROM forum_reply_reactions
+        WHERE reply_id = ? AND emoji = ? AND owner_token = ?
+      `).get(replyId, emoji, ownerToken);
+      if (existing) {
+        database.prepare(`
+          DELETE FROM forum_reply_reactions
+          WHERE reply_id = ? AND emoji = ? AND owner_token = ?
+        `).run(replyId, emoji, ownerToken);
+      } else {
+        database.prepare(`
+          INSERT INTO forum_reply_reactions (reply_id, emoji, owner_token, created_at)
+          VALUES (?, ?, ?, ?)
+        `).run(replyId, emoji, ownerToken, Date.now());
+      }
+      const reactions = readForumReplyReactions(database, [replyId], ownerToken).get(replyId) || [];
+      sendJson(res, 200, { ok: true, active: !existing, reactions });
+      broadcastForumEvent("reply_reaction_changed", {
+        postId: Number(reply.postId),
+        replyId
+      });
+    } catch (error) {
+      sendJson(res, 400, { error: error.message });
+    }
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/forum/read") {
+    try {
+      const body = parseJson(await readRequestBody(req));
+      const postId = Number(body.postId);
+      if (!Number.isInteger(postId) || postId <= 0) {
+        sendJson(res, 400, { error: "帖子编号无效" });
+        return true;
+      }
+      const database = initForumDatabase();
+      const post = database.prepare("SELECT id FROM posts WHERE id = ?").get(postId);
+      if (!post) {
+        sendJson(res, 404, { error: "帖子不存在" });
+        return true;
+      }
+      const latestReply = database.prepare(`
+        SELECT COALESCE(MAX(id), 0) AS id
+        FROM replies
+        WHERE post_id = ? AND deleted_at IS NULL
+      `).get(postId);
+      database.prepare(`
+        INSERT INTO forum_reads (user_id, post_id, last_read_reply_id, read_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(user_id, post_id) DO UPDATE SET
+          last_read_reply_id = excluded.last_read_reply_id,
+          read_at = excluded.read_at
+      `).run(req.authUser.id, postId, Number(latestReply.id) || 0, Date.now());
+      sendJson(res, 200, { ok: true, lastReadReplyId: Number(latestReply.id) || 0 });
     } catch (error) {
       sendJson(res, 400, { error: error.message });
     }
@@ -5495,7 +6641,11 @@ const server = http.createServer(async (req, res) => {
     );
     if (isLoginAsset) {
       if (req.authUser && (url.pathname === "/login" || url.pathname === "/login.html")) {
-        res.writeHead(302, { Location: "/", "Cache-Control": "no-store" });
+        const nextPath = String(url.searchParams.get("next") || "");
+        const safeNext = nextPath.startsWith("/") && !nextPath.startsWith("//") && !nextPath.startsWith("/login")
+          ? nextPath
+          : "/";
+        res.writeHead(302, { Location: safeNext, "Cache-Control": "no-store" });
         res.end();
         return;
       }
@@ -5509,13 +6659,20 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (!req.authUser) {
+      const isForumPage = req.method === "GET" && (
+        url.pathname === "/forum"
+        || url.pathname === "/forum/"
+        || url.pathname === "/forum/new"
+        || /^\/forum\/post\/\d+$/.test(url.pathname)
+      );
       if (req.method === "GET" && (
         url.pathname === "/"
         || url.pathname === "/index.html"
         || url.pathname === "/player"
         || url.pathname === "/player/"
-      )) {
-        res.writeHead(302, { Location: "/login", "Cache-Control": "no-store" });
+      ) || isForumPage) {
+        const next = isForumPage ? `?next=${encodeURIComponent(url.pathname + url.search)}` : "";
+        res.writeHead(302, { Location: `/login${next}`, "Cache-Control": "no-store" });
         res.end();
       } else {
         sendAuthRequired(res);
@@ -5528,6 +6685,14 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (await handleApi(req, res, url)) return;
+    if (req.method === "GET" && (
+      url.pathname === "/forum"
+      || url.pathname === "/forum/"
+      || url.pathname === "/forum/new"
+      || /^\/forum\/post\/\d+$/.test(url.pathname)
+    )) {
+      return void await serveStaticFile(res, path.join(STATIC_DIR, "forum", "index.html"));
+    }
     if (req.method === "GET" && url.pathname === "/download") {
       requirePermission(req, "files.download");
       return void await streamFile(req, res, url, true);

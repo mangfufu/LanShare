@@ -7,6 +7,12 @@ const initialAdminNote = document.querySelector("#initialAdminNote");
 
 let csrfToken = "";
 
+function getNextPath() {
+  const value = String(new URLSearchParams(location.search).get("next") || "");
+  if (!value.startsWith("/") || value.startsWith("//") || value.startsWith("/login")) return "/";
+  return value;
+}
+
 function setMessage(text, isError = false) {
   authMessage.textContent = text || "";
   authMessage.classList.toggle("is-error", Boolean(isError));
@@ -48,7 +54,7 @@ async function bootstrap() {
   }
   csrfToken = security.csrfToken;
   if (session.authenticated) {
-    location.replace("/");
+    location.replace(getNextPath());
     return;
   }
   initialAdminNote.classList.toggle("is-hidden", !session.initialAdminAvailable);
@@ -77,7 +83,7 @@ async function submitAuth(form, endpoint, payload) {
     } else {
       setMessage("验证成功，正在进入工作区…");
     }
-    location.replace("/");
+    location.replace(getNextPath());
   } catch (error) {
     setMessage(error.message || "操作失败", true);
   } finally {

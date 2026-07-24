@@ -14,11 +14,11 @@
   <body>
     <script>document.body.dataset.uiStyle = "editorial";</script>
     <div class="version-badge">
-      <span id="nicknameDisplay" class="nickname" title="点击修改昵称">设置昵称</span>
+      <span id="nicknameDisplay" class="nickname" title="打开账户中心">账户</span>
       <span class="sep">·</span>
       v3.5.0
     </div>
-    <div class="nsfw-entry">
+    <div class="nsfw-entry is-hidden">
       <input id="nsfwInput" type="password" class="nsfw-input" />
       <button id="nsfwBar" class="nsfw-act" style="display:none" type="button">退出</button>
     </div>
@@ -48,15 +48,15 @@
         <input id="mainSearchInput" class="field toolbar-search" type="search" placeholder="搜索文件..." />
         <div class="toolbar">
           <div class="toolbar-actions-left">
-            <div class="upload-group">
+            <div class="upload-group is-hidden">
               <button id="uploadBtn" class="button primary" type="button">上传</button>
               <div id="uploadMenu" class="upload-menu">
                 <label class="upload-menu-item">上传文件<input id="fileInput" type="file" multiple hidden /></label>
                 <label class="upload-menu-item">上传文件夹<input id="folderInput" type="file" webkitdirectory directory multiple hidden /></label>
               </div>
             </div>
-            <button id="mkdirBtn" class="button warm" type="button">新建文件夹</button>
-            <button id="createProjectBtn" class="button warm" type="button">新建项目</button>
+            <button id="mkdirBtn" class="button warm is-hidden" type="button">新建文件夹</button>
+            <button id="createProjectBtn" class="button warm is-hidden" type="button">新建项目</button>
             <div class="filter-switch" id="filterSwitch">
               <button id="filterSwitchBtn" class="button ghost" type="button">全部</button>
               <div id="filterSwitchMenu" class="filter-switch-menu is-hidden">
@@ -156,7 +156,7 @@
           <div class="forum-board-actions">
             <span id="forumPostCount" class="forum-board-count">0 条</span>
             <button id="forumManageToggle" class="workspace-text-button is-hidden" type="button" aria-expanded="false">多选</button>
-            <button id="forumComposeToggle" class="workspace-text-button" type="button" aria-expanded="false">发布</button>
+            <button id="forumComposeToggle" class="workspace-text-button is-hidden" type="button" aria-expanded="false">发布</button>
           </div>
         </header>
 
@@ -193,7 +193,7 @@
       </section>
     </aside>
 
-    <button id="logToggleBtn" class="log-toggle" type="button" title="日志">
+    <button id="logToggleBtn" class="log-toggle is-hidden" type="button" title="日志">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
     </button>
     <button id="hideUiBtn" class="recycle-toggle" type="button" title="隐藏界面，纯享背景" aria-label="隐藏界面">
@@ -208,7 +208,7 @@
       <svg class="tgl-sun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
       <svg class="tgl-moon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
     </button>
-    <button id="recycleToggleBtn" class="recycle-toggle" type="button" title="回收站">
+    <button id="recycleToggleBtn" class="recycle-toggle is-hidden" type="button" title="回收站">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
       <span id="recycleCountBadge">0</span>
     </button>
@@ -270,6 +270,101 @@
     </dialog>
 
     <!-- 聊天面板（测试阶段默认显示） -->
+    <dialog id="accountDialog" class="preview-dialog account-dialog">
+      <div class="preview-header">
+        <div>
+          <div class="label">ACCOUNT</div>
+          <div id="accountDialogTitle" class="preview-title">账户中心</div>
+        </div>
+        <button id="closeAccountBtn" class="button ghost" type="button">关闭</button>
+      </div>
+      <div class="account-dialog-body">
+        <section class="account-summary">
+          <div id="accountAvatar" class="account-avatar" aria-hidden="true">账</div>
+          <div>
+            <strong id="accountName">—</strong>
+            <div class="account-meta">
+              <span id="accountUsername">—</span>
+              <span id="accountRole" class="account-role">—</span>
+            </div>
+          </div>
+        </section>
+
+        <form id="accountProfileForm" class="account-form">
+          <div class="account-form-title">个人信息</div>
+          <label>
+            <span>姓名</span>
+            <input id="accountNameInput" class="field" type="text" maxlength="20" autocomplete="name" required />
+          </label>
+          <button class="button primary" type="submit">保存姓名</button>
+        </form>
+
+        <form id="accountPasswordForm" class="account-form">
+          <div class="account-form-title">修改密码</div>
+          <label>
+            <span>当前密码</span>
+            <input id="accountCurrentPassword" class="field" type="password" minlength="6" maxlength="16" autocomplete="current-password" required />
+          </label>
+          <label>
+            <span>新密码</span>
+            <input id="accountNewPassword" class="field" type="password" minlength="6" maxlength="16" autocomplete="new-password" required />
+          </label>
+          <button class="button ghost" type="submit">更新密码</button>
+        </form>
+
+        <div id="accountMessage" class="account-message" aria-live="polite"></div>
+        <div class="account-footer">
+          <div>
+            <button id="accountAppearanceBtn" class="button ghost" type="button">显示效果</button>
+            <button id="accountManageUsersBtn" class="button ghost is-hidden" type="button">账号与权限</button>
+          </div>
+          <button id="accountLogoutBtn" class="button danger-button" type="button">退出登录</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="accountUsersDialog" class="preview-dialog account-users-dialog">
+      <div class="preview-header">
+        <div>
+          <div class="label">ADMINISTRATION</div>
+          <div class="preview-title">账号与权限</div>
+        </div>
+        <button id="closeAccountUsersBtn" class="button ghost" type="button">关闭</button>
+      </div>
+      <div class="account-users-body">
+        <section class="account-invite-panel" aria-labelledby="accountInviteTitle">
+          <div class="account-section-heading">
+            <div>
+              <strong id="accountInviteTitle">可编辑邀请码</strong>
+              <div>邀请码可重复使用；更换或停用前始终有效。</div>
+            </div>
+            <span id="accountInviteState" class="account-invite-state">未设置</span>
+          </div>
+          <form id="accountInviteForm" class="account-invite-form">
+            <input
+              id="accountInviteCode"
+              class="field"
+              type="text"
+              minlength="6"
+              maxlength="32"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="输入 6–32 位邀请码"
+              required
+            />
+            <button class="button primary" type="submit">生成 / 更换</button>
+            <button id="accountInviteDisable" class="button ghost danger-button" type="button">停用</button>
+          </form>
+          <div id="accountInviteMessage" class="account-invite-message" aria-live="polite"></div>
+        </section>
+        <div class="account-list-heading">
+          <strong>账号列表</strong>
+          <span>角色调整立即生效；重置密码会让目标账号从所有设备退出。</span>
+        </div>
+        <div id="accountUsersList" class="account-users-list"></div>
+      </div>
+    </dialog>
+
     <aside id="chatPanel" class="chat-panel is-hidden">
       <div class="chat-head">
         <span class="chat-title">聊天</span>

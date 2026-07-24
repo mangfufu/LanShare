@@ -1,6 +1,16 @@
 node_modules/
 shared/
+shared_NSFW/
 backup/
 recycle_bin/
 logs/
 thumb_cache/
+auth.db
+auth.db-wal
+auth.db-shm
+forum.db
+forum.db-wal
+forum.db-shm
+folder_size_cache.json
+folder_size_cache.json.*.tmp
+nsfw_password.txt

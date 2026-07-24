@@ -27,6 +27,7 @@ const prodDir = workspaceRoot;
 const lanShareDir = path.join(workspaceRoot, "LanShare");
 const githubDir = path.join(workspaceRoot, "github");
 const githubManagedPaths = [
+  ".gitignore",
   "server.js",
   "static",
   "scripts",
@@ -216,6 +217,7 @@ async function syncProductionExtras(targetDir) {
   await copyDir(path.join(prodDir, "scripts"), path.join(targetDir, "scripts"));
 
   const extraFiles = [
+    ".gitignore",
     "package.json",
     "package-lock.json",
     "README.md",

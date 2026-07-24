@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>登录 · 局域网文件服务器</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/login.css" />
+  </head>
+  <body>
+    <main class="login-shell">
+      <section class="login-intro" aria-labelledby="siteTitle">
+        <div class="brand-mark" aria-hidden="true">
+          <span>LAN</span>
+          <span>SHARE</span>
+        </div>
+        <div class="eyebrow">PRIVATE NETWORK · v3.5.0</div>
+        <h1 id="siteTitle">局域网<br />文件服务器</h1>
+      </section>
+
+      <section class="auth-card" aria-labelledby="authTitle">
+        <div class="auth-tabs" role="tablist" aria-label="账号操作">
+          <button id="loginTab" class="auth-tab is-active" type="button" role="tab" aria-selected="true">登录</button>
+          <button id="registerTab" class="auth-tab" type="button" role="tab" aria-selected="false">注册</button>
+        </div>
+        <p id="initialAdminNote" class="initial-admin-note is-hidden">
+          当前还没有管理员，本机注册的首个账号将成为初始管理员。
+        </p>
+
+        <form id="loginForm" class="auth-form">
+          <div class="form-heading">
+            <span>WELCOME BACK</span>
+            <h2 id="authTitle">进入工作区</h2>
+          </div>
+          <label>
+            <span>账号</span>
+            <input id="loginUsername" name="username" type="text" minlength="3" maxlength="10" autocomplete="username" required />
+          </label>
+          <label>
+            <span>密码</span>
+            <input id="loginPassword" name="password" type="password" minlength="6" maxlength="16" autocomplete="current-password" required />
+          </label>
+          <label class="remember-row">
+            <input id="loginRemember" name="rememberMe" type="checkbox" checked />
+            <span>记住我，30 天内免登录</span>
+          </label>
+          <button class="submit-button" type="submit">登录</button>
+        </form>
+
+        <form id="registerForm" class="auth-form is-hidden">
+          <div class="form-heading">
+            <span>CREATE ACCOUNT</span>
+            <h2>注册账号</h2>
+          </div>
+          <label>
+            <span>账号 <small>3–10 字符</small></span>
+            <input id="registerUsername" name="username" type="text" minlength="3" maxlength="10" autocomplete="username" required />
+          </label>
+          <label>
+            <span>姓名 <small>工作区内显示</small></span>
+            <input id="registerName" name="name" type="text" maxlength="20" autocomplete="name" required />
+          </label>
+          <label>
+            <span>密码 <small>6–16 字符</small></span>
+            <input id="registerPassword" name="password" type="password" minlength="6" maxlength="16" autocomplete="new-password" required />
+          </label>
+          <label>
+            <span>邀请码 <small>选填，获得可编辑权限</small></span>
+            <input id="registerInviteCode" name="inviteCode" type="text" maxlength="32" autocomplete="off" />
+          </label>
+          <label class="remember-row">
+            <input id="registerRemember" name="rememberMe" type="checkbox" checked />
+            <span>注册后记住我</span>
+          </label>
+          <button class="submit-button" type="submit">注册并进入</button>
+        </form>
+
+        <div id="authMessage" class="auth-message" aria-live="polite"></div>
+      </section>
+    </main>
+    <script src="/login.js"></script>
+  </body>
+</html>

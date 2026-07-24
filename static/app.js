@@ -56,7 +56,9 @@ const state = {
   forumSelectedPostIds: new Set(),
   inProgressProjects: [],
   workspaceProjects: [],
-  workspaceProjectsLoaded: false
+  workspaceProjectsLoaded: false,
+  currentUser: null,
+  permissions: []
 };
 const FORUM_REACTION_EMOJIS = [
   "😀", "😄", "😂", "🤣", "😊", "🥰",
@@ -67,17 +69,27 @@ const FORUM_REACTION_EMOJIS = [
 ];
 
 let forumReadReplyCounts = {};
-try {
-  const savedForumReadReplyCounts = JSON.parse(localStorage.getItem(FORUM_READ_REPLIES_KEY) || "{}");
-  if (
-    savedForumReadReplyCounts
-    && typeof savedForumReadReplyCounts === "object"
-    && !Array.isArray(savedForumReadReplyCounts)
-  ) {
-    forumReadReplyCounts = savedForumReadReplyCounts;
-  }
-} catch {
+
+function getForumReadRepliesStorageKey() {
+  return state.currentUser
+    ? `${FORUM_READ_REPLIES_KEY}:${state.currentUser.id}`
+    : FORUM_READ_REPLIES_KEY;
+}
+
+function loadForumReadReplyCounts() {
   forumReadReplyCounts = {};
+  try {
+    const scopedKey = getForumReadRepliesStorageKey();
+    const raw = localStorage.getItem(scopedKey)
+      || (scopedKey !== FORUM_READ_REPLIES_KEY ? localStorage.getItem(FORUM_READ_REPLIES_KEY) : "")
+      || "{}";
+    const saved = JSON.parse(raw);
+    if (saved && typeof saved === "object" && !Array.isArray(saved)) {
+      forumReadReplyCounts = saved;
+    }
+  } catch {
+    forumReadReplyCounts = {};
+  }
 }
 
 function getForumReadReplyCount(postId) {
@@ -91,7 +103,7 @@ function hasUnreadForumReplies(post) {
 function markForumPostRepliesRead(post) {
   forumReadReplyCounts[String(post.id)] = Math.max(0, Number(post.replyCount || 0));
   try {
-    localStorage.setItem(FORUM_READ_REPLIES_KEY, JSON.stringify(forumReadReplyCounts));
+    localStorage.setItem(getForumReadRepliesStorageKey(), JSON.stringify(forumReadReplyCounts));
   } catch {
     // 某些隐私或受限浏览环境可能禁用本地存储。
   }
@@ -156,7 +168,104 @@ const forumBatchCount = document.querySelector("#forumBatchCount");
 const forumSelectAllToggle = document.querySelector("#forumSelectAllToggle");
 const forumBatchCancel = document.querySelector("#forumBatchCancel");
 const forumBatchDelete = document.querySelector("#forumBatchDelete");
+const accountDialog = document.querySelector("#accountDialog");
+const closeAccountBtn = document.querySelector("#closeAccountBtn");
+const accountName = document.querySelector("#accountName");
+const accountUsername = document.querySelector("#accountUsername");
+const accountRole = document.querySelector("#accountRole");
+const accountAvatar = document.querySelector("#accountAvatar");
+const accountNameInput = document.querySelector("#accountNameInput");
+const accountProfileForm = document.querySelector("#accountProfileForm");
+const accountPasswordForm = document.querySelector("#accountPasswordForm");
+const accountCurrentPassword = document.querySelector("#accountCurrentPassword");
+const accountNewPassword = document.querySelector("#accountNewPassword");
+const accountMessage = document.querySelector("#accountMessage");
+const accountAppearanceBtn = document.querySelector("#accountAppearanceBtn");
+const accountManageUsersBtn = document.querySelector("#accountManageUsersBtn");
+const accountLogoutBtn = document.querySelector("#accountLogoutBtn");
+const accountUsersDialog = document.querySelector("#accountUsersDialog");
+const closeAccountUsersBtn = document.querySelector("#closeAccountUsersBtn");
+const accountInviteForm = document.querySelector("#accountInviteForm");
+const accountInviteCode = document.querySelector("#accountInviteCode");
+const accountInviteDisable = document.querySelector("#accountInviteDisable");
+const accountInviteState = document.querySelector("#accountInviteState");
+const accountInviteMessage = document.querySelector("#accountInviteMessage");
+const accountUsersList = document.querySelector("#accountUsersList");
 let forumReactionPickerPortal = null;
+
+function can(permission) {
+  return state.permissions.includes("*") || state.permissions.includes(permission);
+}
+
+function setAccountMessage(text, isError = false) {
+  if (!accountMessage) return;
+  accountMessage.textContent = text || "";
+  accountMessage.classList.toggle("is-error", Boolean(isError));
+}
+
+function updateAccountSummary() {
+  const user = state.currentUser;
+  if (!user) return;
+  if (accountName) accountName.textContent = user.name;
+  if (accountUsername) accountUsername.textContent = `@${user.username}`;
+  if (accountRole) accountRole.textContent = user.roleLabel;
+  if (accountAvatar) accountAvatar.textContent = Array.from(user.name || user.username || "账")[0] || "账";
+  if (accountNameInput) accountNameInput.value = user.name;
+}
+
+function applyRoleUi() {
+  const canWrite = can("files.write");
+  const canDownload = can("files.download");
+  const canUseRecycle = can("recycle.read");
+  const isAdmin = can("*");
+  document.querySelector(".upload-group")?.classList.toggle("is-hidden", !canWrite);
+  mkdirBtn?.classList.toggle("is-hidden", !canWrite);
+  document.querySelector("#createProjectBtn")?.classList.toggle("is-hidden", !canWrite);
+  recycleToggleBtn?.classList.toggle("is-hidden", !canUseRecycle);
+  logToggleBtn?.classList.toggle("is-hidden", !isAdmin);
+  forumComposeToggle?.classList.toggle("is-hidden", !can("forum.write"));
+  document.querySelector(".nsfw-entry")?.classList.toggle("is-hidden", !canWrite);
+  accountManageUsersBtn?.classList.toggle("is-hidden", !isAdmin);
+  if (!can("forum.write")) forumComposeForm?.classList.add("is-hidden");
+  const chatInputControl = document.querySelector("#chatInput");
+  const chatSendControl = document.querySelector("#chatSendBtn");
+  if (chatInputControl) {
+    chatInputControl.disabled = !can("forum.write");
+    chatInputControl.placeholder = can("forum.write") ? "写点啥…" : "游客不可发送消息";
+  }
+  if (chatSendControl) chatSendControl.disabled = !can("forum.write");
+  const chatClearControl = document.querySelector("#chatClearBtn");
+  if (chatClearControl) chatClearControl.style.display = isAdmin ? "" : "none";
+  if (typeof _nsfwSet !== "undefined" && _nsfwSet) {
+    _nsfwSet.style.display = isAdmin && !state.nsfwMode ? "" : "none";
+  }
+  if (!canUseRecycle) recycleDrawer?.classList.add("is-hidden");
+  if (!isAdmin) logPanel?.classList.add("is-hidden");
+  updateAccountSummary();
+  updateToolbarButtons();
+}
+
+async function loadCurrentAccount() {
+  const response = await fetch("/api/auth/session", { cache: "no-store", credentials: "same-origin" });
+  const data = await parseJsonResponse(response);
+  if (!response.ok || !data.authenticated || !data.user) {
+    location.replace("/login");
+    return null;
+  }
+  state.currentUser = data.user;
+  state.permissions = Array.isArray(data.user.permissions) ? data.user.permissions : [];
+  loadForumReadReplyCounts();
+  state.nickname = data.user.name;
+  localStorage.setItem(NICKNAME_KEY, state.nickname);
+  updateNicknameDisplay();
+  applyRoleUi();
+  return data.user;
+}
+
+const accountReady = loadCurrentAccount().catch(() => {
+  location.replace("/login");
+  return null;
+});
 
 const moveDialog = document.createElement("dialog");
 moveDialog.className = "preview-dialog move-dialog";
@@ -293,8 +402,12 @@ async function apiFetch(url, options = {}) {
     url += (url.indexOf("?") === -1 ? "?" : "&") + "nsfw=1"
   }
   const res = await fetch(url, { ...options, headers });
-  if (res.status === 401 && state.nsfwMode) setNsfwModeUi(false);
-  if (res.ok && (options.method === "POST" || options.method === undefined)) pollLogs();
+  if (res.status === 401 && res.headers.get("X-Auth-Required") === "1") {
+    location.replace("/login");
+  } else if (res.status === 401 && state.nsfwMode) {
+    setNsfwModeUi(false);
+  }
+  if (res.ok && can("*") && (options.method === "POST" || options.method === undefined)) pollLogs();
   return res;
 }
 
@@ -306,7 +419,9 @@ function setNsfwModeUi(enabled) {
   const bar = document.getElementById("nsfwBar");
   if (input) input.style.display = state.nsfwMode ? "none" : "";
   if (bar) bar.style.display = state.nsfwMode ? "" : "none";
-  if (typeof _nsfwSet !== "undefined" && _nsfwSet) _nsfwSet.style.display = state.nsfwMode ? "none" : "";
+  if (typeof _nsfwSet !== "undefined" && _nsfwSet) {
+    _nsfwSet.style.display = can("*") && !state.nsfwMode ? "" : "none";
+  }
   loadInProgressProjects();
 }
 
@@ -487,7 +602,18 @@ function getInternalDragPaths(dataTransfer) {
   }
 }
 
-function openInputDialog({ title, label, value = "", suffix = "", hint = "", confirmText = "确定", validate }) {
+function openInputDialog({
+  title,
+  label,
+  value = "",
+  suffix = "",
+  hint = "",
+  confirmText = "确定",
+  inputType = "text",
+  autocomplete = "off",
+  trimValue = true,
+  validate
+}) {
   return new Promise((resolve) => {
     const dialog = document.createElement("dialog");
     dialog.className = "preview-dialog form-dialog";
@@ -527,6 +653,8 @@ function openInputDialog({ title, label, value = "", suffix = "", hint = "", con
       resolve(result);
     };
 
+    input.type = inputType;
+    input.autocomplete = autocomplete;
     input.value = value;
     input.focus();
     input.select();
@@ -541,7 +669,7 @@ function openInputDialog({ title, label, value = "", suffix = "", hint = "", con
     });
     form.addEventListener("submit", (event) => {
       event.preventDefault();
-      const nextValue = input.value.trim();
+      const nextValue = trimValue ? input.value.trim() : input.value;
       const error = validate ? validate(nextValue) : "";
       if (error) {
         message.textContent = error;
@@ -746,6 +874,12 @@ function fileUrl(path) {
   if (state.nsfwMode) u += "&nsfw=1"
   return u
 }
+
+function previewUrl(path) {
+  var u = "/preview?path=" + encodeURIComponent(path)
+  if (state.nsfwMode) u += "&nsfw=1"
+  return u
+}
 function getFileType(item) {
   if (item.type === "directory") return "文件夹";
   const name = item.name || "";
@@ -899,7 +1033,14 @@ function updateToolbarButtons() {
   moveBtn.disabled = count === 0;
   deleteBtn.disabled = count === 0;
   downloadBtn.disabled = count === 0;
-  for (const button of [selectAllBtn, invertBtn, moveBtn, downloadBtn, deleteBtn]) {
+  const visibleButtons = [selectAllBtn, invertBtn];
+  if (can("files.write")) visibleButtons.push(moveBtn);
+  if (can("files.download")) visibleButtons.push(downloadBtn);
+  if (can("files.write")) visibleButtons.push(deleteBtn);
+  for (const button of [moveBtn, downloadBtn, deleteBtn]) {
+    if (!visibleButtons.includes(button)) button.remove();
+  }
+  for (const button of visibleButtons) {
     selectionTools.appendChild(button);
   }
   renderWorkspaceOverview();
@@ -1099,7 +1240,9 @@ function buildThumbnail(item, searchDir) {
 
 function getPreviewableItems() {
   return state.currentItems.filter((item) =>
-    item.previewType === "image" || item.previewType === "video" || item.previewType === "audio"
+    item.previewType === "image"
+    || item.previewType === "video"
+    || item.previewType === "audio"
   );
 }
 
@@ -1109,10 +1252,13 @@ function openPreview(item) {
     return;
   }
   if (item.previewType === "none") {
+    if (!can("files.download")) {
+      showMessage("该格式暂不支持游客预览", "error");
+      return;
+    }
     window.open(fileUrl(item.path), "_blank", "noopener");
     return;
   }
-
   // 记录当前预览项在可预览列表中的索引
   var previewable = getPreviewableItems();
   state.previewIndex = previewable.findIndex((p) => p.path === item.path);
@@ -1122,14 +1268,20 @@ function openPreview(item) {
 
 function showPreviewItem(item) {
   previewTitle.textContent = item.name;
-  const src = fileUrl(item.path);
+  const restrictedPreview = !can("files.download");
+  const src = restrictedPreview ? previewUrl(item.path) : fileUrl(item.path);
   const currentType = previewBody.dataset.previewType;
 
   if (currentType === item.previewType) {
     // 类型相同，直接更新 src，不重建 DOM
     if (item.previewType === "image") {
       var img = previewBody.querySelector("img");
-      if (img) { img.src = src; img.alt = item.name; }
+      if (img) {
+        img.src = src;
+        img.alt = item.name;
+        img.draggable = !restrictedPreview;
+        img.oncontextmenu = restrictedPreview ? (event) => event.preventDefault() : null;
+      }
     } else if (item.previewType === "video") {
       var video = previewBody.querySelector("video");
       if (video) {
@@ -1156,6 +1308,8 @@ function showPreviewItem(item) {
       img.className = "preview-image";
       img.src = src;
       img.alt = item.name;
+      img.draggable = !restrictedPreview;
+      if (restrictedPreview) img.addEventListener("contextmenu", (event) => event.preventDefault());
       previewBody.appendChild(img);
     } else if (item.previewType === "video") {
       const video = document.createElement("video");
@@ -1163,6 +1317,12 @@ function showPreviewItem(item) {
       video.controls = true;
       video.autoplay = true;
       video.playsInline = true;
+      if (restrictedPreview) {
+        video.controlsList = "nodownload noremoteplayback";
+        video.disablePictureInPicture = true;
+        video.disableRemotePlayback = true;
+        video.addEventListener("contextmenu", (event) => event.preventDefault());
+      }
       previewBody.appendChild(video);
       // 非原生格式走 WASM 转码
       var ext = (item.name || "").toLowerCase().match(/\.(\w+)$/)
@@ -1180,6 +1340,12 @@ function showPreviewItem(item) {
           <audio class="preview-audio" src="${src}" controls autoplay></audio>
         </div>
       `;
+      if (restrictedPreview) {
+        const audio = previewBody.querySelector("audio");
+        audio.controlsList = "nodownload noremoteplayback";
+        audio.disableRemotePlayback = true;
+        audio.addEventListener("contextmenu", (event) => event.preventDefault());
+      }
     }
   }
 
@@ -1998,46 +2164,56 @@ document.addEventListener("contextmenu", function(e) {
     if (!item) return
 
   var menuItems = []
+  const canWrite = can("files.write")
+  const canDownload = can("files.download")
   if (item.type === "directory") {
     menuItems.push({ label: "打开", action: function() { loadDir(item.path) } })
-    menuItems.push({ sep: true })
-    menuItems.push({ label: "待开始", action: function() { setItemStatus(item, "not_started") } })
-    menuItems.push({ label: "进行中", action: function() { setItemStatus(item, "in_progress") } })
-    menuItems.push({ label: "已完成", action: function() { setItemStatus(item, "completed") } })
-    menuItems.push({ sep: true })
-    menuItems.push({ label: "重命名", action: function() { renameItem(item) } })
-    menuItems.push({ label: "复制", action: function() { copyItem(item) } })
-    menuItems.push({ label: "移动", action: function() { moveItem(item) } })
-    menuItems.push({ sep: true })
-    menuItems.push({ label: "删除", action: function() { deleteItem(item) }, danger: true })
+    if (canWrite) {
+      menuItems.push({ sep: true })
+      menuItems.push({ label: "待开始", action: function() { setItemStatus(item, "not_started") } })
+      menuItems.push({ label: "进行中", action: function() { setItemStatus(item, "in_progress") } })
+      menuItems.push({ label: "已完成", action: function() { setItemStatus(item, "completed") } })
+      menuItems.push({ sep: true })
+      menuItems.push({ label: "重命名", action: function() { renameItem(item) } })
+      menuItems.push({ label: "复制", action: function() { copyItem(item) } })
+      menuItems.push({ label: "移动", action: function() { moveItem(item) } })
+      menuItems.push({ sep: true })
+      menuItems.push({ label: "删除", action: function() { deleteItem(item) }, danger: true })
+    }
   } else {
     if (item.previewType !== "none") {
       menuItems.push({ label: "预览", action: function() { openPreview(item) } })
     }
-    menuItems.push({ label: "下载", action: function() {
-      var a = document.createElement("a")
-      a.href = "/download?path=" + encodeURIComponent(item.path) + (state.nsfwMode ? "&nsfw=1" : "")
-      a.click()
-    }})
-    menuItems.push({ sep: true })
-    menuItems.push({ label: "重命名", action: function() { renameItem(item) } })
-    menuItems.push({ label: "复制", action: function() { copyItem(item) } })
-    menuItems.push({ label: "移动", action: function() { moveItem(item) } })
-    menuItems.push({ sep: true })
-    menuItems.push({ label: "删除", action: function() { deleteItem(item) }, danger: true })
+    if (canDownload) {
+      menuItems.push({ label: "下载", action: function() {
+        var a = document.createElement("a")
+        a.href = "/download?path=" + encodeURIComponent(item.path) + (state.nsfwMode ? "&nsfw=1" : "")
+        a.click()
+      }})
+    }
+    if (canWrite) {
+      menuItems.push({ sep: true })
+      menuItems.push({ label: "重命名", action: function() { renameItem(item) } })
+      menuItems.push({ label: "复制", action: function() { copyItem(item) } })
+      menuItems.push({ label: "移动", action: function() { moveItem(item) } })
+      menuItems.push({ sep: true })
+      menuItems.push({ label: "删除", action: function() { deleteItem(item) }, danger: true })
+    }
   }
   showContextMenu(menuItems, e.clientX, e.clientY)
   } else if (!e.target.closest("input, textarea, button, a, select, label")) {
     e.preventDefault()
     showContextMenu([
-      { label: "上传文件", action: function() { var b = document.querySelector("#fileInput"); if (b) b.click() } },
-      { label: "上传文件夹", action: function() { var b = document.querySelector("#folderInput"); if (b) b.click() } },
-      { sep: true },
-      { label: "新建文件夹", action: function() { createFolder() } },
-      { label: "新建项目", action: function() { var b = document.querySelector("#createProjectBtn"); if (b) b.click() } },
-      { sep: true },
+      ...(can("files.write") ? [
+        { label: "上传文件", action: function() { var b = document.querySelector("#fileInput"); if (b) b.click() } },
+        { label: "上传文件夹", action: function() { var b = document.querySelector("#folderInput"); if (b) b.click() } },
+        { sep: true },
+        { label: "新建文件夹", action: function() { createFolder() } },
+        { label: "新建项目", action: function() { var b = document.querySelector("#createProjectBtn"); if (b) b.click() } },
+        { sep: true }
+      ] : []),
       { label: "全选", action: function() { selectAll() } },
-      ...(state.clipboard.items.length ? [{ label: "粘贴", action: function() { pasteFromClipboard() } }] : []),
+      ...(can("files.write") && state.clipboard.items.length ? [{ label: "粘贴", action: function() { pasteFromClipboard() } }] : []),
       { label: "刷新", action: function() { loadDir(state.currentDir) } },
       { label: "返回上级", action: function() { var b = document.querySelector("#upDirBtn"); if (b && !b.classList.contains("is-hidden")) b.click() } },
       { sep: true },
@@ -2456,27 +2632,31 @@ function createActions(item) {
       previewBtn.onclick = () => openPreview(item);
       actions.appendChild(previewBtn);
     }
-    const downloadLink = document.createElement("a");
-    downloadLink.className = "link-button";
-    downloadLink.textContent = "下载";
-    downloadLink.href = `/download?path=${encodeURIComponent(item.path)}${state.nsfwMode ? "&nsfw=1" : ""}`;
-    actions.appendChild(downloadLink);
+    if (can("files.download")) {
+      const downloadLink = document.createElement("a");
+      downloadLink.className = "link-button";
+      downloadLink.textContent = "下载";
+      downloadLink.href = `/download?path=${encodeURIComponent(item.path)}${state.nsfwMode ? "&nsfw=1" : ""}`;
+      actions.appendChild(downloadLink);
+    }
   }
 
-  const renameBtn = document.createElement("button");
-  renameBtn.className = "link-button";
-  renameBtn.textContent = "重命名";
-  renameBtn.onclick = () => renameItem(item);
-  actions.appendChild(renameBtn);
+  if (can("files.write")) {
+    const renameBtn = document.createElement("button");
+    renameBtn.className = "link-button";
+    renameBtn.textContent = "重命名";
+    renameBtn.onclick = () => renameItem(item);
+    actions.appendChild(renameBtn);
 
-  const moveBtn = document.createElement("button");
-  moveBtn.className = "link-button";
-  moveBtn.textContent = "移动";
-  moveBtn.onclick = () => moveItem(item);
-  actions.appendChild(moveBtn);
+    const moveBtn = document.createElement("button");
+    moveBtn.className = "link-button";
+    moveBtn.textContent = "移动";
+    moveBtn.onclick = () => moveItem(item);
+    actions.appendChild(moveBtn);
+  }
 
   // 目录状态自定义下拉框
-  if (item.type === "directory" && (!state.currentDir || state.currentDir === "")) {
+  if (can("files.write") && item.type === "directory" && (!state.currentDir || state.currentDir === "")) {
     var statusOpts = [
       { value: "not_started", label: "待开始" },
       { value: "in_progress", label: "进行中" },
@@ -2525,11 +2705,13 @@ function createActions(item) {
     actions.appendChild(wrap);
   }
 
-  const deleteBtn = document.createElement("button");
-  deleteBtn.className = "link-button danger-button";
-  deleteBtn.textContent = "删除";
-  deleteBtn.onclick = () => deleteItem(item);
-  actions.appendChild(deleteBtn);
+  if (can("files.write")) {
+    const deleteBtn = document.createElement("button");
+    deleteBtn.className = "link-button danger-button";
+    deleteBtn.textContent = "删除";
+    deleteBtn.onclick = () => deleteItem(item);
+    actions.appendChild(deleteBtn);
+  }
   return actions;
 }
 
@@ -2552,7 +2734,7 @@ function createGridCard(item) {
   card.addEventListener("dblclick", (event) => handleItemDoubleClick(event, item));
 
   // 拖拽支持 - 所有项目都可拖拽
-  card.draggable = true;
+  card.draggable = can("files.write");
   card.addEventListener("dragstart", (e) => {
     const paths = state.selectedPaths.size > 0 && state.selectedPaths.has(item.path)
       ? [...state.selectedPaths]
@@ -2673,7 +2855,7 @@ function renderRows(items) {
     tr.querySelector(".op-cell").appendChild(createActions(item));
 
     // 拖拽支持 - 所有项目都可拖拽
-    tr.draggable = true;
+    tr.draggable = can("files.write");
     tr.addEventListener("dragstart", (e) => {
       const paths = state.selectedPaths.size > 0 && state.selectedPaths.has(item.path)
         ? [...state.selectedPaths]
@@ -3458,6 +3640,11 @@ document.addEventListener("drop", async (event) => {
     return;
   }
   event.preventDefault();
+  if (!can("files.write")) {
+    showMessage("游客不能上传文件", "error");
+    setDropActive(false);
+    return;
+  }
   try {
     const entries = await entriesFromDataTransfer(event.dataTransfer);
     await uploadEntries(entries, "拖拽内容");
@@ -3492,61 +3679,7 @@ if (dragCancelZone) {
   });
 }
 
-// --- Nickname ---
-
-function promptNickname() {
-  if (!state.nickname) {
-    const d = document.createElement("dialog");
-    d.className = "preview-dialog form-dialog";
-    d.innerHTML = `
-      <div class="preview-header">
-        <div>
-          <div class="label">首次使用</div>
-          <div class="preview-title">请输入你的昵称</div>
-        </div>
-      </div>
-      <form class="form-dialog-body" method="dialog">
-        <div class="input-row">
-          <input class="field" name="value" autocomplete="off" placeholder="例如：张三" />
-        </div>
-        <div class="dialog-actions">
-          <button class="button ghost" data-action="cancel" type="button">随机分配</button>
-          <button class="button primary" type="submit">确定</button>
-        </div>
-      </form>`;
-    document.body.appendChild(d);
-    const form = d.querySelector("form");
-    const input = d.querySelector("input");
-    const randomNames = ["小风", "云朵", "星星", "月光", "彩虹", "流星", "清风", "小溪", "山雀", "海鸥", "萤火虫", "小鹿", "雪人", "果冻", "布丁", "奶茶", "咖啡", "饼干", "糯米", "豆沙"];
-    function assignRandom() {
-      const r = randomNames[Math.floor(Math.random() * randomNames.length)] + String(Math.floor(Math.random() * 100));
-      state.nickname = r;
-      localStorage.setItem(NICKNAME_KEY, r);
-      updateNicknameDisplay();
-      apiFetch("/api/nickname", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ oldName: "", newName: r }) }).catch(() => {});
-      closeDialog(d); d.remove();
-    }
-    input.focus();
-    form.addEventListener("submit", (e) => {
-      e.preventDefault();
-      const name = input.value.trim();
-      if (name) {
-        state.nickname = name;
-        localStorage.setItem(NICKNAME_KEY, name);
-        updateNicknameDisplay();
-        apiFetch("/api/nickname", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ oldName: "", newName: name }) }).catch(() => {});
-      } else {
-        assignRandom();
-        return;
-      }
-      closeDialog(d); d.remove();
-    });
-    d.addEventListener("click", (e) => { if (e.target.dataset.action === "cancel") { e.preventDefault(); assignRandom(); } });
-    d.addEventListener("close", () => { if (!state.nickname) assignRandom(); d.remove(); });
-    d.addEventListener("cancel", (e) => { e.preventDefault(); if (!state.nickname) assignRandom(); });
-    showDialog(d);
-  }
-}
+// --- Account name and display effects ---
 
 const GLOW_COLORS = [
   { label: "无", color: "" },
@@ -3579,8 +3712,8 @@ function changeNickname() {
   d.innerHTML = `
     <div class="preview-header">
       <div>
-        <div class="label">修改昵称</div>
-        <div class="preview-title">输入新昵称</div>
+        <div class="label">姓名与显示效果</div>
+        <div class="preview-title">调整工作区显示</div>
       </div>
       <button class="button ghost" data-action="cancel" type="button">关闭</button>
     </div>
@@ -3667,7 +3800,7 @@ function changeNickname() {
   form.addEventListener("submit", (e) => {
     e.preventDefault();
     const name = input.value.trim();
-    if (!name) { msg.textContent = "昵称不能为空"; msg.className = "message-area error"; input.focus(); return; }
+    if (!name) { msg.textContent = "姓名不能为空"; msg.className = "message-area error"; input.focus(); return; }
     finish(name);
   });
   d.addEventListener("mousedown", (e) => { d._downTarget = e.target; });
@@ -3687,13 +3820,28 @@ function finishChange(name, color, speed, cursorEffect = state.cursorEffect) {
   localStorage.setItem(CURSOR_EFFECT_KEY, state.cursorEffect);
   localStorage.setItem(FLOAT_SPEED_KEY, String(state.floatSpeed));
   updateNicknameDisplay();
-  apiFetch("/api/nickname", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ oldName, newName: name }) }).catch(() => {});
-  showMessage("昵称已修改", "success");
+  apiFetch("/api/nickname", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ oldName, newName: name })
+  }).then(parseJsonResponse).then((data) => {
+    if (data.user) {
+      state.currentUser = data.user;
+      state.permissions = data.user.permissions || state.permissions;
+      updateAccountSummary();
+      updateNicknameDisplay();
+    }
+  }).catch(() => {});
+  showMessage("姓名与显示效果已修改", "success");
 }
 
 function updateNicknameDisplay() {
   if (!nicknameDisplay) return;
-  nicknameDisplay.textContent = state.nickname || "设置昵称";
+  const roleLabel = state.currentUser?.roleLabel;
+  nicknameDisplay.textContent = roleLabel
+    ? `${state.nickname || state.currentUser.username} · ${roleLabel}`
+    : (state.nickname || "账户");
+  nicknameDisplay.title = "打开账户中心";
   const hasGlow = !!state.glowColor;
   nicknameDisplay.classList.toggle("nickname-glow", hasGlow);
   if (hasGlow) {
@@ -3703,9 +3851,368 @@ function updateNicknameDisplay() {
   }
 }
 
-if (nicknameDisplay) {
-  nicknameDisplay.addEventListener("click", changeNickname);
+function openAccountCenter() {
+  updateAccountSummary();
+  setAccountMessage("");
+  if (accountCurrentPassword) accountCurrentPassword.value = "";
+  if (accountNewPassword) accountNewPassword.value = "";
+  showDialog(accountDialog);
 }
+
+function formatAccountDate(value) {
+  if (!value) return "尚未登录";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "时间未知";
+  return date.toLocaleString("zh-CN", { hour12: false });
+}
+
+function setAccountInviteMessage(text, isError = false) {
+  if (!accountInviteMessage) return;
+  accountInviteMessage.textContent = text || "";
+  accountInviteMessage.classList.toggle("is-error", Boolean(isError));
+}
+
+async function loadAdminInvite() {
+  if (!accountInviteForm || !accountInviteCode || !accountInviteState || !accountInviteDisable) return;
+  accountInviteForm.querySelectorAll("input, button").forEach((element) => {
+    element.disabled = true;
+  });
+  accountInviteState.textContent = "读取中";
+  accountInviteState.classList.remove("is-enabled");
+  setAccountInviteMessage("");
+  try {
+    const response = await fetch("/api/admin/invite", { cache: "no-store" });
+    const data = await parseJsonResponse(response);
+    if (!response.ok) throw new Error(data.error || "邀请码读取失败");
+    accountInviteCode.value = data.code || "";
+    accountInviteState.textContent = data.enabled ? "已启用" : data.configured ? "已停用" : "未设置";
+    accountInviteState.classList.toggle("is-enabled", Boolean(data.enabled));
+    accountInviteDisable.disabled = !data.enabled;
+    if (data.updatedAt) {
+      const updater = data.updatedBy?.name || "管理员";
+      setAccountInviteMessage(`最后更新：${formatAccountDate(data.updatedAt)} · ${updater}`);
+    }
+  } catch (error) {
+    accountInviteState.textContent = "读取失败";
+    setAccountInviteMessage(error.message || "邀请码读取失败", true);
+    accountInviteDisable.disabled = true;
+  } finally {
+    accountInviteCode.disabled = false;
+    const submitButton = accountInviteForm.querySelector('button[type="submit"]');
+    if (submitButton) submitButton.disabled = false;
+  }
+}
+
+async function loadAdminUsers() {
+  if (!accountUsersList) return;
+  accountUsersList.innerHTML = '<div class="workspace-empty">正在读取账号…</div>';
+  const response = await fetch("/api/admin/users", { cache: "no-store" });
+  const data = await parseJsonResponse(response);
+  if (!response.ok) {
+    accountUsersList.innerHTML = "";
+    const error = document.createElement("div");
+    error.className = "workspace-empty";
+    error.textContent = data.error || "账号列表读取失败";
+    accountUsersList.appendChild(error);
+    return;
+  }
+  accountUsersList.innerHTML = "";
+  for (const user of data.users || []) {
+    const row = document.createElement("div");
+    row.className = "account-user-row";
+    const main = document.createElement("div");
+    main.className = "account-user-main";
+    const name = document.createElement("div");
+    name.className = "account-user-name";
+    name.textContent = user.name;
+    if (user.isSelf) {
+      const self = document.createElement("span");
+      self.className = "account-user-self";
+      self.textContent = "当前账号";
+      name.appendChild(self);
+    }
+    if (user.protectedAdmin) {
+      const protectedLabel = document.createElement("span");
+      protectedLabel.className = "account-user-self account-user-protected";
+      protectedLabel.textContent = "初始管理员 · 已锁定";
+      name.appendChild(protectedLabel);
+    }
+    const detail = document.createElement("div");
+    detail.className = "account-user-detail";
+    detail.textContent = `@${user.username} · 最近登录 ${formatAccountDate(user.lastLoginAt)} · ${user.sessionCount} 个会话`;
+    main.append(name, detail);
+
+    const select = document.createElement("select");
+    select.className = "account-role-select";
+    select.setAttribute("aria-label", `设置 ${user.name} 的角色`);
+    select.disabled = Boolean(user.protectedAdmin);
+    if (user.protectedAdmin) select.title = "本机初始管理员的权限不可修改";
+    for (const optionData of [
+      ["guest", "游客"],
+      ["editor", "可编辑"],
+      ["admin", "管理员"]
+    ]) {
+      const option = document.createElement("option");
+      option.value = optionData[0];
+      option.textContent = optionData[1];
+      option.selected = user.role === optionData[0];
+      select.appendChild(option);
+    }
+    select.addEventListener("change", async () => {
+      if (user.protectedAdmin) return;
+      const previousRole = user.role;
+      select.disabled = true;
+      try {
+        const roleResponse = await apiFetch("/api/admin/users/role", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ userId: user.id, role: select.value })
+        });
+        const roleData = await parseJsonResponse(roleResponse);
+        if (!roleResponse.ok) throw new Error(roleData.error || "角色修改失败");
+        showMessage(`${user.name} 已调整为${roleData.roleLabel}`, "success");
+        if (user.isSelf) {
+          await loadCurrentAccount();
+          if (!can("*")) {
+            closeDialog(accountUsersDialog);
+            return;
+          }
+        }
+        await loadAdminUsers();
+      } catch (error) {
+        select.value = previousRole;
+        select.disabled = false;
+        showMessage(error.message || "角色修改失败", "error");
+      }
+    });
+
+    const controls = document.createElement("div");
+    controls.className = "account-user-controls";
+    const resetButton = document.createElement("button");
+    resetButton.type = "button";
+    resetButton.className = "button ghost account-user-reset";
+    resetButton.textContent = "重置密码";
+    resetButton.disabled = Boolean(user.protectedAdmin || user.isSelf);
+    resetButton.title = user.protectedAdmin
+      ? "本机初始管理员密码不可由其他管理员重置"
+      : user.isSelf
+        ? "请在账户中心验证当前密码后修改"
+        : `重置账号 @${user.username} 的密码`;
+    resetButton.addEventListener("click", async () => {
+      if (user.protectedAdmin || user.isSelf) return;
+      const newPassword = await openInputDialog({
+        title: `重置密码：${user.name}`,
+        label: `@${user.username}`,
+        hint: "设置 6–16 位新密码；保存后该账号会从所有设备退出。",
+        confirmText: "重置密码",
+        inputType: "password",
+        autocomplete: "new-password",
+        trimValue: false,
+        validate: (value) => {
+          const length = Array.from(value).length;
+          return length < 6 || length > 16 ? "新密码必须为 6–16 个字符" : "";
+        }
+      });
+      if (newPassword === null) return;
+      resetButton.disabled = true;
+      try {
+        const resetResponse = await apiFetch("/api/admin/users/reset-password", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ userId: user.id, newPassword })
+        });
+        const resetData = await parseJsonResponse(resetResponse);
+        if (!resetResponse.ok) throw new Error(resetData.error || "密码重置失败");
+        showMessage(`账号 @${user.username} 的密码已重置，现有会话已退出`, "success");
+        await loadAdminUsers();
+      } catch (error) {
+        resetButton.disabled = false;
+        showMessage(error.message || "密码重置失败", "error");
+      }
+    });
+    const deleteButton = document.createElement("button");
+    deleteButton.type = "button";
+    deleteButton.className = "button ghost danger-button account-user-delete";
+    deleteButton.textContent = user.protectedAdmin ? "不可删除" : "删除";
+    deleteButton.disabled = Boolean(user.protectedAdmin);
+    deleteButton.title = user.protectedAdmin
+      ? "本机初始管理员账号不可删除"
+      : `删除账号 @${user.username}`;
+    deleteButton.addEventListener("click", async () => {
+      if (user.protectedAdmin) return;
+      const confirmed = await openConfirmDialog({
+        title: `删除账号：${user.name}`,
+        message: user.isSelf
+          ? "这是当前登录账号。删除后会立即退出登录，账号及其所有登录会话无法恢复。"
+          : "账号及其所有登录会话会被永久删除；已经发布的帖子和楼层内容会作为历史记录保留。",
+        items: [`@${user.username} · ${user.roleLabel}`],
+        confirmText: "删除账号",
+        danger: true
+      });
+      if (!confirmed) return;
+      deleteButton.disabled = true;
+      try {
+        const deleteResponse = await apiFetch("/api/admin/users/delete", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ userId: user.id })
+        });
+        const deleteData = await parseJsonResponse(deleteResponse);
+        if (!deleteResponse.ok) throw new Error(deleteData.error || "账号删除失败");
+        if (deleteData.deletedSelf) {
+          location.replace("/login");
+          return;
+        }
+        showMessage(`账号 @${user.username} 已删除`, "success");
+        await loadAdminUsers();
+      } catch (error) {
+        deleteButton.disabled = false;
+        showMessage(error.message || "账号删除失败", "error");
+      }
+    });
+    controls.append(select, resetButton, deleteButton);
+    row.append(main, controls);
+    accountUsersList.appendChild(row);
+  }
+}
+
+if (nicknameDisplay) {
+  nicknameDisplay.addEventListener("click", openAccountCenter);
+}
+closeAccountBtn?.addEventListener("click", () => closeDialog(accountDialog));
+closeAccountUsersBtn?.addEventListener("click", () => closeDialog(accountUsersDialog));
+accountAppearanceBtn?.addEventListener("click", () => {
+  closeDialog(accountDialog);
+  changeNickname();
+});
+accountManageUsersBtn?.addEventListener("click", async () => {
+  if (!can("*")) return;
+  showDialog(accountUsersDialog);
+  await Promise.all([loadAdminInvite(), loadAdminUsers()]);
+});
+accountInviteForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const code = accountInviteCode.value.trim();
+  const length = Array.from(code).length;
+  if (length < 6 || length > 32) {
+    setAccountInviteMessage("邀请码必须为 6–32 个字符", true);
+    accountInviteCode.focus();
+    return;
+  }
+  if (/\s/u.test(code)) {
+    setAccountInviteMessage("邀请码不能包含空格", true);
+    accountInviteCode.focus();
+    return;
+  }
+  const submitButton = accountInviteForm.querySelector('button[type="submit"]');
+  submitButton.disabled = true;
+  accountInviteCode.disabled = true;
+  setAccountInviteMessage("正在保存…");
+  try {
+    const response = await apiFetch("/api/admin/invite", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code })
+    });
+    const data = await parseJsonResponse(response);
+    if (!response.ok) throw new Error(data.error || "邀请码保存失败");
+    await loadAdminInvite();
+    setAccountInviteMessage("邀请码已启用；更换或停用前可重复使用。");
+  } catch (error) {
+    setAccountInviteMessage(error.message || "邀请码保存失败", true);
+  } finally {
+    submitButton.disabled = false;
+    accountInviteCode.disabled = false;
+  }
+});
+accountInviteDisable?.addEventListener("click", async () => {
+  const confirmed = await openConfirmDialog({
+    title: "停用可编辑邀请码",
+    message: "停用后，当前邀请码立即失效；已经通过邀请码注册的可编辑账号不会受到影响。",
+    confirmText: "停用邀请码",
+    danger: true
+  });
+  if (!confirmed) return;
+  accountInviteDisable.disabled = true;
+  try {
+    const response = await apiFetch("/api/admin/invite/disable", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}"
+    });
+    const data = await parseJsonResponse(response);
+    if (!response.ok) throw new Error(data.error || "邀请码停用失败");
+    await loadAdminInvite();
+    setAccountInviteMessage("邀请码已停用。重新保存即可再次启用。");
+  } catch (error) {
+    accountInviteDisable.disabled = false;
+    setAccountInviteMessage(error.message || "邀请码停用失败", true);
+  }
+});
+accountProfileForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const submitButton = accountProfileForm.querySelector('button[type="submit"]');
+  submitButton.disabled = true;
+  try {
+    const response = await apiFetch("/api/auth/profile", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: accountNameInput.value })
+    });
+    const data = await parseJsonResponse(response);
+    if (!response.ok) throw new Error(data.error || "姓名保存失败");
+    state.currentUser = data.user;
+    state.permissions = data.user.permissions || state.permissions;
+    state.nickname = data.user.name;
+    localStorage.setItem(NICKNAME_KEY, state.nickname);
+    updateNicknameDisplay();
+    updateAccountSummary();
+    setAccountMessage("姓名已保存");
+  } catch (error) {
+    setAccountMessage(error.message || "姓名保存失败", true);
+  } finally {
+    submitButton.disabled = false;
+  }
+});
+accountPasswordForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const submitButton = accountPasswordForm.querySelector('button[type="submit"]');
+  submitButton.disabled = true;
+  try {
+    const response = await apiFetch("/api/auth/change-password", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        currentPassword: accountCurrentPassword.value,
+        newPassword: accountNewPassword.value
+      })
+    });
+    const data = await parseJsonResponse(response);
+    if (!response.ok) throw new Error(data.error || "密码修改失败");
+    accountPasswordForm.reset();
+    setAccountMessage("密码已更新，其他设备上的登录已退出");
+  } catch (error) {
+    setAccountMessage(error.message || "密码修改失败", true);
+  } finally {
+    submitButton.disabled = false;
+  }
+});
+accountLogoutBtn?.addEventListener("click", async () => {
+  accountLogoutBtn.disabled = true;
+  try {
+    await apiFetch("/api/auth/logout", { method: "POST" });
+  } finally {
+    location.replace("/login");
+  }
+});
+accountDialog?.addEventListener("cancel", (event) => {
+  event.preventDefault();
+  closeDialog(accountDialog);
+});
+accountUsersDialog?.addEventListener("cancel", (event) => {
+  event.preventDefault();
+  closeDialog(accountUsersDialog);
+});
 
 // --- Log panel ---
 
@@ -3919,8 +4426,6 @@ if (floatSpeedSlider) {
 // --- Init ---
 
 updateNicknameDisplay();
-promptNickname();
-setInterval(pollLogs, 3000);
 
 mkdirBtn.addEventListener("click", createFolder);
 document.querySelector("#createProjectBtn").addEventListener("click", createProject);
@@ -4084,14 +4589,20 @@ applyThemePos(state.themePos);
 initBackground();
 setViewMode(state.viewMode);
 async function initializeFileView() {
+  const user = await accountReady;
+  if (!user) return;
   await restoreNsfwSession();
   await loadInProgressProjects();
   const savedDir = localStorage.getItem(CURRENT_DIR_KEY) || "";
   await loadDir(savedDir);
+  if (can("recycle.read")) await loadRecycleItems();
+  if (can("*")) {
+    pollLogs();
+    setInterval(pollLogs, 3000);
+  }
 }
 initializeFileView();
 setupScrollPagination();
-loadRecycleItems();
 
 // --- 宽屏工作区：目录/选中项概览 + 协作动态 ---
 function formatWorkspaceTime(value) {
@@ -4735,6 +5246,7 @@ function renderForumReactionControls(post, container) {
     chip.textContent = `${emoji} ${reaction.count}`;
     chip.title = reaction.reacted ? `取消 ${emoji} 反应` : `添加 ${emoji} 反应`;
     chip.setAttribute("aria-pressed", String(Boolean(reaction.reacted)));
+    chip.disabled = !can("forum.write");
     chip.addEventListener("pointerdown", (event) => event.stopPropagation());
     chip.addEventListener("click", (event) => {
       event.preventDefault();
@@ -4763,7 +5275,8 @@ function renderForumReactionControls(post, container) {
     if (!isSameAnchor) openForumReactionPicker(post, container, addButton);
   });
   addWrap.appendChild(addButton);
-  container.append(addWrap, chipsWrap);
+  if (can("forum.write")) container.append(addWrap, chipsWrap);
+  else container.append(chipsWrap);
 }
 
 function renderForumPosts() {
@@ -4898,6 +5411,7 @@ function renderForumPosts() {
 
     const replyForm = document.createElement("form");
     replyForm.className = "forum-reply-form";
+    replyForm.classList.toggle("is-hidden", !can("forum.write"));
     const replyInput = document.createElement("input");
     replyInput.type = "text";
     replyInput.maxLength = 500;
@@ -5123,6 +5637,7 @@ if (forumBatchDelete) {
 
 if (forumComposeToggle && forumComposeForm) {
   forumComposeToggle.addEventListener("click", () => {
+    if (!can("forum.write")) return;
     const opening = forumComposeForm.classList.contains("is-hidden");
     forumComposeForm.classList.toggle("is-hidden", !opening);
     forumComposeToggle.setAttribute("aria-expanded", String(opening));
@@ -5134,6 +5649,7 @@ if (forumComposeToggle && forumComposeForm) {
 
   forumComposeForm.addEventListener("submit", async (event) => {
     event.preventDefault();
+    if (!can("forum.write")) return;
     const title = forumPostTitle.value.trim();
     const content = forumPostContent.value.trim();
     if (!title || !content) return;
@@ -5164,9 +5680,12 @@ if (forumComposeToggle && forumComposeForm) {
   });
 }
 
-renderWorkspaceOverview();
-loadWorkspaceStatus();
-loadForumPosts();
+accountReady.then((user) => {
+  if (!user) return;
+  renderWorkspaceOverview();
+  loadWorkspaceStatus();
+  loadForumPosts();
+});
 setInterval(() => {
   if (document.visibilityState === "visible") loadWorkspaceStatus();
 }, 3000);
@@ -6112,8 +6631,7 @@ if (chatClearBtn) {
       chatList.appendChild(tip)
     }
   })
-  // 仅本地显示清除按钮
-  if (location.hostname !== "127.0.0.1" && location.hostname !== "localhost") chatClearBtn.style.display = "none"
+  chatClearBtn.style.display = can("*") ? "" : "none"
 }
 var chatTripleCount = 0, chatTripleTimer = null
 document.addEventListener("keydown", function(e) {
@@ -6153,7 +6671,7 @@ if (nsfwBar) {
   })
 }
 
-if (nsfwInput && (location.hostname === "127.0.0.1" || location.hostname === "localhost")) {
+if (nsfwInput) {
   _nsfwSet = document.createElement("button")
   _nsfwSet.className = "nsfw-act"
   _nsfwSet.textContent = "密"
@@ -6172,7 +6690,7 @@ if (nsfwInput && (location.hostname === "127.0.0.1" || location.hostname === "lo
     })
   })
   nsfwInput.parentNode.insertBefore(_nsfwSet, nsfwInput.nextSibling)
-  if (state.nsfwMode) _nsfwSet.style.display = "none"
+  _nsfwSet.style.display = can("*") && !state.nsfwMode ? "" : "none"
 }
 
 if (nsfwInput) {

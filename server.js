@@ -32,9 +32,9 @@ const Busboy = require("busboy");
 const archiver = require("archiver");
 let sharp;
 try { sharp = require("sharp"); } catch { console.error("错误: sharp 未安装"); process.exit(1); }
-const TMP_DIR = path.join(__dirname, "thumb_cache");
+const TMP_DIR = path.resolve(process.env.THUMB_CACHE_DIR || path.join(__dirname, "thumb_cache"));
 const NSFW_DIR = path.resolve(process.env.NSFW_DIR || path.join(__dirname, "shared_NSFW"));
-const NSFW_PASSWORD_FILE = path.join(__dirname, "nsfw_password.txt");
+const NSFW_PASSWORD_FILE = path.resolve(process.env.NSFW_PASSWORD_FILE || path.join(__dirname, "nsfw_password.txt"));
 let nsfwPassword = "";
 async function loadNsfwPassword() {
   try { nsfwPassword = (await fsp.readFile(NSFW_PASSWORD_FILE, "utf8")).trim(); } catch { nsfwPassword = ""; }
@@ -55,8 +55,9 @@ const DAILY_BACKUP_DIR = path.join(BACKUP_DIR, "daily");
 const RECYCLE_DIR = path.resolve(process.env.RECYCLE_DIR || path.join(__dirname, "recycle_bin"));
 const LOG_DIR = path.resolve(process.env.LOG_DIR || path.join(__dirname, "logs"));
 const STATIC_DIR = path.join(__dirname, "static");
-const FOLDER_SIZE_CACHE_FILE = path.join(__dirname, "folder_size_cache.json");
-const FORUM_DB_FILE = path.join(__dirname, "forum.db");
+const FOLDER_SIZE_CACHE_FILE = path.resolve(process.env.FOLDER_SIZE_CACHE_FILE || path.join(__dirname, "folder_size_cache.json"));
+const FORUM_DB_FILE = path.resolve(process.env.FORUM_DB_FILE || path.join(__dirname, "forum.db"));
+const AUTH_DB_FILE = path.resolve(process.env.AUTH_DB_FILE || path.join(__dirname, "auth.db"));
 const MAX_BODY_SIZE = 2 * 1024 * 1024 * 1024;
 const MAX_FILE_SIZE = Number(process.env.MAX_FILE_SIZE || 8 * 1024 * 1024 * 1024);
 
@@ -101,6 +102,31 @@ let dailyBackupRunning = false;
 const CSRF_TOKEN = crypto.randomBytes(32).toString("hex");
 const NSFW_SESSION_COOKIE = "lanshare_nsfw_session";
 const FORUM_OWNER_COOKIE = "lanshare_forum_owner";
+const AUTH_SESSION_COOKIE = "lanshare_auth_session";
+const AUTH_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
+const AUTH_REMEMBER_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const AUTH_ROLES = new Set(["guest", "editor", "admin"]);
+const AUTH_ROLE_LABELS = {
+  guest: "游客",
+  editor: "可编辑",
+  admin: "管理员"
+};
+const ROLE_PERMISSIONS = {
+  guest: ["files.read", "files.preview", "forum.read", "tools.use"],
+  editor: [
+    "files.read",
+    "files.preview",
+    "files.download",
+    "files.write",
+    "forum.read",
+    "forum.write",
+    "forum.delete_own",
+    "recycle.read",
+    "recycle.restore",
+    "tools.use"
+  ],
+  admin: ["*"]
+};
 const FORUM_REACTION_EMOJIS = [
   "😀", "😄", "😂", "🤣", "😊", "🥰",
   "😍", "😅", "😭", "😢", "😮", "😱",
@@ -113,7 +139,18 @@ const NSFW_SESSION_TTL_MS = Number.isFinite(configuredNsfwSessionTtlMs) && confi
   ? configuredNsfwSessionTtlMs
   : 12 * 60 * 60 * 1000;
 const nsfwSessions = new Map();
+const loginFailures = new Map();
 const PROTECTED_POST_PATHS = new Set([
+  "/api/auth/register",
+  "/api/auth/login",
+  "/api/auth/logout",
+  "/api/auth/profile",
+  "/api/auth/change-password",
+  "/api/admin/invite",
+  "/api/admin/invite/disable",
+  "/api/admin/users/role",
+  "/api/admin/users/reset-password",
+  "/api/admin/users/delete",
   "/api/chat/send",
   "/api/chat/clear",
   "/api/forum/posts",
@@ -139,8 +176,338 @@ const PROTECTED_POST_PATHS = new Set([
   "/api/nickname",
   "/api/set-status"
 ]);
+const EDITOR_POST_PATHS = new Set([
+  "/api/chat/send",
+  "/api/forum/posts",
+  "/api/forum/posts/delete",
+  "/api/forum/posts/delete-batch",
+  "/api/forum/reactions",
+  "/api/forum/replies",
+  "/api/nsfw/auth",
+  "/api/nsfw/logout",
+  "/api/nsfw/upload",
+  "/api/mkdir",
+  "/api/create-project",
+  "/api/delete",
+  "/api/rename",
+  "/api/move",
+  "/api/copy",
+  "/api/check-conflicts",
+  "/api/upload",
+  "/api/download-batch",
+  "/api/recycle/restore",
+  "/api/set-status"
+]);
+const ADMIN_POST_PATHS = new Set([
+  "/api/chat/clear",
+  "/api/nsfw/setpwd",
+  "/api/recycle/delete",
+  "/api/admin/invite",
+  "/api/admin/invite/disable",
+  "/api/admin/users/role",
+  "/api/admin/users/reset-password",
+  "/api/admin/users/delete"
+]);
+const FORUM_WRITE_POST_PATHS = new Set([
+  "/api/chat/send",
+  "/api/forum/posts",
+  "/api/forum/reactions",
+  "/api/forum/replies"
+]);
+const FORUM_DELETE_POST_PATHS = new Set([
+  "/api/forum/posts/delete",
+  "/api/forum/posts/delete-batch"
+]);
 
+let authDb = null;
 let forumDb = null;
+
+function initAuthDatabase() {
+  if (authDb) return authDb;
+  authDb = new DatabaseSync(AUTH_DB_FILE);
+  authDb.exec(`
+    PRAGMA foreign_keys = ON;
+    PRAGMA journal_mode = WAL;
+    CREATE TABLE IF NOT EXISTS users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      username TEXT NOT NULL,
+      username_key TEXT NOT NULL UNIQUE,
+      password_hash TEXT NOT NULL,
+      name TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'guest' CHECK (role IN ('guest', 'editor', 'admin')),
+      enabled INTEGER NOT NULL DEFAULT 1,
+      is_protected_admin INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      last_login_at INTEGER
+    );
+    CREATE TABLE IF NOT EXISTS auth_sessions (
+      token_hash TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      remember_me INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      last_seen_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_auth_sessions_user_id ON auth_sessions(user_id);
+    CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires_at ON auth_sessions(expires_at);
+    CREATE TABLE IF NOT EXISTS invite_config (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      code_value TEXT NOT NULL,
+      code_hash TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      updated_by INTEGER,
+      updated_at INTEGER NOT NULL,
+      FOREIGN KEY (updated_by) REFERENCES users(id) ON DELETE SET NULL
+    );
+  `);
+  const userColumns = authDb.prepare("PRAGMA table_info(users)").all();
+  if (!userColumns.some((column) => column.name === "is_protected_admin")) {
+    authDb.exec("ALTER TABLE users ADD COLUMN is_protected_admin INTEGER NOT NULL DEFAULT 0");
+  }
+  const protectedAdminExists = Boolean(authDb.prepare(
+    "SELECT 1 FROM users WHERE is_protected_admin = 1 LIMIT 1"
+  ).get());
+  if (!protectedAdminExists) {
+    authDb.exec(`
+      UPDATE users
+      SET is_protected_admin = 1
+      WHERE id = (
+        SELECT id
+        FROM users
+        WHERE role = 'admin' AND enabled = 1
+        ORDER BY created_at ASC, id ASC
+        LIMIT 1
+      );
+    `);
+  }
+  authDb.exec(`
+    CREATE TRIGGER IF NOT EXISTS protect_initial_admin_role
+    BEFORE UPDATE OF role, enabled ON users
+    WHEN OLD.is_protected_admin = 1
+      AND (NEW.role <> 'admin' OR NEW.enabled <> 1)
+    BEGIN
+      SELECT RAISE(ABORT, 'PROTECTED_INITIAL_ADMIN');
+    END;
+  `);
+  return authDb;
+}
+
+function countCharacters(value) {
+  return Array.from(String(value || "")).length;
+}
+
+function normalizeUsername(value) {
+  return String(value || "").trim().normalize("NFKC");
+}
+
+function usernameKey(value) {
+  return normalizeUsername(value).toLocaleLowerCase("en-US");
+}
+
+function validateUsername(value) {
+  const username = normalizeUsername(value);
+  const length = countCharacters(username);
+  if (length < 3 || length > 10) {
+    throw Object.assign(new Error("账号必须为 3–10 个字符"), { statusCode: 400 });
+  }
+  if (/[\u0000-\u001f\u007f]/u.test(username)) {
+    throw Object.assign(new Error("账号包含不可用字符"), { statusCode: 400 });
+  }
+  return username;
+}
+
+function validatePassword(value, label = "密码") {
+  const password = String(value || "");
+  const length = countCharacters(password);
+  if (length < 6 || length > 16) {
+    throw Object.assign(new Error(`${label}必须为 6–16 个字符`), { statusCode: 400 });
+  }
+  return password;
+}
+
+function normalizeInviteCode(value) {
+  return String(value || "").trim().normalize("NFKC");
+}
+
+function validateInviteCode(value) {
+  const code = normalizeInviteCode(value);
+  const length = countCharacters(code);
+  if (length < 6 || length > 32) {
+    throw Object.assign(new Error("邀请码必须为 6–32 个字符"), { statusCode: 400 });
+  }
+  if (/[\s\u0000-\u001f\u007f]/u.test(code)) {
+    throw Object.assign(new Error("邀请码不能包含空格或控制字符"), { statusCode: 400 });
+  }
+  return code;
+}
+
+function inviteCodeHash(value) {
+  const normalized = normalizeInviteCode(value).toLocaleLowerCase("en-US");
+  return crypto.createHash("sha256").update(normalized).digest("hex");
+}
+
+function validateAccountName(value) {
+  const name = String(value || "").trim().normalize("NFKC");
+  const length = countCharacters(name);
+  if (length < 1 || length > 20) {
+    throw Object.assign(new Error("姓名必须为 1–20 个字符"), { statusCode: 400 });
+  }
+  if (/[\u0000-\u001f\u007f]/u.test(name)) {
+    throw Object.assign(new Error("姓名包含不可用字符"), { statusCode: 400 });
+  }
+  return name;
+}
+
+function scryptPassword(password, salt, keyLength = 64) {
+  return new Promise((resolve, reject) => {
+    crypto.scrypt(password, salt, keyLength, { N: 16384, r: 8, p: 1 }, (error, result) => {
+      if (error) reject(error);
+      else resolve(result);
+    });
+  });
+}
+
+async function hashPassword(password) {
+  const salt = crypto.randomBytes(16);
+  const derived = await scryptPassword(password, salt);
+  return `scrypt$16384$8$1$${salt.toString("base64")}$${derived.toString("base64")}`;
+}
+
+async function verifyPassword(password, encoded) {
+  const parts = String(encoded || "").split("$");
+  if (parts.length !== 6 || parts[0] !== "scrypt") return false;
+  const salt = Buffer.from(parts[4], "base64");
+  const expected = Buffer.from(parts[5], "base64");
+  if (!salt.length || !expected.length) return false;
+  const actual = await scryptPassword(password, salt, expected.length);
+  return actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
+}
+
+function hashSessionToken(token) {
+  return crypto.createHash("sha256").update(String(token || "")).digest("hex");
+}
+
+function getRolePermissions(role) {
+  return [...(ROLE_PERMISSIONS[role] || ROLE_PERMISSIONS.guest)];
+}
+
+function publicAuthUser(row) {
+  if (!row) return null;
+  return {
+    id: Number(row.id),
+    username: row.username,
+    name: row.name,
+    role: row.role,
+    roleLabel: AUTH_ROLE_LABELS[row.role] || AUTH_ROLE_LABELS.guest,
+    protectedAdmin: Boolean(row.protectedAdmin ?? row.is_protected_admin),
+    permissions: getRolePermissions(row.role)
+  };
+}
+
+function hasPermission(user, permission) {
+  if (!user) return false;
+  const permissions = ROLE_PERMISSIONS[user.role] || [];
+  return permissions.includes("*") || permissions.includes(permission);
+}
+
+function cleanupExpiredAuthSessions(database = initAuthDatabase()) {
+  database.prepare("DELETE FROM auth_sessions WHERE expires_at <= ?").run(Date.now());
+}
+
+function createAuthSession(userId, rememberMe) {
+  const database = initAuthDatabase();
+  cleanupExpiredAuthSessions(database);
+  const token = crypto.randomBytes(32).toString("hex");
+  const now = Date.now();
+  const ttl = rememberMe ? AUTH_REMEMBER_TTL_MS : AUTH_SESSION_TTL_MS;
+  database.prepare(`
+    INSERT INTO auth_sessions
+      (token_hash, user_id, remember_me, created_at, last_seen_at, expires_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(hashSessionToken(token), userId, rememberMe ? 1 : 0, now, now, now + ttl);
+  return { token, expiresAt: now + ttl, rememberMe: Boolean(rememberMe) };
+}
+
+function readAuthenticatedUser(req) {
+  const token = getRequestCookie(req, AUTH_SESSION_COOKIE);
+  if (!/^[a-f0-9]{64}$/.test(token)) return null;
+  const database = initAuthDatabase();
+  const tokenHash = hashSessionToken(token);
+  const row = database.prepare(`
+    SELECT
+      u.id,
+      u.username,
+      u.name,
+      u.role,
+      u.enabled,
+      u.is_protected_admin AS protectedAdmin,
+      s.last_seen_at AS lastSeenAt,
+      s.expires_at AS expiresAt
+    FROM auth_sessions s
+    JOIN users u ON u.id = s.user_id
+    WHERE s.token_hash = ?
+  `).get(tokenHash);
+  if (!row || !row.enabled || Number(row.expiresAt) <= Date.now()) {
+    database.prepare("DELETE FROM auth_sessions WHERE token_hash = ?").run(tokenHash);
+    return null;
+  }
+  if (Date.now() - Number(row.lastSeenAt || 0) >= 5 * 60 * 1000) {
+    database.prepare("UPDATE auth_sessions SET last_seen_at = ? WHERE token_hash = ?")
+      .run(Date.now(), tokenHash);
+  }
+  return publicAuthUser(row);
+}
+
+function revokeAuthSession(req) {
+  const token = getRequestCookie(req, AUTH_SESSION_COOKIE);
+  if (!token) return;
+  initAuthDatabase().prepare("DELETE FROM auth_sessions WHERE token_hash = ?").run(hashSessionToken(token));
+}
+
+function revokeOtherAuthSessions(userId, req) {
+  const token = getRequestCookie(req, AUTH_SESSION_COOKIE);
+  const currentHash = token ? hashSessionToken(token) : "";
+  if (currentHash) {
+    initAuthDatabase()
+      .prepare("DELETE FROM auth_sessions WHERE user_id = ? AND token_hash <> ?")
+      .run(userId, currentHash);
+  } else {
+    initAuthDatabase().prepare("DELETE FROM auth_sessions WHERE user_id = ?").run(userId);
+  }
+}
+
+function getLoginFailureKey(req, username) {
+  return `${getClientIp(req)}|${usernameKey(username)}`;
+}
+
+function getLoginRetryAfterMs(req, username) {
+  const key = getLoginFailureKey(req, username);
+  const state = loginFailures.get(key);
+  if (!state) return 0;
+  if (state.resetAt <= Date.now()) {
+    loginFailures.delete(key);
+    return 0;
+  }
+  return state.blockedUntil > Date.now() ? state.blockedUntil - Date.now() : 0;
+}
+
+function recordLoginFailure(req, username) {
+  const key = getLoginFailureKey(req, username);
+  const now = Date.now();
+  const previous = loginFailures.get(key);
+  const state = previous && previous.resetAt > now
+    ? previous
+    : { count: 0, resetAt: now + 15 * 60 * 1000, blockedUntil: 0 };
+  state.count += 1;
+  if (state.count >= 5) state.blockedUntil = now + 15 * 60 * 1000;
+  loginFailures.set(key, state);
+}
+
+function clearLoginFailures(req, username) {
+  loginFailures.delete(getLoginFailureKey(req, username));
+}
 
 function initForumDatabase() {
   if (forumDb) return forumDb;
@@ -153,6 +520,7 @@ function initForumDatabase() {
       title TEXT NOT NULL,
       content TEXT NOT NULL,
       author TEXT NOT NULL,
+      author_user_id INTEGER,
       owner_token TEXT,
       created_at INTEGER NOT NULL,
       updated_at INTEGER
@@ -163,6 +531,7 @@ function initForumDatabase() {
       parent_reply_id INTEGER,
       content TEXT NOT NULL,
       author TEXT NOT NULL,
+      author_user_id INTEGER,
       created_at INTEGER NOT NULL,
       FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE,
       FOREIGN KEY (parent_reply_id) REFERENCES replies(id) ON DELETE SET NULL
@@ -191,22 +560,24 @@ function initForumDatabase() {
   if (!postColumns.some((column) => column.name === "owner_token")) {
     forumDb.exec("ALTER TABLE posts ADD COLUMN owner_token TEXT");
   }
+  if (!postColumns.some((column) => column.name === "author_user_id")) {
+    forumDb.exec("ALTER TABLE posts ADD COLUMN author_user_id INTEGER");
+  }
   const replyColumns = forumDb.prepare("PRAGMA table_info(replies)").all();
   if (!replyColumns.some((column) => column.name === "parent_reply_id")) {
     forumDb.exec(
       "ALTER TABLE replies ADD COLUMN parent_reply_id INTEGER REFERENCES replies(id) ON DELETE SET NULL"
     );
   }
+  if (!replyColumns.some((column) => column.name === "author_user_id")) {
+    forumDb.exec("ALTER TABLE replies ADD COLUMN author_user_id INTEGER");
+  }
   forumDb.exec("CREATE INDEX IF NOT EXISTS idx_replies_parent_reply_id ON replies(parent_reply_id)");
   return forumDb;
 }
 
 function getForumAuthor(req) {
-  try {
-    return decodeURIComponent(String(req.headers["x-device-name"] || "")).trim().slice(0, 20) || "匿名";
-  } catch {
-    return "匿名";
-  }
+  return req.authUser && req.authUser.name ? req.authUser.name.slice(0, 20) : "匿名";
 }
 
 function getAttributionRootKey(nsfwMode) {
@@ -369,6 +740,25 @@ function makeNsfwSessionCookie(token, maxAgeSeconds) {
   return `${NSFW_SESSION_COOKIE}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAgeSeconds}`;
 }
 
+function isSecureRequest(req) {
+  return Boolean(req.socket && req.socket.encrypted)
+    || getHeaderValue(req, "x-forwarded-proto").toLowerCase() === "https";
+}
+
+function makeAuthSessionCookie(req, token, options = {}) {
+  const parts = [
+    `${AUTH_SESSION_COOKIE}=${encodeURIComponent(token)}`,
+    "Path=/",
+    "HttpOnly",
+    "SameSite=Strict"
+  ];
+  if (Number.isFinite(options.maxAgeSeconds)) {
+    parts.push(`Max-Age=${Math.max(0, Math.floor(options.maxAgeSeconds))}`);
+  }
+  if (isSecureRequest(req)) parts.push("Secure");
+  return parts.join("; ");
+}
+
 function getForumOwnerToken(req) {
   const token = getRequestCookie(req, FORUM_OWNER_COOKIE);
   return /^[a-f0-9]{48}$/.test(token) ? token : "";
@@ -376,6 +766,10 @@ function getForumOwnerToken(req) {
 
 function createForumOwnerToken() {
   return crypto.randomBytes(24).toString("hex");
+}
+
+function getForumReactionOwnerKey(req) {
+  return req.authUser ? `user:${req.authUser.id}` : getForumOwnerToken(req);
 }
 
 function makeForumOwnerCookie(token) {
@@ -460,10 +854,6 @@ function isLoopbackRequest(req) {
 
 function normalizeSocketAddress(value) {
   return String(value || "").replace(/^::ffff:/, "").split("%")[0];
-}
-
-function isHostRequest(req) {
-  return isLoopbackRequest(req);
 }
 
 function requestNeedsNsfwSession(req, url) {
@@ -1080,6 +1470,7 @@ async function countWorkspaceFiles(fullPath) {
 }
 
 function getDeviceName(req) {
+  if (req.authUser && req.authUser.name) return req.authUser.name;
   const raw = String(req.headers["x-device-name"] || "").trim();
   try { return decodeURIComponent(raw) || "未知"; } catch { return raw || "未知"; }
 }
@@ -2645,6 +3036,575 @@ function moyuBroadcast(msg) {
   })
 }
 
+function sendAuthRequired(res, message = "请先登录") {
+  sendJson(res, 401, { error: message, code: "AUTH_REQUIRED" }, {
+    "Cache-Control": "no-store",
+    "X-Auth-Required": "1"
+  });
+}
+
+function sendAuthCookieResponse(req, res, statusCode, payload, session) {
+  const cookieOptions = session.rememberMe
+    ? { maxAgeSeconds: Math.max(1, Math.floor((session.expiresAt - Date.now()) / 1000)) }
+    : {};
+  sendJson(res, statusCode, payload, {
+    "Set-Cookie": makeAuthSessionCookie(req, session.token, cookieOptions),
+    "Cache-Control": "no-store"
+  });
+}
+
+function requirePermission(req, permission) {
+  if (hasPermission(req.authUser, permission)) return;
+  const error = new Error("当前账号没有执行此操作的权限");
+  error.statusCode = 403;
+  error.code = "PERMISSION_DENIED";
+  throw error;
+}
+
+function assertApiPermission(req, url) {
+  if (req.method === "POST" && ADMIN_POST_PATHS.has(url.pathname)) {
+    requirePermission(req, "*");
+    return;
+  }
+  if (req.method === "POST" && FORUM_DELETE_POST_PATHS.has(url.pathname)) {
+    requirePermission(req, "forum.delete_own");
+    return;
+  }
+  if (req.method === "POST" && FORUM_WRITE_POST_PATHS.has(url.pathname)) {
+    requirePermission(req, "forum.write");
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/download-batch") {
+    requirePermission(req, "files.download");
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/recycle/restore") {
+    requirePermission(req, "recycle.restore");
+    return;
+  }
+  if (req.method === "POST" && EDITOR_POST_PATHS.has(url.pathname)) {
+    requirePermission(req, "files.write");
+    return;
+  }
+  if (req.method === "GET" && url.pathname === "/api/logs") {
+    requirePermission(req, "*");
+    return;
+  }
+  if (req.method === "GET" && url.pathname === "/api/recycle/list") {
+    requirePermission(req, "recycle.read");
+    return;
+  }
+  if (
+    req.method === "GET"
+    && (
+      url.pathname === "/api/nsfw/list"
+      || url.pathname === "/nsfw/file"
+      || url.pathname === "/api/nsfw/session"
+    )
+  ) {
+    requirePermission(req, "files.write");
+  }
+}
+
+async function handleAuthApi(req, res, url) {
+  if (req.method === "GET" && url.pathname === "/api/security") {
+    sendJson(res, 200, { csrfToken: CSRF_TOKEN }, { "Cache-Control": "no-store" });
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/auth/session") {
+    const database = initAuthDatabase();
+    const adminExists = Boolean(database.prepare(
+      "SELECT 1 FROM users WHERE role = 'admin' AND enabled = 1 LIMIT 1"
+    ).get());
+    sendJson(res, 200, {
+      authenticated: Boolean(req.authUser),
+      user: req.authUser || null,
+      initialAdminAvailable: !adminExists && isLoopbackRequest(req)
+    }, { "Cache-Control": "no-store" });
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/auth/register") {
+    try {
+      assertTrustedWriteRequest(req);
+      const body = parseJson(await readRequestBody(req));
+      const username = validateUsername(body.username);
+      const password = validatePassword(body.password);
+      const name = validateAccountName(body.name);
+      const inviteCode = normalizeInviteCode(body.inviteCode);
+      const rememberMe = body.rememberMe === true;
+      const passwordHash = await hashPassword(password);
+      const database = initAuthDatabase();
+      let role = "guest";
+      let protectedAdmin = false;
+      let registeredWithInvite = false;
+      let result;
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        const adminExists = Boolean(database.prepare(
+          "SELECT 1 FROM users WHERE role = 'admin' AND enabled = 1 LIMIT 1"
+        ).get());
+        if (!adminExists && isLoopbackRequest(req)) {
+          role = "admin";
+          protectedAdmin = true;
+        } else if (inviteCode) {
+          const invite = database.prepare(`
+            SELECT code_hash AS codeHash
+            FROM invite_config
+            WHERE id = 1 AND enabled = 1
+          `).get();
+          if (!invite || invite.codeHash !== inviteCodeHash(inviteCode)) {
+            throw Object.assign(new Error("邀请码无效，请检查后重试"), { statusCode: 400 });
+          }
+          role = "editor";
+          registeredWithInvite = true;
+        }
+        const now = Date.now();
+        result = database.prepare(`
+          INSERT INTO users
+            (username, username_key, password_hash, name, role, enabled, is_protected_admin, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)
+        `).run(username, usernameKey(username), passwordHash, name, role, protectedAdmin ? 1 : 0, now, now);
+        database.exec("COMMIT");
+      } catch (error) {
+        try { database.exec("ROLLBACK"); } catch {}
+        throw error;
+      }
+      const userId = Number(result.lastInsertRowid);
+      const row = database.prepare(
+        "SELECT id, username, name, role, is_protected_admin AS protectedAdmin FROM users WHERE id = ?"
+      ).get(userId);
+      const user = publicAuthUser(row);
+      const session = createAuthSession(userId, rememberMe);
+      logAction(user.name, getClientIp(req), "注册账号", `${user.username}（${user.roleLabel}）`);
+      sendAuthCookieResponse(req, res, 201, {
+        ok: true,
+        user,
+        becameInitialAdmin: role === "admin",
+        registeredWithInvite
+      }, session);
+    } catch (error) {
+      const duplicate = String(error.code || "").includes("SQLITE_CONSTRAINT")
+        || /UNIQUE constraint failed/i.test(String(error.message || ""));
+      sendJson(res, duplicate ? 409 : (error.statusCode || 400), {
+        error: duplicate ? "该账号已被注册" : error.message
+      }, { "Cache-Control": "no-store" });
+    }
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/auth/login") {
+    try {
+      assertTrustedWriteRequest(req);
+      const body = parseJson(await readRequestBody(req));
+      const username = normalizeUsername(body.username);
+      const password = String(body.password || "");
+      const rememberMe = body.rememberMe === true;
+      const retryAfterMs = getLoginRetryAfterMs(req, username);
+      if (retryAfterMs > 0) {
+        sendJson(res, 429, {
+          error: `尝试次数过多，请在 ${Math.ceil(retryAfterMs / 60000)} 分钟后重试`
+        }, { "Cache-Control": "no-store" });
+        return true;
+      }
+      const database = initAuthDatabase();
+      const row = database.prepare(`
+        SELECT
+          id,
+          username,
+          name,
+          role,
+          enabled,
+          is_protected_admin AS protectedAdmin,
+          password_hash AS passwordHash
+        FROM users
+        WHERE username_key = ?
+      `).get(usernameKey(username));
+      const valid = Boolean(row && row.enabled && await verifyPassword(password, row.passwordHash));
+      if (!valid) {
+        recordLoginFailure(req, username);
+        sendJson(res, 401, { error: "账号或密码错误" }, { "Cache-Control": "no-store" });
+        return true;
+      }
+      clearLoginFailures(req, username);
+      database.prepare("UPDATE users SET last_login_at = ?, updated_at = updated_at WHERE id = ?")
+        .run(Date.now(), row.id);
+      const user = publicAuthUser(row);
+      const session = createAuthSession(Number(row.id), rememberMe);
+      logAction(user.name, getClientIp(req), "登录", `${user.username}（${user.roleLabel}）`);
+      sendAuthCookieResponse(req, res, 200, { ok: true, user }, session);
+    } catch (error) {
+      sendJson(res, error.statusCode || 400, { error: error.message }, { "Cache-Control": "no-store" });
+    }
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/auth/logout") {
+    try {
+      assertTrustedWriteRequest(req);
+      if (req.authUser) {
+        logAction(req.authUser.name, getClientIp(req), "退出登录", req.authUser.username);
+      }
+      revokeAuthSession(req);
+      sendJson(res, 200, { ok: true }, {
+        "Set-Cookie": makeAuthSessionCookie(req, "", { maxAgeSeconds: 0 }),
+        "Cache-Control": "no-store"
+      });
+    } catch (error) {
+      sendJson(res, error.statusCode || 400, { error: error.message });
+    }
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/auth/profile") {
+    if (!req.authUser) {
+      sendAuthRequired(res);
+      return true;
+    }
+    try {
+      assertTrustedWriteRequest(req);
+      const body = parseJson(await readRequestBody(req));
+      const name = validateAccountName(body.name);
+      const database = initAuthDatabase();
+      database.prepare("UPDATE users SET name = ?, updated_at = ? WHERE id = ?")
+        .run(name, Date.now(), req.authUser.id);
+      const row = database.prepare(`
+        SELECT id, username, name, role, is_protected_admin AS protectedAdmin
+        FROM users
+        WHERE id = ?
+      `)
+        .get(req.authUser.id);
+      const user = publicAuthUser(row);
+      logAction(user.name, getClientIp(req), "修改姓名", `${req.authUser.name} → ${name}`);
+      sendJson(res, 200, { ok: true, user }, { "Cache-Control": "no-store" });
+    } catch (error) {
+      sendJson(res, error.statusCode || 400, { error: error.message });
+    }
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/auth/change-password") {
+    if (!req.authUser) {
+      sendAuthRequired(res);
+      return true;
+    }
+    try {
+      assertTrustedWriteRequest(req);
+      const body = parseJson(await readRequestBody(req));
+      const currentPassword = String(body.currentPassword || "");
+      const newPassword = validatePassword(body.newPassword, "新密码");
+      const database = initAuthDatabase();
+      const row = database.prepare("SELECT password_hash AS passwordHash FROM users WHERE id = ?")
+        .get(req.authUser.id);
+      if (!row || !(await verifyPassword(currentPassword, row.passwordHash))) {
+        sendJson(res, 403, { error: "当前密码错误" });
+        return true;
+      }
+      const passwordHash = await hashPassword(newPassword);
+      database.prepare("UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?")
+        .run(passwordHash, Date.now(), req.authUser.id);
+      revokeOtherAuthSessions(req.authUser.id, req);
+      logAction(req.authUser.name, getClientIp(req), "修改密码", req.authUser.username);
+      sendJson(res, 200, { ok: true });
+    } catch (error) {
+      sendJson(res, error.statusCode || 400, { error: error.message });
+    }
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/admin/invite") {
+    if (!req.authUser) {
+      sendAuthRequired(res);
+      return true;
+    }
+    try {
+      requirePermission(req, "*");
+      const row = initAuthDatabase().prepare(`
+        SELECT
+          c.code_value AS code,
+          c.enabled,
+          c.updated_at AS updatedAt,
+          u.name AS updatedByName,
+          u.username AS updatedByUsername
+        FROM invite_config c
+        LEFT JOIN users u ON u.id = c.updated_by
+        WHERE c.id = 1
+      `).get();
+      sendJson(res, 200, {
+        configured: Boolean(row),
+        enabled: Boolean(row?.enabled),
+        code: row?.code || "",
+        updatedAt: row ? Number(row.updatedAt) : null,
+        updatedBy: row ? {
+          name: row.updatedByName || "已删除的管理员",
+          username: row.updatedByUsername || ""
+        } : null
+      }, { "Cache-Control": "no-store" });
+    } catch (error) {
+      sendJson(res, error.statusCode || 403, { error: error.message });
+    }
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/admin/invite") {
+    if (!req.authUser) {
+      sendAuthRequired(res);
+      return true;
+    }
+    try {
+      assertTrustedWriteRequest(req);
+      requirePermission(req, "*");
+      const body = parseJson(await readRequestBody(req));
+      const code = validateInviteCode(body.code);
+      const now = Date.now();
+      initAuthDatabase().prepare(`
+        INSERT INTO invite_config
+          (id, code_value, code_hash, enabled, updated_by, updated_at)
+        VALUES (1, ?, ?, 1, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          code_value = excluded.code_value,
+          code_hash = excluded.code_hash,
+          enabled = 1,
+          updated_by = excluded.updated_by,
+          updated_at = excluded.updated_at
+      `).run(code, inviteCodeHash(code), req.authUser.id, now);
+      logAction(req.authUser.name, getClientIp(req), "设置注册邀请码", "可编辑账号邀请码已更新并启用");
+      sendJson(res, 200, { ok: true, code, enabled: true, updatedAt: now });
+    } catch (error) {
+      sendJson(res, error.statusCode || 400, { error: error.message });
+    }
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/admin/invite/disable") {
+    if (!req.authUser) {
+      sendAuthRequired(res);
+      return true;
+    }
+    try {
+      assertTrustedWriteRequest(req);
+      requirePermission(req, "*");
+      const now = Date.now();
+      const result = initAuthDatabase().prepare(`
+        UPDATE invite_config
+        SET enabled = 0, updated_by = ?, updated_at = ?
+        WHERE id = 1
+      `).run(req.authUser.id, now);
+      if (Number(result.changes || 0) === 0) {
+        throw Object.assign(new Error("尚未设置邀请码"), { statusCode: 404 });
+      }
+      logAction(req.authUser.name, getClientIp(req), "停用注册邀请码", "邀请码注册已关闭");
+      sendJson(res, 200, { ok: true, enabled: false, updatedAt: now });
+    } catch (error) {
+      sendJson(res, error.statusCode || 400, { error: error.message });
+    }
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/admin/users") {
+    if (!req.authUser) {
+      sendAuthRequired(res);
+      return true;
+    }
+    try {
+      requirePermission(req, "*");
+      cleanupExpiredAuthSessions();
+      const rows = initAuthDatabase().prepare(`
+        SELECT
+          u.id,
+          u.username,
+          u.name,
+          u.role,
+          u.enabled,
+          u.is_protected_admin AS protectedAdmin,
+          u.created_at AS createdAt,
+          u.last_login_at AS lastLoginAt,
+          COUNT(s.token_hash) AS sessionCount
+        FROM users u
+        LEFT JOIN auth_sessions s ON s.user_id = u.id AND s.expires_at > ?
+        GROUP BY u.id
+        ORDER BY
+          CASE u.role WHEN 'admin' THEN 0 WHEN 'editor' THEN 1 ELSE 2 END,
+          u.created_at ASC
+      `).all(Date.now());
+      sendJson(res, 200, {
+        users: rows.map((row) => ({
+          id: Number(row.id),
+          username: row.username,
+          name: row.name,
+          role: row.role,
+          roleLabel: AUTH_ROLE_LABELS[row.role] || row.role,
+          enabled: Boolean(row.enabled),
+          protectedAdmin: Boolean(row.protectedAdmin),
+          createdAt: Number(row.createdAt),
+          lastLoginAt: row.lastLoginAt == null ? null : Number(row.lastLoginAt),
+          sessionCount: Number(row.sessionCount || 0),
+          isSelf: Number(row.id) === req.authUser.id
+        }))
+      }, { "Cache-Control": "no-store" });
+    } catch (error) {
+      sendJson(res, error.statusCode || 403, { error: error.message });
+    }
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/admin/users/role") {
+    if (!req.authUser) {
+      sendAuthRequired(res);
+      return true;
+    }
+    try {
+      assertTrustedWriteRequest(req);
+      requirePermission(req, "*");
+      const body = parseJson(await readRequestBody(req));
+      const userId = Number(body.userId);
+      const role = String(body.role || "");
+      if (!Number.isInteger(userId) || userId <= 0 || !AUTH_ROLES.has(role)) {
+        throw Object.assign(new Error("账号或角色无效"), { statusCode: 400 });
+      }
+      const database = initAuthDatabase();
+      const target = database.prepare(`
+        SELECT id, username, name, role, is_protected_admin AS protectedAdmin
+        FROM users
+        WHERE id = ?
+      `).get(userId);
+      if (!target) {
+        throw Object.assign(new Error("账号不存在"), { statusCode: 404 });
+      }
+      if (target.protectedAdmin && role !== "admin") {
+        throw Object.assign(new Error("本机初始管理员的权限不可修改"), { statusCode: 403 });
+      }
+      if (target.role === "admin" && role !== "admin") {
+        const adminCount = Number(database.prepare(
+          "SELECT COUNT(*) AS count FROM users WHERE role = 'admin' AND enabled = 1"
+        ).get().count || 0);
+        if (adminCount <= 1) {
+          throw Object.assign(new Error("必须至少保留一名管理员"), { statusCode: 400 });
+        }
+      }
+      database.prepare("UPDATE users SET role = ?, updated_at = ? WHERE id = ?")
+        .run(role, Date.now(), userId);
+      logAction(
+        req.authUser.name,
+        getClientIp(req),
+        "分配账号角色",
+        `${target.name}（${target.username}）：${AUTH_ROLE_LABELS[target.role]} → ${AUTH_ROLE_LABELS[role]}`
+      );
+      sendJson(res, 200, { ok: true, role, roleLabel: AUTH_ROLE_LABELS[role] });
+    } catch (error) {
+      sendJson(res, error.statusCode || 400, { error: error.message });
+    }
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/admin/users/reset-password") {
+    if (!req.authUser) {
+      sendAuthRequired(res);
+      return true;
+    }
+    try {
+      assertTrustedWriteRequest(req);
+      requirePermission(req, "*");
+      const body = parseJson(await readRequestBody(req));
+      const userId = Number(body.userId);
+      const newPassword = validatePassword(body.newPassword, "新密码");
+      if (!Number.isInteger(userId) || userId <= 0) {
+        throw Object.assign(new Error("账号无效"), { statusCode: 400 });
+      }
+      const database = initAuthDatabase();
+      const target = database.prepare(`
+        SELECT id, username, name, is_protected_admin AS protectedAdmin
+        FROM users
+        WHERE id = ?
+      `).get(userId);
+      if (!target) {
+        throw Object.assign(new Error("账号不存在"), { statusCode: 404 });
+      }
+      if (Number(target.id) === req.authUser.id) {
+        throw Object.assign(new Error("请在账户中心验证当前密码后修改"), { statusCode: 400 });
+      }
+      if (target.protectedAdmin) {
+        throw Object.assign(new Error("本机初始管理员密码不可由其他管理员重置"), { statusCode: 403 });
+      }
+      const passwordHash = await hashPassword(newPassword);
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        database.prepare("UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?")
+          .run(passwordHash, Date.now(), userId);
+        database.prepare("DELETE FROM auth_sessions WHERE user_id = ?").run(userId);
+        database.exec("COMMIT");
+      } catch (error) {
+        try { database.exec("ROLLBACK"); } catch {}
+        throw error;
+      }
+      logAction(
+        req.authUser.name,
+        getClientIp(req),
+        "重置账号密码",
+        `${target.name}（${target.username}）`
+      );
+      sendJson(res, 200, { ok: true });
+    } catch (error) {
+      sendJson(res, error.statusCode || 400, { error: error.message });
+    }
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/admin/users/delete") {
+    if (!req.authUser) {
+      sendAuthRequired(res);
+      return true;
+    }
+    try {
+      assertTrustedWriteRequest(req);
+      requirePermission(req, "*");
+      const body = parseJson(await readRequestBody(req));
+      const userId = Number(body.userId);
+      if (!Number.isInteger(userId) || userId <= 0) {
+        throw Object.assign(new Error("账号无效"), { statusCode: 400 });
+      }
+      const database = initAuthDatabase();
+      const target = database.prepare(`
+        SELECT id, username, name, role, is_protected_admin AS protectedAdmin
+        FROM users
+        WHERE id = ?
+      `).get(userId);
+      if (!target) {
+        throw Object.assign(new Error("账号不存在"), { statusCode: 404 });
+      }
+      if (target.protectedAdmin) {
+        throw Object.assign(new Error("本机初始管理员账号不可删除"), { statusCode: 403 });
+      }
+      const deletedSelf = Number(target.id) === req.authUser.id;
+      database.prepare("DELETE FROM users WHERE id = ?").run(userId);
+      try {
+        initForumDatabase()
+          .prepare("DELETE FROM forum_reactions WHERE owner_token = ?")
+          .run(`user:${userId}`);
+      } catch (error) {
+        console.error(`删除账号表情反应失败 ${target.username}: ${error.message}`);
+      }
+      logAction(
+        req.authUser.name,
+        getClientIp(req),
+        "删除账号",
+        `${target.name}（${target.username}，${AUTH_ROLE_LABELS[target.role]}）`
+      );
+      const headers = { "Cache-Control": "no-store" };
+      if (deletedSelf) {
+        headers["Set-Cookie"] = makeAuthSessionCookie(req, "", { maxAgeSeconds: 0 });
+      }
+      sendJson(res, 200, { ok: true, deletedSelf }, headers);
+    } catch (error) {
+      sendJson(res, error.statusCode || 400, { error: error.message });
+    }
+    return true;
+  }
+
+  return false;
+}
+
 async function handleApi(req, res, url) {
   if (req.method === "POST" && PROTECTED_POST_PATHS.has(url.pathname)) {
     try {
@@ -2654,12 +3614,21 @@ async function handleApi(req, res, url) {
       return true;
     }
   }
+  try {
+    assertApiPermission(req, url);
+  } catch (error) {
+    sendJson(res, error.statusCode || 403, {
+      error: error.message,
+      code: error.code || "PERMISSION_DENIED"
+    });
+    return true;
+  }
 
   if (req.method === "POST" && url.pathname === "/api/chat/send") {
     const body = parseJson(await readRequestBody(req));
     const text = String(body.text || "").trim().slice(0, 500);
     if (!text) { sendJson(res, 400, { error: "不能为空" }); return true; }
-    const user = decodeURIComponent((req.headers["x-device-name"] || "").toString()).slice(0, 20) || "匿名";
+    const user = getDeviceName(req).slice(0, 20);
     const msg = { id: moyuNextId++, user, text, time: new Date().toLocaleTimeString("zh-CN", { hour12: false }) };
     moyuMessages.push(msg);
     if (moyuMessages.length > MOYU_MAX) moyuMessages.splice(0, moyuMessages.length - MOYU_MAX);
@@ -2668,9 +3637,6 @@ async function handleApi(req, res, url) {
     return true;
   }
   if (req.method === "POST" && url.pathname === "/api/chat/clear") {
-    if (!isLoopbackRequest(req)) {
-      sendJson(res, 403, { error: "仅本地可清除" }); return true;
-    }
     moyuMessages.length = 0;
     var nextId = moyuNextId;
     // 存入清除标记，轮询客户端会自动清空
@@ -2736,6 +3702,7 @@ async function handleApi(req, res, url) {
           p.title,
           p.content,
           p.author,
+          p.author_user_id AS authorUserId,
           p.owner_token AS ownerToken,
           p.created_at AS createdAt,
           p.updated_at AS updatedAt,
@@ -2747,11 +3714,17 @@ async function handleApi(req, res, url) {
         LIMIT ?
       `).all(limit);
       const ownerToken = getForumOwnerToken(req);
-      const hostRequest = isHostRequest(req);
-      const reactionsByPost = readForumReactions(database, rows.map((post) => post.id), ownerToken);
-      const posts = rows.map(({ ownerToken: postOwnerToken, ...post }) => ({
+      const reactionOwnerKey = getForumReactionOwnerKey(req);
+      const adminRequest = hasPermission(req.authUser, "*");
+      const canDeleteOwn = hasPermission(req.authUser, "forum.delete_own");
+      const reactionsByPost = readForumReactions(database, rows.map((post) => post.id), reactionOwnerKey);
+      const posts = rows.map(({ ownerToken: postOwnerToken, authorUserId, ...post }) => ({
         ...post,
-        canDelete: hostRequest || Boolean(ownerToken && postOwnerToken && ownerToken === postOwnerToken),
+        canDelete: adminRequest
+          || Boolean(canDeleteOwn && (
+            (authorUserId && Number(authorUserId) === req.authUser.id)
+            || (!authorUserId && ownerToken && postOwnerToken && ownerToken === postOwnerToken)
+          )),
         reactions: reactionsByPost.get(post.id) || []
       }));
       sendJson(res, 200, { posts }, { "Cache-Control": "no-store" });
@@ -2776,8 +3749,7 @@ async function handleApi(req, res, url) {
         sendJson(res, 404, { error: "动态不存在" });
         return true;
       }
-      const existingToken = getForumOwnerToken(req);
-      const ownerToken = existingToken || createForumOwnerToken();
+      const ownerToken = getForumReactionOwnerKey(req);
       const existing = database
         .prepare("SELECT 1 FROM forum_reactions WHERE post_id = ? AND emoji = ? AND owner_token = ?")
         .get(postId, emoji, ownerToken);
@@ -2794,9 +3766,7 @@ async function handleApi(req, res, url) {
         active = true;
       }
       const reactions = readForumReactions(database, [postId], ownerToken).get(postId) || [];
-      sendJson(res, 200, { ok: true, active, reactions }, {
-        "Set-Cookie": makeForumOwnerCookie(ownerToken)
-      });
+      sendJson(res, 200, { ok: true, active, reactions });
     } catch (error) {
       sendJson(res, 400, { error: error.message });
     }
@@ -2816,8 +3786,11 @@ async function handleApi(req, res, url) {
       const ownerToken = getForumOwnerToken(req) || createForumOwnerToken();
       const database = initForumDatabase();
       const result = database
-        .prepare("INSERT INTO posts (title, content, author, owner_token, created_at) VALUES (?, ?, ?, ?, ?)")
-        .run(title, content, getForumAuthor(req), ownerToken, createdAt);
+        .prepare(`
+          INSERT INTO posts (title, content, author, author_user_id, owner_token, created_at)
+          VALUES (?, ?, ?, ?, ?, ?)
+        `)
+        .run(title, content, getForumAuthor(req), req.authUser.id, ownerToken, createdAt);
       sendJson(res, 201, { id: Number(result.lastInsertRowid), createdAt }, {
         "Set-Cookie": makeForumOwnerCookie(ownerToken)
       });
@@ -2836,16 +3809,21 @@ async function handleApi(req, res, url) {
         return true;
       }
       const database = initForumDatabase();
-      const post = database.prepare("SELECT id, owner_token AS ownerToken FROM posts WHERE id = ?").get(postId);
+      const post = database.prepare(`
+        SELECT id, author_user_id AS authorUserId, owner_token AS ownerToken
+        FROM posts
+        WHERE id = ?
+      `).get(postId);
       if (!post) {
         sendJson(res, 404, { error: "动态不存在" });
         return true;
       }
       const ownerToken = getForumOwnerToken(req);
-      const canDelete = isHostRequest(req)
-        || Boolean(ownerToken && post.ownerToken && ownerToken === post.ownerToken);
+      const canDelete = hasPermission(req.authUser, "*")
+        || Boolean(post.authorUserId && Number(post.authorUserId) === req.authUser.id)
+        || Boolean(!post.authorUserId && ownerToken && post.ownerToken && ownerToken === post.ownerToken);
       if (!canDelete) {
-        sendJson(res, 403, { error: "仅动态发布者或主机可删除" });
+        sendJson(res, 403, { error: "仅动态发布者或管理员可删除" });
         return true;
       }
       database.prepare("DELETE FROM posts WHERE id = ?").run(postId);
@@ -2870,16 +3848,22 @@ async function handleApi(req, res, url) {
       const database = initForumDatabase();
       const placeholders = postIds.map(() => "?").join(",");
       const posts = database
-        .prepare(`SELECT id, owner_token AS ownerToken FROM posts WHERE id IN (${placeholders})`)
+        .prepare(`
+          SELECT id, author_user_id AS authorUserId, owner_token AS ownerToken
+          FROM posts
+          WHERE id IN (${placeholders})
+        `)
         .all(...postIds);
       if (posts.length !== postIds.length) {
         sendJson(res, 404, { error: "部分动态不存在，请刷新后重试" });
         return true;
       }
       const ownerToken = getForumOwnerToken(req);
-      const hostRequest = isHostRequest(req);
+      const adminRequest = hasPermission(req.authUser, "*");
       const canDeleteAll = posts.every((post) =>
-        hostRequest || Boolean(ownerToken && post.ownerToken && ownerToken === post.ownerToken)
+        adminRequest
+        || Boolean(post.authorUserId && Number(post.authorUserId) === req.authUser.id)
+        || Boolean(!post.authorUserId && ownerToken && post.ownerToken === ownerToken)
       );
       if (!canDeleteAll) {
         sendJson(res, 403, { error: "只能批量删除自己发布的动态" });
@@ -2982,10 +3966,10 @@ async function handleApi(req, res, url) {
       const createdAt = Date.now();
       const result = database
         .prepare(`
-          INSERT INTO replies (post_id, parent_reply_id, content, author, created_at)
-          VALUES (?, ?, ?, ?, ?)
+          INSERT INTO replies (post_id, parent_reply_id, content, author, author_user_id, created_at)
+          VALUES (?, ?, ?, ?, ?, ?)
         `)
-        .run(postId, parentReplyId, content, getForumAuthor(req), createdAt);
+        .run(postId, parentReplyId, content, getForumAuthor(req), req.authUser.id, createdAt);
       sendJson(res, 201, {
         id: Number(result.lastInsertRowid),
         createdAt,
@@ -3076,9 +4060,6 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === "POST" && url.pathname === "/api/nsfw/setpwd") {
-    if (!isLoopbackRequest(req)) {
-      sendJson(res, 403, { error: "仅本机可修改密码" }); return true;
-    }
     const body = parseJson(await readRequestBody(req));
     var newPwd = String(body.password || "").trim();
     if (newPwd.length < 1) { sendJson(res, 400, { error: "密码不能为空" }); return true; }
@@ -3188,15 +4169,6 @@ async function handleApi(req, res, url) {
 
   if (req.method === "GET" && url.pathname === "/api/logs") {
     sendJson(res, 200, { entries: [...logBuffer] });
-    return true;
-  }
-
-  if (req.method === "GET" && url.pathname === "/api/security") {
-    res.writeHead(200, {
-      "Content-Type": "application/json; charset=utf-8",
-      "Cache-Control": "no-store"
-    });
-    res.end(JSON.stringify({ csrfToken: CSRF_TOKEN }));
     return true;
   }
 
@@ -3532,20 +4504,21 @@ async function handleApi(req, res, url) {
   if (req.method === "POST" && url.pathname === "/api/nickname") {
     try {
       const body = parseJson(await readRequestBody(req));
-      const oldName = String(body.oldName || "").trim() || "未设置";
-      const newName = String(body.newName || "").trim();
-      if (!newName) {
-        throw new Error("昵称不能为空");
-      }
+      const oldName = req.authUser.name;
+      const newName = validateAccountName(body.newName);
+      initAuthDatabase().prepare("UPDATE users SET name = ?, updated_at = ? WHERE id = ?")
+        .run(newName, Date.now(), req.authUser.id);
       if (oldName !== newName) {
-        await appendLocalLogOnly(
-          getDeviceName(req),
-          getClientIp(req),
-          "修改昵称",
-          `${oldName} → ${newName}`
-        );
+        logAction(newName, getClientIp(req), "修改姓名", `${oldName} → ${newName}`);
       }
-      sendJson(res, 200, { ok: true });
+      const row = initAuthDatabase()
+        .prepare(`
+          SELECT id, username, name, role, is_protected_admin AS protectedAdmin
+          FROM users
+          WHERE id = ?
+        `)
+        .get(req.authUser.id);
+      sendJson(res, 200, { ok: true, user: publicAuthUser(row) }, { "Cache-Control": "no-store" });
     } catch (error) {
       sendJson(res, error.statusCode || 400, { error: error.message });
     }
@@ -3577,7 +4550,7 @@ async function handleApi(req, res, url) {
   return false;
 }
 
-async function streamFile(req, res, url, download) {
+async function streamFile(req, res, url, download, previewOnly = false) {
   try {
     const relativePath = safeRelative(url.searchParams.get("path"));
     const root = nsfwRoot(req);
@@ -3590,6 +4563,10 @@ async function streamFile(req, res, url, download) {
     }
     const fileName = path.basename(fullPath);
     const mimeType = getMimeType(fullPath);
+    if (previewOnly && getPreviewType(fileName) === "none") {
+      sendText(res, 403, "该文件类型不支持在线预览");
+      return;
+    }
     if (download) {
       logAction(getDeviceName(req), getClientIp(req), "下载", `${fileName}（1 个文件，${stat.size} 字节）`, [fileName]);
     }
@@ -3611,7 +4588,11 @@ async function streamFile(req, res, url, download) {
         "Content-Type": mimeType,
         "Content-Length": end - start + 1,
         "Content-Range": `bytes ${start}-${end}/${stat.size}`,
-        "Accept-Ranges": "bytes"
+        "Accept-Ranges": "bytes",
+        "Cache-Control": previewOnly ? "private, no-store" : "no-cache",
+        "Content-Disposition": "inline",
+        "X-Content-Type-Options": "nosniff",
+        "Cross-Origin-Resource-Policy": "same-origin"
       });
       await pipeFileToResponse(res, fullPath, { start, end });
       return;
@@ -3620,7 +4601,10 @@ async function streamFile(req, res, url, download) {
       "Content-Type": mimeType,
       "Content-Length": stat.size,
       "Accept-Ranges": "bytes",
-      "Content-Disposition": `${download ? "attachment" : "inline"}; filename*=UTF-8''${encodeURIComponent(fileName)}`
+      "Cache-Control": previewOnly ? "private, no-store" : "no-cache",
+      "Content-Disposition": `${download ? "attachment" : "inline"}; filename*=UTF-8''${encodeURIComponent(fileName)}`,
+      "X-Content-Type-Options": "nosniff",
+      "Cross-Origin-Resource-Policy": "same-origin"
     });
     await pipeFileToResponse(res, fullPath);
   } catch (error) {
@@ -3648,7 +4632,8 @@ function appendBatchDownloadEntries(archive, entry) {
   }
 }
 
-async function streamBatchDownload(res, url) {
+async function streamBatchDownload(req, res, url) {
+  requirePermission(req, "files.download");
   const token = String(url.searchParams.get("token") || "");
   const entry = batchDownloads.get(token);
   if (!entry) {
@@ -3708,13 +4693,56 @@ const server = http.createServer(async (req, res) => {
   setNsfwMode(req);
   const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
   try {
+    req.authUser = readAuthenticatedUser(req);
+    if (await handleAuthApi(req, res, url)) return;
+
+    const isLoginAsset = req.method === "GET" && (
+      url.pathname === "/login"
+      || url.pathname === "/login.html"
+      || url.pathname === "/login.css"
+      || url.pathname === "/login.js"
+    );
+    if (isLoginAsset) {
+      if (req.authUser && (url.pathname === "/login" || url.pathname === "/login.html")) {
+        res.writeHead(302, { Location: "/", "Cache-Control": "no-store" });
+        res.end();
+        return;
+      }
+      const loginFile = url.pathname === "/login.css"
+        ? "login.css"
+        : url.pathname === "/login.js"
+          ? "login.js"
+          : "login.html";
+      await serveStaticFile(res, path.join(STATIC_DIR, loginFile));
+      return;
+    }
+
+    if (!req.authUser) {
+      if (req.method === "GET" && (
+        url.pathname === "/"
+        || url.pathname === "/index.html"
+        || url.pathname === "/player"
+        || url.pathname === "/player/"
+      )) {
+        res.writeHead(302, { Location: "/login", "Cache-Control": "no-store" });
+        res.end();
+      } else {
+        sendAuthRequired(res);
+      }
+      return;
+    }
+
     if (requestNeedsNsfwSession(req, url) && !isNsfwAuthorized(req)) {
       sendJson(res, 401, { error: "请先验证海外剧访问密码" }, { "Set-Cookie": makeNsfwSessionCookie("", 0) });
       return;
     }
     if (await handleApi(req, res, url)) return;
-    if (req.method === "GET" && url.pathname === "/download") return void await streamFile(req, res, url, true);
+    if (req.method === "GET" && url.pathname === "/download") {
+      requirePermission(req, "files.download");
+      return void await streamFile(req, res, url, true);
+    }
     if (req.method === "GET" && url.pathname === "/api/thumb") {
+      requirePermission(req, "files.preview");
       try {
         await handleThumbnail(res, url, req);
       } catch (e) {
@@ -3722,8 +4750,17 @@ const server = http.createServer(async (req, res) => {
       }
       return;
     }
-    if (req.method === "GET" && url.pathname === "/file") return void await streamFile(req, res, url, false);
-    if (req.method === "GET" && url.pathname === "/download-batch") return void await streamBatchDownload(res, url);
+    if (req.method === "GET" && url.pathname === "/file") {
+      requirePermission(req, "files.download");
+      return void await streamFile(req, res, url, false);
+    }
+    if (req.method === "GET" && url.pathname === "/preview") {
+      requirePermission(req, "files.preview");
+      return void await streamFile(req, res, url, false, true);
+    }
+    if (req.method === "GET" && url.pathname === "/download-batch") {
+      return void await streamBatchDownload(req, res, url);
+    }
     if (req.method === "GET" && (url.pathname === "/" || url.pathname === "/index.html")) return void await serveStaticFile(res, path.join(STATIC_DIR, "index.html"));
     if (req.method === "GET" && url.pathname === "/app.js") return void await serveStaticFile(res, path.join(STATIC_DIR, "app.js"));
     if (req.method === "GET" && url.pathname === "/styles.css") return void await serveStaticFile(res, path.join(STATIC_DIR, "styles.css"));
@@ -3750,7 +4787,10 @@ const server = http.createServer(async (req, res) => {
     sendText(res, 404, "Not Found");
   } catch (error) {
     if (!res.headersSent) {
-      sendJson(res, 500, { error: error.message || "服务器错误" });
+      sendJson(res, error.statusCode || 500, {
+        error: error.message || "服务器错误",
+        code: error.code
+      });
     } else {
       res.destroy();
     }
@@ -3795,6 +4835,7 @@ async function start() {
   await loadNsfwPassword();
   await loadFolderSizeCache();
   await restoreLogBuffer();
+  const accountDatabase = initAuthDatabase();
   initForumDatabase();
   await cleanupExpiredRecycleEntries();
   setInterval(() => {
@@ -3817,6 +4858,14 @@ async function start() {
     createDailyBackupSnapshot().catch(() => {});
   }
   server.listen(PORT, HOST, () => {
+    const adminCount = Number(accountDatabase.prepare(
+      "SELECT COUNT(*) AS count FROM users WHERE role = 'admin' AND enabled = 1"
+    ).get().count || 0);
+    console.log(
+      adminCount > 0
+        ? `账号系统: 已配置 ${adminCount} 名管理员`
+        : "账号系统: 尚未创建管理员，请从本机登录页注册首个账号"
+    );
     console.log(`共享目录: ${ROOT_DIR}`);
     console.log(`备份目录: ${BACKUP_DIR}`);
     console.log(`回收站目录: ${RECYCLE_DIR}`);

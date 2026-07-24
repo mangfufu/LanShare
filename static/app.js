@@ -3988,6 +3988,46 @@ async function loadAdminUsers() {
 
     const controls = document.createElement("div");
     controls.className = "account-user-controls";
+    const renameButton = document.createElement("button");
+    renameButton.type = "button";
+    renameButton.className = "button ghost account-user-rename";
+    renameButton.textContent = "修改姓名";
+    renameButton.disabled = Boolean(user.isSelf);
+    renameButton.title = user.isSelf
+      ? "自己的姓名请在账户中心修改"
+      : `修改账号 @${user.username} 的姓名`;
+    renameButton.addEventListener("click", async () => {
+      if (user.isSelf) return;
+      const nextName = await openInputDialog({
+        title: `修改姓名：@${user.username}`,
+        label: "真实姓名",
+        value: user.name,
+        hint: "姓名会同步用于账号、论坛、聊天和已关联的文件创建者显示。",
+        confirmText: "保存姓名",
+        autocomplete: "name",
+        validate: (value) => {
+          const length = Array.from(value).length;
+          return length < 1 || length > 20 ? "姓名必须为 1–20 个字符" : "";
+        }
+      });
+      if (nextName === null || nextName === user.name) return;
+      renameButton.disabled = true;
+      try {
+        const renameResponse = await apiFetch("/api/admin/users/name", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ userId: user.id, name: nextName })
+        });
+        const renameData = await parseJsonResponse(renameResponse);
+        if (!renameResponse.ok) throw new Error(renameData.error || "姓名修改失败");
+        if (renameData.changedSelf) await loadCurrentAccount();
+        showMessage(`账号 @${user.username} 的姓名已修改为 ${renameData.name}`, "success");
+        await loadAdminUsers();
+      } catch (error) {
+        renameButton.disabled = false;
+        showMessage(error.message || "姓名修改失败", "error");
+      }
+    });
     const resetButton = document.createElement("button");
     resetButton.type = "button";
     resetButton.className = "button ghost account-user-reset";
@@ -4070,7 +4110,7 @@ async function loadAdminUsers() {
         showMessage(error.message || "账号删除失败", "error");
       }
     });
-    controls.append(select, resetButton, deleteButton);
+    controls.append(select, renameButton, resetButton, deleteButton);
     row.append(main, controls);
     accountUsersList.appendChild(row);
   }

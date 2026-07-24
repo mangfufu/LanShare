@@ -148,6 +148,7 @@ const PROTECTED_POST_PATHS = new Set([
   "/api/auth/change-password",
   "/api/admin/invite",
   "/api/admin/invite/disable",
+  "/api/admin/users/name",
   "/api/admin/users/role",
   "/api/admin/users/reset-password",
   "/api/admin/users/delete",
@@ -204,6 +205,7 @@ const ADMIN_POST_PATHS = new Set([
   "/api/recycle/delete",
   "/api/admin/invite",
   "/api/admin/invite/disable",
+  "/api/admin/users/name",
   "/api/admin/users/role",
   "/api/admin/users/reset-password",
   "/api/admin/users/delete"
@@ -548,6 +550,7 @@ function initForumDatabase() {
       root_key TEXT NOT NULL,
       path TEXT NOT NULL,
       uploader TEXT NOT NULL,
+      uploader_user_id INTEGER,
       uploaded_at INTEGER NOT NULL,
       PRIMARY KEY (root_key, path)
     );
@@ -572,7 +575,29 @@ function initForumDatabase() {
   if (!replyColumns.some((column) => column.name === "author_user_id")) {
     forumDb.exec("ALTER TABLE replies ADD COLUMN author_user_id INTEGER");
   }
+  const attributionColumns = forumDb.prepare("PRAGMA table_info(file_attributions)").all();
+  if (!attributionColumns.some((column) => column.name === "uploader_user_id")) {
+    forumDb.exec("ALTER TABLE file_attributions ADD COLUMN uploader_user_id INTEGER");
+  }
   forumDb.exec("CREATE INDEX IF NOT EXISTS idx_replies_parent_reply_id ON replies(parent_reply_id)");
+  forumDb.exec("CREATE INDEX IF NOT EXISTS idx_file_attributions_user_id ON file_attributions(uploader_user_id)");
+  const unlinkedUploaderNames = forumDb.prepare(`
+    SELECT DISTINCT uploader
+    FROM file_attributions
+    WHERE uploader_user_id IS NULL AND uploader <> ''
+  `).all();
+  const accountByName = initAuthDatabase().prepare("SELECT id FROM users WHERE name = ?");
+  const linkUploader = forumDb.prepare(`
+    UPDATE file_attributions
+    SET uploader_user_id = ?
+    WHERE uploader_user_id IS NULL AND uploader = ?
+  `);
+  for (const row of unlinkedUploaderNames) {
+    const accounts = accountByName.all(row.uploader);
+    if (accounts.length === 1) {
+      linkUploader.run(Number(accounts[0].id), row.uploader);
+    }
+  }
   return forumDb;
 }
 
@@ -580,32 +605,83 @@ function getForumAuthor(req) {
   return req.authUser && req.authUser.name ? req.authUser.name.slice(0, 20) : "匿名";
 }
 
+function updateAccountName(userId, name) {
+  const accountDatabase = initAuthDatabase();
+  const target = accountDatabase.prepare("SELECT id, username, name FROM users WHERE id = ?").get(userId);
+  if (!target) {
+    throw Object.assign(new Error("账号不存在"), { statusCode: 404 });
+  }
+  const forumDatabase = initForumDatabase();
+  let accountTransaction = false;
+  let forumTransaction = false;
+  try {
+    accountDatabase.exec("BEGIN IMMEDIATE");
+    accountTransaction = true;
+    forumDatabase.exec("BEGIN IMMEDIATE");
+    forumTransaction = true;
+    accountDatabase.prepare("UPDATE users SET name = ?, updated_at = ? WHERE id = ?")
+      .run(name, Date.now(), userId);
+    forumDatabase.prepare("UPDATE posts SET author = ? WHERE author_user_id = ?").run(name, userId);
+    forumDatabase.prepare("UPDATE replies SET author = ? WHERE author_user_id = ?").run(name, userId);
+    forumDatabase.prepare("UPDATE file_attributions SET uploader = ? WHERE uploader_user_id = ?")
+      .run(name, userId);
+    forumDatabase.exec("COMMIT");
+    forumTransaction = false;
+    accountDatabase.exec("COMMIT");
+    accountTransaction = false;
+  } catch (error) {
+    if (forumTransaction) {
+      try { forumDatabase.exec("ROLLBACK"); } catch {}
+    }
+    if (accountTransaction) {
+      try { accountDatabase.exec("ROLLBACK"); } catch {}
+    }
+    throw error;
+  }
+  for (const message of moyuMessages) {
+    if (Number(message.userId) === Number(userId)) message.user = name;
+  }
+  return {
+    id: Number(target.id),
+    username: target.username,
+    previousName: target.name,
+    name
+  };
+}
+
 function getAttributionRootKey(nsfwMode) {
   return nsfwMode ? "nsfw" : "shared";
 }
 
-function recordFileAttributions(paths, uploader, nsfwMode, overwriteExisting = true) {
+function recordFileAttributions(paths, uploader, uploaderUserId, nsfwMode, overwriteExisting = true) {
   const uniquePaths = [...new Set((paths || []).map((item) => safeRelative(item)).filter(Boolean))];
   if (!uniquePaths.length) return;
   const database = initForumDatabase();
   const statement = database.prepare(overwriteExisting
     ? `
-      INSERT INTO file_attributions (root_key, path, uploader, uploaded_at)
-      VALUES (?, ?, ?, ?)
+      INSERT INTO file_attributions (root_key, path, uploader, uploader_user_id, uploaded_at)
+      VALUES (?, ?, ?, ?, ?)
       ON CONFLICT(root_key, path) DO UPDATE SET
         uploader = excluded.uploader,
+        uploader_user_id = excluded.uploader_user_id,
         uploaded_at = excluded.uploaded_at
     `
     : `
-      INSERT INTO file_attributions (root_key, path, uploader, uploaded_at)
-      VALUES (?, ?, ?, ?)
+      INSERT INTO file_attributions (root_key, path, uploader, uploader_user_id, uploaded_at)
+      VALUES (?, ?, ?, ?, ?)
       ON CONFLICT(root_key, path) DO NOTHING
     `);
   const rootKey = getAttributionRootKey(nsfwMode);
   const uploadedAt = Date.now();
   database.exec("BEGIN");
   try {
-    uniquePaths.forEach((itemPath) => statement.run(rootKey, itemPath, uploader || "未知", uploadedAt));
+    uniquePaths.forEach((itemPath) => statement.run(
+      rootKey,
+      itemPath,
+      uploader || "未知",
+      Number.isInteger(Number(uploaderUserId)) ? Number(uploaderUserId) : null,
+      uploadedAt
+    ));
     database.exec("COMMIT");
   } catch (error) {
     database.exec("ROLLBACK");
@@ -619,13 +695,24 @@ function attachFileAttributions(items, nsfwMode) {
   if (!itemPaths.length) return items;
   const placeholders = itemPaths.map(() => "?").join(",");
   const rows = initForumDatabase()
-    .prepare(`SELECT path, uploader, uploaded_at AS uploadedAt FROM file_attributions WHERE root_key = ? AND path IN (${placeholders})`)
+    .prepare(`SELECT path, uploader, uploader_user_id AS uploaderUserId, uploaded_at AS uploadedAt FROM file_attributions WHERE root_key = ? AND path IN (${placeholders})`)
     .all(getAttributionRootKey(nsfwMode), ...itemPaths);
+  const uploaderUserIds = [...new Set(rows
+    .map((row) => Number(row.uploaderUserId))
+    .filter((userId) => Number.isInteger(userId) && userId > 0))];
+  const currentNames = new Map();
+  if (uploaderUserIds.length) {
+    const accountPlaceholders = uploaderUserIds.map(() => "?").join(",");
+    const accounts = initAuthDatabase()
+      .prepare(`SELECT id, name FROM users WHERE id IN (${accountPlaceholders})`)
+      .all(...uploaderUserIds);
+    accounts.forEach((account) => currentNames.set(Number(account.id), account.name));
+  }
   const byPath = new Map(rows.map((row) => [row.path, row]));
   items.forEach((item) => {
     const attribution = byPath.get(item.path);
     if (!attribution) return;
-    item.creator = attribution.uploader;
+    item.creator = currentNames.get(Number(attribution.uploaderUserId)) || attribution.uploader;
     item.createdByAt = attribution.uploadedAt;
   });
   return items;
@@ -636,7 +723,7 @@ function copyFileAttributions(sourceRelative, targetRelative, nsfwMode, move = f
   const sourcePrefix = `${sourceRelative}/`;
   const database = initForumDatabase();
   const rows = database.prepare(`
-    SELECT path, uploader, uploaded_at AS uploadedAt
+    SELECT path, uploader, uploader_user_id AS uploaderUserId, uploaded_at AS uploadedAt
     FROM file_attributions
     WHERE root_key = ? AND (path = ? OR substr(path, 1, ?) = ?)
   `).all(rootKey, sourceRelative, sourcePrefix.length, sourcePrefix);
@@ -648,10 +735,11 @@ function copyFileAttributions(sourceRelative, targetRelative, nsfwMode, move = f
   `);
   const deleteSource = database.prepare("DELETE FROM file_attributions WHERE root_key = ? AND path = ?");
   const upsert = database.prepare(`
-    INSERT INTO file_attributions (root_key, path, uploader, uploaded_at)
-    VALUES (?, ?, ?, ?)
+    INSERT INTO file_attributions (root_key, path, uploader, uploader_user_id, uploaded_at)
+    VALUES (?, ?, ?, ?, ?)
     ON CONFLICT(root_key, path) DO UPDATE SET
       uploader = excluded.uploader,
+      uploader_user_id = excluded.uploader_user_id,
       uploaded_at = excluded.uploaded_at
   `);
   database.exec("BEGIN");
@@ -659,7 +747,7 @@ function copyFileAttributions(sourceRelative, targetRelative, nsfwMode, move = f
     deleteTarget.run(rootKey, targetRelative, targetPrefix.length, targetPrefix);
     rows.forEach((row) => {
       const nextPath = `${targetRelative}${row.path.slice(sourceRelative.length)}`;
-      upsert.run(rootKey, nextPath, row.uploader, row.uploadedAt);
+      upsert.run(rootKey, nextPath, row.uploader, row.uploaderUserId, row.uploadedAt);
       if (move) deleteSource.run(rootKey, row.path);
     });
     database.exec("COMMIT");
@@ -2513,8 +2601,8 @@ async function handleStreamingUpload(req, rootDir) {
         }
         try {
           const uploader = getDeviceName(req);
-          recordFileAttributions(uploadedPaths, uploader, root !== ROOT_DIR);
-          recordFileAttributions([...createdDirectoryPaths], uploader, root !== ROOT_DIR, false);
+          recordFileAttributions(uploadedPaths, uploader, req.authUser.id, root !== ROOT_DIR);
+          recordFileAttributions([...createdDirectoryPaths], uploader, req.authUser.id, root !== ROOT_DIR, false);
         } catch (error) {
           console.error(`上传者记录写入失败: ${error.message}`);
         }
@@ -3267,8 +3355,7 @@ async function handleAuthApi(req, res, url) {
       const body = parseJson(await readRequestBody(req));
       const name = validateAccountName(body.name);
       const database = initAuthDatabase();
-      database.prepare("UPDATE users SET name = ?, updated_at = ? WHERE id = ?")
-        .run(name, Date.now(), req.authUser.id);
+      updateAccountName(req.authUser.id, name);
       const row = database.prepare(`
         SELECT id, username, name, role, is_protected_admin AS protectedAdmin
         FROM users
@@ -3445,6 +3532,43 @@ async function handleAuthApi(req, res, url) {
       }, { "Cache-Control": "no-store" });
     } catch (error) {
       sendJson(res, error.statusCode || 403, { error: error.message });
+    }
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/admin/users/name") {
+    if (!req.authUser) {
+      sendAuthRequired(res);
+      return true;
+    }
+    try {
+      assertTrustedWriteRequest(req);
+      requirePermission(req, "*");
+      const body = parseJson(await readRequestBody(req));
+      const userId = Number(body.userId);
+      const name = validateAccountName(body.name);
+      if (!Number.isInteger(userId) || userId <= 0) {
+        throw Object.assign(new Error("账号无效"), { statusCode: 400 });
+      }
+      if (userId === req.authUser.id) {
+        throw Object.assign(new Error("自己的姓名请在账户中心修改"), { statusCode: 400 });
+      }
+      const updated = updateAccountName(userId, name);
+      logAction(
+        req.authUser.name,
+        getClientIp(req),
+        "修改账号姓名",
+        `${updated.previousName}（${updated.username}）→ ${updated.name}`
+      );
+      sendJson(res, 200, {
+        ok: true,
+        userId: updated.id,
+        username: updated.username,
+        name: updated.name,
+        changedSelf: updated.id === req.authUser.id
+      });
+    } catch (error) {
+      sendJson(res, error.statusCode || 400, { error: error.message });
     }
     return true;
   }
@@ -3629,7 +3753,13 @@ async function handleApi(req, res, url) {
     const text = String(body.text || "").trim().slice(0, 500);
     if (!text) { sendJson(res, 400, { error: "不能为空" }); return true; }
     const user = getDeviceName(req).slice(0, 20);
-    const msg = { id: moyuNextId++, user, text, time: new Date().toLocaleTimeString("zh-CN", { hour12: false }) };
+    const msg = {
+      id: moyuNextId++,
+      user,
+      userId: req.authUser.id,
+      text,
+      time: new Date().toLocaleTimeString("zh-CN", { hour12: false })
+    };
     moyuMessages.push(msg);
     if (moyuMessages.length > MOYU_MAX) moyuMessages.splice(0, moyuMessages.length - MOYU_MAX);
     moyuBroadcast(msg);
@@ -4184,6 +4314,7 @@ async function handleApi(req, res, url) {
       recordFileAttributions(
         [targetRelative],
         getDeviceName(req),
+        req.authUser.id,
         req._nsfwMode,
         false
       );
@@ -4252,6 +4383,7 @@ async function handleApi(req, res, url) {
       recordFileAttributions(
         [projectPath],
         getDeviceName(req),
+        req.authUser.id,
         req._nsfwMode,
         false
       );

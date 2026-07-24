@@ -1162,6 +1162,17 @@ body[data-theme="light"] .grid-card.is-in-progress {
 .thumb.folder { background: linear-gradient(135deg, #ebd48d, #d89d3c); color: #fff; }
 .thumb.audio { background: linear-gradient(135deg, #305f87, #2a3f67); color: #fff; flex-direction: column; gap: 6px; }
 .thumb.video { background: linear-gradient(135deg, #2d536c, #263a53); color: #fff; }
+.thumb.document {
+  color: #365f83;
+  background: color-mix(in srgb, #5b8bb4 14%, var(--panel-strong));
+  border: 1px solid color-mix(in srgb, #5b8bb4 32%, var(--line));
+}
+
+.document-mark {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
 
 .video-thumb-placeholder {
   display: grid;
@@ -1343,6 +1354,28 @@ body[data-theme="light"] .grid-card.is-in-progress {
 
 .preview-audio { width: min(520px, 100%); }
 .audio-preview { width: min(520px, 100%); display: grid; gap: 16px; justify-items: center; }
+
+.preview-body[data-preview-type="document"] {
+  width: 100%;
+  height: min(76vh, 900px);
+  min-height: 520px;
+  padding: 0;
+  align-items: stretch;
+}
+
+.preview-document {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: var(--panel-soft);
+}
+
+@media (max-width: 640px) {
+  .preview-body[data-preview-type="document"] {
+    min-height: 360px;
+  }
+}
 
 /* ffmpeg.wasm 转码加载状态 */
 .wasm-status {

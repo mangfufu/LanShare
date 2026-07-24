@@ -886,6 +886,14 @@ function previewUrl(path) {
   if (state.nsfwMode) u += "&nsfw=1"
   return u
 }
+
+function documentPreviewUrl(path) {
+  var u = "/api/document-preview?path=" + encodeURIComponent(path)
+    + "&theme=" + encodeURIComponent(state.theme)
+  if (state.nsfwMode) u += "&nsfw=1"
+  return u
+}
+
 function getFileType(item) {
   if (item.type === "directory") return "文件夹";
   const name = item.name || "";
@@ -1023,6 +1031,7 @@ function updateToolbarButtons() {
   const total = state.currentItems.length;
   if (selectionSummary) {
     selectionSummary.textContent = `已选 ${count} 项`;
+    selectionSummary.removeAttribute("title");
   }
   selectAllBtn.textContent = count > 0 && count >= total ? "取消全选" : "全选";
   invertBtn.textContent = "反选";
@@ -1216,6 +1225,8 @@ function buildThumbnail(item, searchDir) {
     thumb.appendChild(badge);
   } else if (item.previewType === "audio") {
     thumb.innerHTML = '<span class="audio-wave">♪</span><span class="thumb-badge">AUDIO</span>';
+  } else if (item.previewType === "document") {
+    thumb.innerHTML = '<span class="document-mark">DOCX</span>';
   } else {
     thumb.textContent = "FILE";
   }
@@ -1232,11 +1243,6 @@ function buildThumbnail(item, searchDir) {
     sub.className = "file-sub";
     sub.textContent = searchDir;
     meta.appendChild(sub);
-  } else if (item.previewType !== "none" && item.type === "file") {
-    const sub = document.createElement("div");
-    sub.className = "file-sub";
-    sub.textContent = "双击可预览";
-    meta.appendChild(sub);
   }
 
   wrapper.appendChild(thumb);
@@ -1249,6 +1255,7 @@ function getPreviewableItems() {
     item.previewType === "image"
     || item.previewType === "video"
     || item.previewType === "audio"
+    || item.previewType === "document"
   );
 }
 
@@ -1275,7 +1282,9 @@ function openPreview(item) {
 function showPreviewItem(item) {
   previewTitle.textContent = item.name;
   const restrictedPreview = !can("files.download");
-  const src = restrictedPreview ? previewUrl(item.path) : fileUrl(item.path);
+  const src = item.previewType === "document"
+    ? documentPreviewUrl(item.path)
+    : restrictedPreview ? previewUrl(item.path) : fileUrl(item.path);
   const currentType = previewBody.dataset.previewType;
 
   if (currentType === item.previewType) {
@@ -1303,6 +1312,12 @@ function showPreviewItem(item) {
     } else if (item.previewType === "audio") {
       var audio = previewBody.querySelector("audio");
       if (audio) { audio.src = src; audio.play().catch(() => {}); }
+    } else if (item.previewType === "document") {
+      var frame = previewBody.querySelector("iframe");
+      if (frame) {
+        frame.src = src;
+        frame.title = item.name;
+      }
     }
   } else {
     // 类型不同，重建 DOM
@@ -1352,6 +1367,14 @@ function showPreviewItem(item) {
         audio.disableRemotePlayback = true;
         audio.addEventListener("contextmenu", (event) => event.preventDefault());
       }
+    } else if (item.previewType === "document") {
+      const frame = document.createElement("iframe");
+      frame.className = "preview-document";
+      frame.src = src;
+      frame.title = item.name;
+      frame.setAttribute("sandbox", "");
+      frame.setAttribute("referrerpolicy", "no-referrer");
+      previewBody.appendChild(frame);
     }
   }
 
@@ -1829,19 +1852,33 @@ function setSelected(path, checked) {
   syncItemSelectionUi(path);
 }
 
+function replaceSelection(path) {
+  if (state.selectedPaths.size === 1 && state.selectedPaths.has(path)) {
+    state.selectionAnchorPath = path;
+    return;
+  }
+  state.selectedPaths.clear();
+  state.selectedPaths.add(path);
+  state.selectionAnchorPath = path;
+  updateToolbarButtons();
+  syncAllItemSelectionUi();
+}
+
 function getSelectionOrderedItems() {
   if (state.searchQuery) return sortItems(state.searchResults);
   return sortItems(getFilteredCurrentItems());
 }
 
-function setSelectionRange(targetPath, checked = true) {
+function setSelectionRange(targetPath, checked = true, replace = false) {
   const items = getSelectionOrderedItems();
   const targetIndex = items.findIndex((item) => item.path === targetPath);
   const anchorIndex = items.findIndex((item) => item.path === state.selectionAnchorPath);
   if (targetIndex < 0 || anchorIndex < 0) {
-    setSelected(targetPath, checked);
+    if (replace && checked) replaceSelection(targetPath);
+    else setSelected(targetPath, checked);
     return;
   }
+  if (replace) state.selectedPaths.clear();
   const start = Math.min(anchorIndex, targetIndex);
   const end = Math.max(anchorIndex, targetIndex);
   for (let index = start; index <= end; index += 1) {
@@ -1869,24 +1906,27 @@ function isItemClickIgnored(event) {
 function handleItemClick(event, item) {
   if (isItemClickIgnored(event)) return;
   cancelPendingItemClick();
+  const additive = event.ctrlKey || event.metaKey;
   if (event.shiftKey) {
     event.preventDefault();
-    setSelectionRange(item.path, true);
+    setSelectionRange(item.path, true, !additive);
     return;
   }
-  if (state.selectedPaths.size > 0) {
+  if (additive) {
+    event.preventDefault();
     setSelected(item.path, !isSelected(item.path));
     return;
   }
   pendingItemClickTimer = window.setTimeout(() => {
     pendingItemClickTimer = null;
-    setSelected(item.path, !isSelected(item.path));
+    replaceSelection(item.path);
   }, 120);
 }
 
 function handleItemDoubleClick(event, item) {
   if (isItemClickIgnored(event)) return;
   cancelPendingItemClick();
+  event.preventDefault();
   openPreview(item);
 }
 
@@ -2078,7 +2118,7 @@ function makeSelectCheckbox(item) {
   input.type = "checkbox";
   input.className = "select-checkbox";
   input.checked = isSelected(item.path);
-  input.title = "选择项目（Shift 连续多选）";
+  input.title = "多选项目（Shift 连续多选）";
   input.setAttribute("aria-label", `选择 ${item.name}`);
   input.addEventListener("click", (event) => {
     event.stopPropagation();
@@ -4980,7 +5020,10 @@ function renderWorkspaceMediaRows(entries) {
 }
 
 function renderWorkspaceMediaInfo(item) {
-  if (item.type !== "file" || item.previewType === "none") return "";
+  if (
+    item.type !== "file"
+    || !["image", "video", "audio"].includes(item.previewType)
+  ) return "";
   const key = getWorkspaceMediaInfoKey(item);
   const info = state.mediaInfoCache.get(key);
   if (!info) {
@@ -5056,7 +5099,11 @@ function renderWorkspaceMediaInfo(item) {
 }
 
 function loadWorkspaceMediaInfo(item) {
-  if (!item || item.type !== "file" || item.previewType === "none") return;
+  if (
+    !item
+    || item.type !== "file"
+    || !["image", "video", "audio"].includes(item.previewType)
+  ) return;
   const key = getWorkspaceMediaInfoKey(item);
   if (state.mediaInfoCache.has(key) || state.mediaInfoRequests.has(key)) return;
   const requestUrl = `/api/media-info?path=${encodeURIComponent(item.path)}${state.nsfwMode ? "&nsfw=1" : ""}`;

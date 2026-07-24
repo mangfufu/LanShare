@@ -10,7 +10,7 @@ const { DatabaseSync } = require("node:sqlite");
 
 // 自动安装依赖
 function ensureDeps() {
-  const deps = ["busboy", "archiver", "sharp"];
+  const deps = ["busboy", "archiver", "sharp", "mammoth", "sanitize-html"];
   const missing = [];
   for (const dep of deps) {
     try { require.resolve(dep); } catch { missing.push(dep); }
@@ -30,6 +30,8 @@ ensureDeps();
 
 const Busboy = require("busboy");
 const archiver = require("archiver");
+const mammoth = require("mammoth");
+const sanitizeHtml = require("sanitize-html");
 let sharp;
 try { sharp = require("sharp"); } catch { console.error("错误: sharp 未安装"); process.exit(1); }
 const TMP_DIR = path.resolve(process.env.THUMB_CACHE_DIR || path.join(__dirname, "thumb_cache"));
@@ -92,6 +94,22 @@ const configuredMediaInfoCacheLimit = Number(process.env.MEDIA_INFO_CACHE_LIMIT)
 const MEDIA_INFO_CACHE_LIMIT = Number.isFinite(configuredMediaInfoCacheLimit) && configuredMediaInfoCacheLimit > 0
   ? Math.floor(configuredMediaInfoCacheLimit)
   : 500;
+const configuredDocumentPreviewMaxSize = Number(process.env.DOCUMENT_PREVIEW_MAX_SIZE);
+const DOCUMENT_PREVIEW_MAX_SIZE = Number.isFinite(configuredDocumentPreviewMaxSize) && configuredDocumentPreviewMaxSize > 0
+  ? Math.floor(configuredDocumentPreviewMaxSize)
+  : 64 * 1024 * 1024;
+const configuredDocumentPreviewMaxHtmlSize = Number(process.env.DOCUMENT_PREVIEW_MAX_HTML_SIZE);
+const DOCUMENT_PREVIEW_MAX_HTML_SIZE = Number.isFinite(configuredDocumentPreviewMaxHtmlSize) && configuredDocumentPreviewMaxHtmlSize > 0
+  ? Math.floor(configuredDocumentPreviewMaxHtmlSize)
+  : 24 * 1024 * 1024;
+const configuredDocumentPreviewCacheLimit = Number(process.env.DOCUMENT_PREVIEW_CACHE_LIMIT);
+const DOCUMENT_PREVIEW_CACHE_LIMIT = Number.isFinite(configuredDocumentPreviewCacheLimit) && configuredDocumentPreviewCacheLimit > 0
+  ? Math.floor(configuredDocumentPreviewCacheLimit)
+  : 32;
+const configuredDocumentPreviewCacheMaxBytes = Number(process.env.DOCUMENT_PREVIEW_CACHE_MAX_BYTES);
+const DOCUMENT_PREVIEW_CACHE_MAX_BYTES = Number.isFinite(configuredDocumentPreviewCacheMaxBytes) && configuredDocumentPreviewCacheMaxBytes > 0
+  ? Math.floor(configuredDocumentPreviewCacheMaxBytes)
+  : 128 * 1024 * 1024;
 const batchDownloads = new Map();
 const logBuffer = [];
 const MAX_LOG_BUFFER = 200;
@@ -101,6 +119,9 @@ const videoThumbQueue = [];
 const videoThumbJobs = new Map();
 const mediaInfoCache = new Map();
 const mediaInfoJobs = new Map();
+const documentPreviewCache = new Map();
+const documentPreviewJobs = new Map();
+let documentPreviewCacheBytes = 0;
 let activeVideoThumbJobs = 0;
 const folderSizeCache = new Map();
 const folderSizeQueue = [];
@@ -890,6 +911,7 @@ const MIME_TYPES = {
   ".avi": "video/x-msvideo",
   ".txt": "text/plain; charset=utf-8",
   ".pdf": "application/pdf",
+  ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   ".zip": "application/zip",
   ".wasm": "application/wasm",
   ".worker": "application/javascript"
@@ -1170,7 +1192,12 @@ function getPreviewType(fileName) {
   if ([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"].includes(ext)) return "image";
   if ([".mp3", ".wav", ".ogg", ".m4a", ".flac"].includes(ext)) return "audio";
   if ([".mp4", ".webm", ".mov", ".mkv", ".avi"].includes(ext)) return "video";
+  if (ext === ".docx") return "document";
   return "none";
+}
+
+function isStreamPreviewType(previewType) {
+  return previewType === "image" || previewType === "audio" || previewType === "video";
 }
 
 function parseMediaNumber(value) {
@@ -1422,6 +1449,206 @@ async function readMediaInfo(relativePath, rootOverride) {
     });
   mediaInfoJobs.set(cacheKey, job);
   return job;
+}
+
+function escapeDocumentHtml(value) {
+  return String(value == null ? "" : value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function cacheDocumentPreview(key, value) {
+  const previous = documentPreviewCache.get(key);
+  if (previous) {
+    documentPreviewCacheBytes -= Number(previous.byteLength) || 0;
+    documentPreviewCache.delete(key);
+  }
+  value.byteLength = Buffer.byteLength(String(value.html || ""), "utf8");
+  documentPreviewCache.set(key, value);
+  documentPreviewCacheBytes += value.byteLength;
+  while (
+    documentPreviewCache.size > DOCUMENT_PREVIEW_CACHE_LIMIT
+    || documentPreviewCacheBytes > DOCUMENT_PREVIEW_CACHE_MAX_BYTES
+  ) {
+    const oldestKey = documentPreviewCache.keys().next().value;
+    const oldest = documentPreviewCache.get(oldestKey);
+    documentPreviewCacheBytes -= Number(oldest && oldest.byteLength) || 0;
+    documentPreviewCache.delete(oldestKey);
+  }
+}
+
+function sanitizeDocumentPreviewHtml(html) {
+  return sanitizeHtml(String(html || ""), {
+    allowedTags: [
+      "article", "section", "div", "span", "p", "br", "hr",
+      "h1", "h2", "h3", "h4", "h5", "h6",
+      "strong", "b", "em", "i", "u", "s", "sup", "sub",
+      "blockquote", "pre", "code",
+      "ul", "ol", "li", "dl", "dt", "dd",
+      "table", "thead", "tbody", "tfoot", "tr", "th", "td",
+      "img"
+    ],
+    allowedAttributes: {
+      img: ["src", "alt", "title", "width", "height"],
+      ol: ["start"],
+      li: ["value"],
+      th: ["colspan", "rowspan"],
+      td: ["colspan", "rowspan"]
+    },
+    allowedSchemesByTag: {
+      img: ["data"]
+    },
+    allowProtocolRelative: false,
+    disallowedTagsMode: "discard"
+  });
+}
+
+async function readDocumentPreview(relativePath, rootOverride) {
+  const root = rootOverride || ROOT_DIR;
+  const safePath = safeRelative(relativePath);
+  if (!safePath) throw Object.assign(new Error("没有指定 DOCX 文件"), { statusCode: 400 });
+  const fullPath = path.resolve(root, safePath);
+  if (fullPath !== root && !fullPath.startsWith(root + path.sep)) {
+    throw Object.assign(new Error("路径越界"), { statusCode: 400 });
+  }
+  if (path.extname(fullPath).toLowerCase() !== ".docx") {
+    throw Object.assign(new Error("当前仅支持 DOCX 文档预览"), { statusCode: 415 });
+  }
+  const stat = await fsp.stat(toFsPath(fullPath));
+  if (!stat.isFile()) throw Object.assign(new Error("仅支持预览文件"), { statusCode: 400 });
+  if (stat.size > DOCUMENT_PREVIEW_MAX_SIZE) {
+    throw Object.assign(
+      new Error(`DOCX 文件超过预览上限（${Math.floor(DOCUMENT_PREVIEW_MAX_SIZE / 1024 / 1024)}MB）`),
+      { statusCode: 413 }
+    );
+  }
+
+  const cacheKey = `${rootOverride ? "nsfw" : "shared"}:${safePath}:${stat.size}:${stat.mtimeMs}`;
+  if (documentPreviewCache.has(cacheKey)) return documentPreviewCache.get(cacheKey);
+  if (documentPreviewJobs.has(cacheKey)) return documentPreviewJobs.get(cacheKey);
+
+  const job = mammoth.convertToHtml(
+    { path: toFsPath(fullPath) },
+    {
+      styleMap: [
+        "p[style-name='Title'] => h1.docx-title:fresh",
+        "p[style-name='Subtitle'] => p.docx-subtitle:fresh"
+      ]
+    }
+  ).then((result) => {
+    if (Buffer.byteLength(String(result.value || ""), "utf8") > DOCUMENT_PREVIEW_MAX_HTML_SIZE) {
+      throw Object.assign(
+        new Error(`DOCX 预览内容超过输出上限（${Math.floor(DOCUMENT_PREVIEW_MAX_HTML_SIZE / 1024 / 1024)}MB）`),
+        { statusCode: 413 }
+      );
+    }
+    const html = sanitizeDocumentPreviewHtml(result.value);
+    if (Buffer.byteLength(html, "utf8") > DOCUMENT_PREVIEW_MAX_HTML_SIZE) {
+      throw Object.assign(new Error("DOCX 预览内容过大"), { statusCode: 413 });
+    }
+    const value = {
+      name: path.basename(fullPath),
+      html,
+      warningCount: Array.isArray(result.messages) ? result.messages.length : 0
+    };
+    cacheDocumentPreview(cacheKey, value);
+    return value;
+  }).finally(() => {
+    documentPreviewJobs.delete(cacheKey);
+  });
+  documentPreviewJobs.set(cacheKey, job);
+  return job;
+}
+
+function buildDocumentPreviewPage(preview, theme = "light") {
+  const dark = theme === "dark";
+  const canvas = dark ? "#171814" : "#dfe3df";
+  const canvasText = dark ? "#d7d9d3" : "#525850";
+  const warning = preview.warningCount > 0
+    ? `<div class="conversion-note">已尽量还原文档内容；复杂分页、文本框或浮动版式可能与 Word 略有差异。</div>`
+    : "";
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${escapeDocumentHtml(preview.name)}</title>
+  <style>
+    :root { color-scheme: ${dark ? "dark" : "light"}; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; }
+    body {
+      padding: clamp(16px, 3vw, 36px);
+      color: ${canvasText};
+      background: ${canvas};
+      font: 15px/1.72 "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+    }
+    .document-sheet {
+      width: min(816px, 100%);
+      min-height: 1056px;
+      margin: 0 auto;
+      padding: clamp(28px, 6vw, 72px);
+      color: #232621;
+      background: #fff;
+      border: 1px solid rgba(35, 38, 33, .12);
+      box-shadow: 0 18px 50px rgba(26, 31, 27, .16);
+      overflow-wrap: anywhere;
+    }
+    h1, h2, h3, h4, h5, h6 { margin: 1.25em 0 .55em; line-height: 1.35; color: #171a17; }
+    h1:first-child, h2:first-child, h3:first-child, p:first-child { margin-top: 0; }
+    p { margin: 0 0 .9em; }
+    ul, ol { margin: .45em 0 1em; padding-left: 2em; }
+    blockquote { margin: 1em 0; padding: .15em 1em; border-left: 4px solid #9aa49d; color: #535b55; }
+    table { width: 100%; margin: 1.2em 0; border-collapse: collapse; table-layout: fixed; }
+    th, td { padding: .55em .65em; border: 1px solid #b8beb9; text-align: left; vertical-align: top; }
+    th { background: #eef1ee; }
+    img { display: block; max-width: 100%; height: auto; margin: 1em auto; }
+    pre, code { font-family: Consolas, "SFMono-Regular", monospace; }
+    pre { padding: 1em; overflow: auto; background: #f3f5f3; }
+    .conversion-note {
+      width: min(816px, 100%);
+      margin: 0 auto 12px;
+      padding: 9px 12px;
+      color: ${canvasText};
+      border: 1px solid rgba(127, 137, 130, .35);
+      background: ${dark ? "#22251f" : "#f4f6f4"};
+      font-size: 12px;
+    }
+    @media (max-width: 640px) {
+      body { padding: 10px; }
+      .document-sheet { min-height: calc(100vh - 20px); padding: 24px 18px; }
+    }
+  </style>
+</head>
+<body>
+  ${warning}
+  <article class="document-sheet">${preview.html || "<p>该文档没有可显示的正文内容。</p>"}</article>
+</body>
+</html>`;
+}
+
+function sendDocumentHtml(res, statusCode, html) {
+  const body = Buffer.from(html, "utf8");
+  res.writeHead(statusCode, {
+    "Content-Type": "text/html; charset=utf-8",
+    "Content-Length": body.length,
+    "Cache-Control": "private, no-store",
+    "Content-Security-Policy": "default-src 'none'; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'; sandbox",
+    "Cross-Origin-Resource-Policy": "same-origin",
+    "Referrer-Policy": "no-referrer",
+    "X-Content-Type-Options": "nosniff"
+  });
+  res.end(body);
+}
+
+function buildDocumentPreviewErrorPage(message, theme = "light") {
+  const dark = theme === "dark";
+  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>
+    :root{color-scheme:${dark ? "dark" : "light"}}*{box-sizing:border-box}body{min-height:100vh;margin:0;display:grid;place-items:center;padding:24px;background:${dark ? "#171814" : "#eef1ee"};color:${dark ? "#e2e5df" : "#313630"};font:14px/1.6 "Microsoft YaHei UI","Microsoft YaHei",sans-serif}.error{max-width:520px;padding:24px;border:1px solid ${dark ? "#454940" : "#cdd3cd"};background:${dark ? "#22251f" : "#fff"};text-align:center}.error strong{display:block;margin-bottom:6px;font-size:16px}
+  </style></head><body><div class="error"><strong>DOCX 预览失败</strong>${escapeDocumentHtml(message)}</div></body></html>`;
 }
 
 async function getDirSize(dirPath, depth = 1) {
@@ -3547,7 +3774,10 @@ function assertApiPermission(req, url) {
     requirePermission(req, "*");
     return;
   }
-  if (req.method === "GET" && url.pathname === "/api/media-info") {
+  if (
+    req.method === "GET"
+    && (url.pathname === "/api/media-info" || url.pathname === "/api/document-preview")
+  ) {
     requirePermission(req, "files.preview");
     return;
   }
@@ -4536,6 +4766,25 @@ async function handleApi(req, res, url) {
     return true;
   }
 
+  if (req.method === "GET" && url.pathname === "/api/document-preview") {
+    const theme = url.searchParams.get("theme") === "dark" ? "dark" : "light";
+    try {
+      const preview = await readDocumentPreview(
+        url.searchParams.get("path"),
+        req._nsfwMode ? NSFW_DIR : null
+      );
+      sendDocumentHtml(res, 200, buildDocumentPreviewPage(preview, theme));
+    } catch (error) {
+      const statusCode = error.code === "ENOENT" ? 404 : error.statusCode || 400;
+      if (statusCode !== 404) {
+        console.error(`DOCX 预览失败: ${error.message}`);
+      }
+      const message = statusCode === 404 ? "文档不存在或已被移动" : error.message || "文档解析失败";
+      sendDocumentHtml(res, statusCode, buildDocumentPreviewErrorPage(message, theme));
+    }
+    return true;
+  }
+
   if (req.method === "GET" && url.pathname === "/api/folder-sizes") {
     try {
       const paths = url.searchParams.getAll("path").slice(0, 200);
@@ -5105,7 +5354,7 @@ async function streamFile(req, res, url, download, previewOnly = false) {
     }
     const fileName = path.basename(fullPath);
     const mimeType = getMimeType(fullPath);
-    if (previewOnly && getPreviewType(fileName) === "none") {
+    if (previewOnly && !isStreamPreviewType(getPreviewType(fileName))) {
       sendText(res, 403, "该文件类型不支持在线预览");
       return;
     }

@@ -28,6 +28,7 @@ const state = {
   searchResults: [],
   searchTimeout: null,
   selectedPaths: new Set(),
+  selectionAnchorPath: "",
   recycleSelectedIds: new Set(),
   recycleFilter: "",
   recycleItems: [],
@@ -51,6 +52,8 @@ const state = {
   nsfwMode: false,
   clipboard: { items: [], mode: null },
   workspaceStatus: null,
+  mediaInfoCache: new Map(),
+  mediaInfoRequests: new Map(),
   forumPosts: [],
   forumManageMode: false,
   forumSelectedPostIds: new Set(),
@@ -1810,9 +1813,44 @@ function syncItemSelectionUi(path) {
   });
 }
 
+function syncAllItemSelectionUi() {
+  document.querySelectorAll("[data-item-path]").forEach((el) => {
+    const selected = isSelected(el.dataset.itemPath || "");
+    el.classList.toggle("is-selected", selected);
+    el.querySelectorAll(".select-checkbox").forEach((input) => {
+      input.checked = selected;
+    });
+  });
+}
+
 function setSelected(path, checked) {
+  state.selectionAnchorPath = path;
   toggleSelected(path, checked);
   syncItemSelectionUi(path);
+}
+
+function getSelectionOrderedItems() {
+  if (state.searchQuery) return sortItems(state.searchResults);
+  return sortItems(getFilteredCurrentItems());
+}
+
+function setSelectionRange(targetPath, checked = true) {
+  const items = getSelectionOrderedItems();
+  const targetIndex = items.findIndex((item) => item.path === targetPath);
+  const anchorIndex = items.findIndex((item) => item.path === state.selectionAnchorPath);
+  if (targetIndex < 0 || anchorIndex < 0) {
+    setSelected(targetPath, checked);
+    return;
+  }
+  const start = Math.min(anchorIndex, targetIndex);
+  const end = Math.max(anchorIndex, targetIndex);
+  for (let index = start; index <= end; index += 1) {
+    const itemPath = items[index].path;
+    if (checked) state.selectedPaths.add(itemPath);
+    else state.selectedPaths.delete(itemPath);
+  }
+  updateToolbarButtons();
+  syncAllItemSelectionUi();
 }
 
 let pendingItemClickTimer = null;
@@ -1831,6 +1869,11 @@ function isItemClickIgnored(event) {
 function handleItemClick(event, item) {
   if (isItemClickIgnored(event)) return;
   cancelPendingItemClick();
+  if (event.shiftKey) {
+    event.preventDefault();
+    setSelectionRange(item.path, true);
+    return;
+  }
   if (state.selectedPaths.size > 0) {
     setSelected(item.path, !isSelected(item.path));
     return;
@@ -1849,6 +1892,7 @@ function handleItemDoubleClick(event, item) {
 
 function clearSelections() {
   state.selectedPaths.clear();
+  state.selectionAnchorPath = "";
   updateToolbarButtons();
 }
 
@@ -1883,8 +1927,10 @@ function selectAll() {
   const count = state.selectedPaths.size;
   if (count < total) {
     for (const item of state.currentItems) state.selectedPaths.add(item.path);
+    state.selectionAnchorPath = getSelectionOrderedItems()[0]?.path || "";
   } else {
     state.selectedPaths.clear();
+    state.selectionAnchorPath = "";
   }
   updateToolbarButtons();
   renderCurrentDirectory();
@@ -1896,6 +1942,7 @@ function invertSelection() {
     if (!state.selectedPaths.has(item.path)) newSet.add(item.path);
   }
   state.selectedPaths = newSet;
+  state.selectionAnchorPath = "";
   updateToolbarButtons();
   renderCurrentDirectory();
 }
@@ -2031,11 +2078,19 @@ function makeSelectCheckbox(item) {
   input.type = "checkbox";
   input.className = "select-checkbox";
   input.checked = isSelected(item.path);
-  input.title = "选择项目";
+  input.title = "选择项目（Shift 连续多选）";
   input.setAttribute("aria-label", `选择 ${item.name}`);
-  input.addEventListener("click", (event) => event.stopPropagation());
+  input.addEventListener("click", (event) => {
+    event.stopPropagation();
+    input._shiftSelection = Boolean(event.shiftKey);
+  });
   input.addEventListener("change", (event) => {
-    setSelected(item.path, event.target.checked);
+    if (input._shiftSelection) {
+      setSelectionRange(item.path, event.target.checked);
+    } else {
+      setSelected(item.path, event.target.checked);
+    }
+    input._shiftSelection = false;
     input.blur();
   });
   return input;
@@ -4842,6 +4897,191 @@ function getWorkspaceSelectedItems() {
   return source.filter((item) => state.selectedPaths.has(item.path));
 }
 
+function getWorkspaceMediaInfoKey(item) {
+  return `${state.nsfwMode ? "nsfw" : "shared"}:${item.path}:${item.size || 0}:${item.updatedAt || ""}`;
+}
+
+function formatMediaDuration(value) {
+  const seconds = Number(value);
+  if (!Number.isFinite(seconds) || seconds < 0) return "—";
+  const rounded = Math.round(seconds);
+  const hours = Math.floor(rounded / 3600);
+  const minutes = Math.floor((rounded % 3600) / 60);
+  const remaining = rounded % 60;
+  if (hours > 0) {
+    return `${hours}:${String(minutes).padStart(2, "0")}:${String(remaining).padStart(2, "0")}`;
+  }
+  return `${minutes}:${String(remaining).padStart(2, "0")}`;
+}
+
+function formatMediaBitRate(value) {
+  const bits = Number(value);
+  if (!Number.isFinite(bits) || bits <= 0) return "—";
+  if (bits >= 1000000000) return `${(bits / 1000000000).toFixed(2)} Gbps`;
+  if (bits >= 1000000) return `${(bits / 1000000).toFixed(bits >= 10000000 ? 1 : 2)} Mbps`;
+  if (bits >= 1000) return `${Math.round(bits / 1000)} kbps`;
+  return `${Math.round(bits)} bps`;
+}
+
+function formatMediaFrameRate(value) {
+  const frameRate = Number(value);
+  if (!Number.isFinite(frameRate) || frameRate <= 0) return "—";
+  const rounded = Math.abs(frameRate - Math.round(frameRate)) < 0.005
+    ? String(Math.round(frameRate))
+    : frameRate.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
+  return `${rounded} fps`;
+}
+
+function formatMediaCodec(value) {
+  const codec = String(value || "").toLowerCase();
+  const labels = {
+    h264: "H.264",
+    hevc: "H.265 / HEVC",
+    av1: "AV1",
+    vp8: "VP8",
+    vp9: "VP9",
+    aac: "AAC",
+    mp3: "MP3",
+    opus: "Opus",
+    vorbis: "Vorbis",
+    flac: "FLAC",
+    pcm_s16le: "PCM 16-bit",
+    pcm_s24le: "PCM 24-bit",
+    pcm_s32le: "PCM 32-bit"
+  };
+  return labels[codec] || (codec ? codec.toUpperCase() : "—");
+}
+
+function formatMediaResolution(width, height) {
+  const w = Number(width);
+  const h = Number(height);
+  return Number.isFinite(w) && w > 0 && Number.isFinite(h) && h > 0
+    ? `${Math.round(w)} × ${Math.round(h)}`
+    : "—";
+}
+
+function renderWorkspaceMediaRows(entries) {
+  const normalized = entries.filter((entry) => entry && entry.value && entry.value !== "—");
+  if (normalized.length % 2 !== 0) normalized.push({ label: "", value: "" });
+  let html = "";
+  for (let index = 0; index < normalized.length; index += 2) {
+    html += `
+      <div class="workspace-detail-pair workspace-media-pair">
+        ${normalized.slice(index, index + 2).map((entry) => `
+          <div${entry.label ? "" : ' class="is-placeholder"'}>
+            <dt>${escapeHtml(entry.label)}</dt>
+            <dd title="${escapeHtml(entry.value)}">${escapeHtml(entry.value)}</dd>
+          </div>
+        `).join("")}
+      </div>
+    `;
+  }
+  return html;
+}
+
+function renderWorkspaceMediaInfo(item) {
+  if (item.type !== "file" || item.previewType === "none") return "";
+  const key = getWorkspaceMediaInfoKey(item);
+  const info = state.mediaInfoCache.get(key);
+  if (!info) {
+    return `
+      <section class="workspace-media-info">
+        <div class="workspace-projects-head"><span>媒体信息</span><strong>读取中…</strong></div>
+        <div class="workspace-media-loading">正在读取分辨率、码率等信息…</div>
+      </section>
+    `;
+  }
+  if (info.error) {
+    return `
+      <section class="workspace-media-info">
+        <div class="workspace-projects-head"><span>媒体信息</span><strong>暂不可用</strong></div>
+        <div class="workspace-media-loading">${escapeHtml(info.error)}</div>
+      </section>
+    `;
+  }
+
+  let entries = [];
+  let summary = "";
+  if (info.previewType === "image") {
+    summary = info.format || "IMAGE";
+    entries = [
+      { label: "分辨率", value: formatMediaResolution(info.width, info.height) },
+      { label: "像素", value: Number.isFinite(Number(info.megapixels)) ? `${Number(info.megapixels).toFixed(2)} MP` : "—" },
+      { label: "格式", value: info.format || "—" },
+      { label: "色彩", value: info.colorSpace ? String(info.colorSpace).toUpperCase() : "—" },
+      { label: "位深", value: info.bitDepth ? `${info.bitDepth} bit` : "—" },
+      { label: "通道", value: info.channels ? `${info.channels}${info.hasAlpha ? "（含透明）" : ""}` : "—" },
+      { label: "帧数", value: Number(info.frameCount) > 1 ? `${info.frameCount} 帧` : "—" },
+      { label: "帧率", value: Number(info.frameCount) > 1 ? formatMediaFrameRate(info.frameRate) : "—" }
+    ];
+  } else {
+    const video = info.video || null;
+    const audio = info.audio || null;
+    summary = String(info.container || info.previewType || "MEDIA").toUpperCase();
+    if (video) {
+      entries.push(
+        { label: "分辨率", value: formatMediaResolution(video.width, video.height) },
+        { label: "帧率", value: formatMediaFrameRate(video.frameRate) },
+        { label: "时长", value: formatMediaDuration(info.durationSeconds) },
+        { label: "总码率", value: formatMediaBitRate(info.bitRate) },
+        { label: "视频编码", value: formatMediaCodec(video.codec) },
+        { label: "视频码率", value: formatMediaBitRate(video.bitRate) },
+        { label: "像素格式", value: video.pixelFormat ? String(video.pixelFormat).toUpperCase() : "—" },
+        { label: "封装", value: summary }
+      );
+    } else {
+      entries.push(
+        { label: "时长", value: formatMediaDuration(info.durationSeconds) },
+        { label: "总码率", value: formatMediaBitRate(info.bitRate) },
+        { label: "封装", value: summary }
+      );
+    }
+    if (audio) {
+      entries.push(
+        { label: "音频编码", value: formatMediaCodec(audio.codec) },
+        { label: "音频码率", value: formatMediaBitRate(audio.bitRate) },
+        { label: "采样率", value: audio.sampleRate ? `${Math.round(audio.sampleRate / 100) / 10} kHz` : "—" },
+        { label: "声道", value: audio.channelLayout || (audio.channels ? `${audio.channels} 声道` : "—") }
+      );
+    } else if (video) {
+      entries.push({ label: "音轨", value: "无" });
+    }
+  }
+  return `
+    <section class="workspace-media-info">
+      <div class="workspace-projects-head"><span>媒体信息</span><strong>${escapeHtml(summary)}</strong></div>
+      <dl class="workspace-media-details">${renderWorkspaceMediaRows(entries)}</dl>
+    </section>
+  `;
+}
+
+function loadWorkspaceMediaInfo(item) {
+  if (!item || item.type !== "file" || item.previewType === "none") return;
+  const key = getWorkspaceMediaInfoKey(item);
+  if (state.mediaInfoCache.has(key) || state.mediaInfoRequests.has(key)) return;
+  const requestUrl = `/api/media-info?path=${encodeURIComponent(item.path)}${state.nsfwMode ? "&nsfw=1" : ""}`;
+  const request = fetch(requestUrl, { cache: "no-store", credentials: "same-origin" })
+    .then(async (response) => {
+      const data = await parseJsonResponse(response);
+      if (!response.ok) throw new Error(data.error || "媒体信息读取失败");
+      state.mediaInfoCache.set(key, data);
+      while (state.mediaInfoCache.size > 100) {
+        state.mediaInfoCache.delete(state.mediaInfoCache.keys().next().value);
+      }
+    })
+    .catch((error) => {
+      state.mediaInfoCache.set(key, { error: error.message || "媒体信息读取失败" });
+    })
+    .finally(() => {
+      state.mediaInfoRequests.delete(key);
+      const selectedItems = getWorkspaceSelectedItems();
+      if (selectedItems.length === 1 && selectedItems[0].path === item.path) {
+        renderWorkspaceOverview();
+      }
+    });
+  state.mediaInfoRequests.set(key, request);
+}
+
 function renderWorkspaceSingleItem(item) {
   const size = getWorkspaceItemBytes(item);
   const status = item.type === "directory" ? (statusLabels[item.status] || "待开始") : "—";
@@ -4876,6 +5116,7 @@ function renderWorkspaceSingleItem(item) {
         <div><dt>修改</dt><dd>${formatWorkspaceTime(item.updatedAt)}</dd></div>
       </div>
     </dl>
+    ${renderWorkspaceMediaInfo(item)}
     ${renderWorkspaceStorage()}
   `;
 }
@@ -4910,6 +5151,7 @@ function renderWorkspaceOverview() {
   if (selectedItems.length === 1) {
     workspaceModeLabel.textContent = "项目详情";
     workspaceOverviewBody.innerHTML = renderWorkspaceSingleItem(selectedItems[0]);
+    loadWorkspaceMediaInfo(selectedItems[0]);
   } else if (selectedItems.length > 1) {
     workspaceModeLabel.textContent = "批量选择";
     workspaceOverviewBody.innerHTML = renderWorkspaceMultipleItems(selectedItems);

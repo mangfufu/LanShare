@@ -1652,6 +1652,34 @@ body[data-ui-style="editorial"] .workspace-detail-pair dd {
   white-space: nowrap;
 }
 
+body[data-ui-style="editorial"] .workspace-media-info {
+  margin-top: 13px;
+}
+
+body[data-ui-style="editorial"] .workspace-media-details {
+  margin: 0;
+}
+
+body[data-ui-style="editorial"] .workspace-media-pair {
+  border-bottom-color: color-mix(in srgb, var(--line) 78%, transparent);
+}
+
+body[data-ui-style="editorial"] .workspace-media-pair .is-placeholder {
+  visibility: hidden;
+}
+
+body[data-ui-style="editorial"] .workspace-media-loading {
+  min-height: 48px;
+  display: grid;
+  place-items: center;
+  padding: 8px 2px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.5;
+  text-align: center;
+}
+
 body[data-ui-style="editorial"] .workspace-empty {
   display: grid;
   min-height: 96px;

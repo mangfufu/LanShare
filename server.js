@@ -84,6 +84,14 @@ const FOLDER_SIZE_CACHE_SAVE_DELAY_MS = 1000;
 const THUMB_CACHE_CLEANUP_INTERVAL_MS = Number(process.env.THUMB_CACHE_CLEANUP_INTERVAL_MS || 6 * 60 * 60 * 1000);
 const THUMB_CACHE_MAX_AGE_DAYS = Number(process.env.THUMB_CACHE_MAX_AGE_DAYS || 30);
 const THUMB_TEMP_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const configuredMediaInfoTimeoutMs = Number(process.env.MEDIA_INFO_TIMEOUT_MS);
+const MEDIA_INFO_TIMEOUT_MS = Number.isFinite(configuredMediaInfoTimeoutMs) && configuredMediaInfoTimeoutMs >= 1000
+  ? configuredMediaInfoTimeoutMs
+  : 15 * 1000;
+const configuredMediaInfoCacheLimit = Number(process.env.MEDIA_INFO_CACHE_LIMIT);
+const MEDIA_INFO_CACHE_LIMIT = Number.isFinite(configuredMediaInfoCacheLimit) && configuredMediaInfoCacheLimit > 0
+  ? Math.floor(configuredMediaInfoCacheLimit)
+  : 500;
 const batchDownloads = new Map();
 const logBuffer = [];
 const MAX_LOG_BUFFER = 200;
@@ -91,6 +99,8 @@ const MAX_LOG_SIZE = 10 * 1024 * 1024; // 10MB per file
 let workspaceActivityCache = null;
 const videoThumbQueue = [];
 const videoThumbJobs = new Map();
+const mediaInfoCache = new Map();
+const mediaInfoJobs = new Map();
 let activeVideoThumbJobs = 0;
 const folderSizeCache = new Map();
 const folderSizeQueue = [];
@@ -1161,6 +1171,257 @@ function getPreviewType(fileName) {
   if ([".mp3", ".wav", ".ogg", ".m4a", ".flac"].includes(ext)) return "audio";
   if ([".mp4", ".webm", ".mov", ".mkv", ".avi"].includes(ext)) return "video";
   return "none";
+}
+
+function parseMediaNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : null;
+}
+
+function parseMediaFrameRate(value) {
+  const text = String(value || "").trim();
+  if (!text || text === "0/0") return null;
+  const parts = text.split("/");
+  if (parts.length === 2) {
+    const numerator = Number(parts[0]);
+    const denominator = Number(parts[1]);
+    if (Number.isFinite(numerator) && Number.isFinite(denominator) && denominator !== 0) {
+      const result = numerator / denominator;
+      return Number.isFinite(result) && result > 0 ? result : null;
+    }
+  }
+  const result = Number(text);
+  return Number.isFinite(result) && result > 0 ? result : null;
+}
+
+function getImageBitDepth(depth) {
+  const depths = {
+    uchar: 8,
+    char: 8,
+    ushort: 16,
+    short: 16,
+    uint: 32,
+    int: 32,
+    float: 32,
+    double: 64,
+    complex: 64,
+    dpcomplex: 128
+  };
+  return depths[String(depth || "").toLowerCase()] || null;
+}
+
+function runFfprobe(fullPath) {
+  return new Promise((resolve, reject) => {
+    const args = [
+      "-v", "error",
+      "-show_entries",
+      "format=format_name,format_long_name,duration,bit_rate,size:format_tags=major_brand,compatible_brands:stream=index,codec_type,codec_name,codec_long_name,width,height,avg_frame_rate,r_frame_rate,bit_rate,pix_fmt,sample_rate,channels,channel_layout,duration:stream_tags=rotate:stream_side_data=rotation",
+      "-of", "json",
+      fullPath
+    ];
+    const child = spawn("ffprobe", args, { windowsHide: true });
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const finish = (error, data) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (error) reject(error);
+      else resolve(data);
+    };
+    const timer = setTimeout(() => {
+      child.kill();
+      finish(new Error("媒体信息读取超时"));
+    }, Math.max(1000, MEDIA_INFO_TIMEOUT_MS));
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString("utf8");
+      if (stdout.length > 2 * 1024 * 1024) {
+        child.kill();
+        finish(new Error("媒体信息数据异常"));
+      }
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString("utf8");
+      if (stderr.length > 4000) stderr = stderr.slice(-4000);
+    });
+    child.on("error", (error) => finish(error));
+    child.on("close", (code) => {
+      if (settled) return;
+      if (code !== 0) {
+        finish(new Error(stderr.trim() || `ffprobe 退出码 ${code}`));
+        return;
+      }
+      try {
+        finish(null, JSON.parse(stdout || "{}"));
+      } catch {
+        finish(new Error("媒体信息解析失败"));
+      }
+    });
+  });
+}
+
+function getVideoRotation(stream) {
+  const tagRotation = Number(stream && stream.tags && stream.tags.rotate);
+  if (Number.isFinite(tagRotation)) return tagRotation;
+  const sideData = Array.isArray(stream && stream.side_data_list) ? stream.side_data_list : [];
+  const rotation = sideData.map((item) => Number(item.rotation)).find(Number.isFinite);
+  return Number.isFinite(rotation) ? rotation : 0;
+}
+
+function normalizeDisplayResolution(stream) {
+  let width = parseMediaNumber(stream && stream.width);
+  let height = parseMediaNumber(stream && stream.height);
+  const normalizedRotation = Math.abs(getVideoRotation(stream)) % 180;
+  if (normalizedRotation === 90 && width && height) {
+    [width, height] = [height, width];
+  }
+  return { width, height };
+}
+
+function detectMediaContainer(fullPath, format) {
+  const extension = path.extname(fullPath).toLowerCase();
+  const formatNames = String(format && format.format_name || "")
+    .toLowerCase()
+    .split(",")
+    .map((name) => name.trim())
+    .filter(Boolean);
+  const majorBrand = String(format && format.tags && format.tags.major_brand || "")
+    .trim()
+    .toLowerCase();
+
+  if (formatNames.includes("mov") && formatNames.includes("mp4")) {
+    if (majorBrand.startsWith("qt")) return "mov";
+    const isoFamilyLabels = {
+      ".mp4": "mp4",
+      ".m4a": "m4a",
+      ".3gp": "3gp",
+      ".3g2": "3g2",
+      ".mj2": "mj2",
+      ".mov": "mov"
+    };
+    return isoFamilyLabels[extension] || "mp4";
+  }
+  if (formatNames.includes("matroska") && formatNames.includes("webm")) {
+    return extension === ".webm" ? "webm" : "mkv";
+  }
+  const extensionName = extension.slice(1);
+  if (extensionName && formatNames.includes(extensionName)) return extensionName;
+  return formatNames[0] || extensionName;
+}
+
+async function inspectImageInfo(fullPath) {
+  const metadata = await sharp(fullPath, { animated: true, limitInputPixels: 12000 * 12000 }).metadata();
+  let width = parseMediaNumber(metadata.autoOrient && metadata.autoOrient.width) || parseMediaNumber(metadata.width);
+  let height = parseMediaNumber(metadata.autoOrient && metadata.autoOrient.height) || parseMediaNumber(metadata.height);
+  if (
+    !(metadata.autoOrient && metadata.autoOrient.width)
+    && [5, 6, 7, 8].includes(Number(metadata.orientation))
+    && width
+    && height
+  ) {
+    [width, height] = [height, width];
+  }
+  const delays = Array.isArray(metadata.delay)
+    ? metadata.delay.map(Number).filter((value) => Number.isFinite(value) && value > 0)
+    : [];
+  const averageDelay = delays.length > 0
+    ? delays.reduce((total, value) => total + value, 0) / delays.length
+    : null;
+  return {
+    previewType: "image",
+    format: String(metadata.format || path.extname(fullPath).slice(1) || "").toUpperCase(),
+    width,
+    height,
+    megapixels: width && height ? width * height / 1000000 : null,
+    colorSpace: metadata.space || null,
+    channels: parseMediaNumber(metadata.channels),
+    bitDepth: getImageBitDepth(metadata.depth),
+    density: parseMediaNumber(metadata.density),
+    frameCount: parseMediaNumber(metadata.pages) || 1,
+    frameRate: averageDelay ? 1000 / averageDelay : null,
+    hasAlpha: Boolean(metadata.hasAlpha)
+  };
+}
+
+async function inspectAvInfo(fullPath, previewType, stat) {
+  const probe = await runFfprobe(fullPath);
+  const streams = Array.isArray(probe.streams) ? probe.streams : [];
+  const format = probe.format && typeof probe.format === "object" ? probe.format : {};
+  const videoStream = streams.find((stream) => stream.codec_type === "video") || null;
+  const audioStream = streams.find((stream) => stream.codec_type === "audio") || null;
+  const durationSeconds = parseMediaNumber(format.duration)
+    ?? parseMediaNumber(videoStream && videoStream.duration)
+    ?? parseMediaNumber(audioStream && audioStream.duration);
+  const measuredBitRate = parseMediaNumber(format.bit_rate);
+  const estimatedBitRate = durationSeconds && stat.size > 0 ? stat.size * 8 / durationSeconds : null;
+  const resolution = normalizeDisplayResolution(videoStream);
+  return {
+    previewType,
+    container: detectMediaContainer(fullPath, format),
+    containerName: format.format_long_name || null,
+    durationSeconds,
+    bitRate: measuredBitRate || estimatedBitRate,
+    video: videoStream ? {
+      codec: videoStream.codec_name || null,
+      codecName: videoStream.codec_long_name || null,
+      width: resolution.width,
+      height: resolution.height,
+      frameRate: parseMediaFrameRate(videoStream.avg_frame_rate)
+        || parseMediaFrameRate(videoStream.r_frame_rate),
+      bitRate: parseMediaNumber(videoStream.bit_rate),
+      pixelFormat: videoStream.pix_fmt || null,
+      rotation: getVideoRotation(videoStream)
+    } : null,
+    audio: audioStream ? {
+      codec: audioStream.codec_name || null,
+      codecName: audioStream.codec_long_name || null,
+      sampleRate: parseMediaNumber(audioStream.sample_rate),
+      channels: parseMediaNumber(audioStream.channels),
+      channelLayout: audioStream.channel_layout || null,
+      bitRate: parseMediaNumber(audioStream.bit_rate)
+    } : null
+  };
+}
+
+function cacheMediaInfo(key, value) {
+  mediaInfoCache.delete(key);
+  mediaInfoCache.set(key, value);
+  const limit = Number.isFinite(MEDIA_INFO_CACHE_LIMIT) && MEDIA_INFO_CACHE_LIMIT > 0
+    ? Math.floor(MEDIA_INFO_CACHE_LIMIT)
+    : 500;
+  while (mediaInfoCache.size > limit) {
+    const oldestKey = mediaInfoCache.keys().next().value;
+    mediaInfoCache.delete(oldestKey);
+  }
+}
+
+async function readMediaInfo(relativePath, rootOverride) {
+  const root = rootOverride || ROOT_DIR;
+  const safePath = safeRelative(relativePath);
+  if (!safePath) throw new Error("没有指定媒体文件");
+  const fullPath = path.resolve(root, safePath);
+  if (fullPath !== root && !fullPath.startsWith(root + path.sep)) throw new Error("路径越界");
+  const stat = await fsp.stat(toFsPath(fullPath));
+  if (!stat.isFile()) throw new Error("仅支持读取文件媒体信息");
+  const previewType = getPreviewType(fullPath);
+  if (previewType === "none") throw new Error("当前文件不支持媒体信息读取");
+  const cacheKey = `${rootOverride ? "nsfw" : "shared"}:${safePath}:${stat.size}:${stat.mtimeMs}`;
+  if (mediaInfoCache.has(cacheKey)) return mediaInfoCache.get(cacheKey);
+  if (mediaInfoJobs.has(cacheKey)) return mediaInfoJobs.get(cacheKey);
+  const job = (previewType === "image"
+    ? inspectImageInfo(fullPath)
+    : inspectAvInfo(fullPath, previewType, stat))
+    .then((result) => {
+      const value = { path: safePath, size: stat.size, ...result };
+      cacheMediaInfo(cacheKey, value);
+      return value;
+    })
+    .finally(() => {
+      mediaInfoJobs.delete(cacheKey);
+    });
+  mediaInfoJobs.set(cacheKey, job);
+  return job;
 }
 
 async function getDirSize(dirPath, depth = 1) {
@@ -3286,6 +3547,10 @@ function assertApiPermission(req, url) {
     requirePermission(req, "*");
     return;
   }
+  if (req.method === "GET" && url.pathname === "/api/media-info") {
+    requirePermission(req, "files.preview");
+    return;
+  }
   if (req.method === "GET" && url.pathname === "/api/recycle/list") {
     requirePermission(req, "recycle.read");
     return;
@@ -4246,6 +4511,27 @@ async function handleApi(req, res, url) {
       sendJson(res, 200, { currentDir: dir, ...result });
     } catch (error) {
       sendJson(res, 400, { error: error.message });
+    }
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/media-info") {
+    try {
+      const mediaInfo = await readMediaInfo(
+        url.searchParams.get("path"),
+        req._nsfwMode ? NSFW_DIR : null
+      );
+      sendJson(res, 200, mediaInfo, { "Cache-Control": "no-store" });
+    } catch (error) {
+      const statusCode = error.code === "ENOENT" ? 404 : 400;
+      if (statusCode !== 404) {
+        console.error(`媒体信息读取失败: ${error.message}`);
+      }
+      sendJson(res, statusCode, {
+        error: statusCode === 404 ? "媒体文件不存在" : "媒体信息读取失败"
+      }, {
+        "Cache-Control": "no-store"
+      });
     }
     return true;
   }

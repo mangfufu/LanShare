@@ -83,9 +83,9 @@ Tools run in iframes, inheriting theme CSS variables from parent via MutationObs
 - **NSFW auth**: Successful password verification creates an in-memory session identified by an HttpOnly, SameSite=Strict Cookie. The default TTL is 12 hours (`NSFW_SESSION_TTL_MS`); logout, password changes, and server restarts invalidate sessions.
 - **Path safety**: `safeRelative()` normalizes paths, `resolveInsideRoot()` prevents directory traversal
 - **Recycle bin**: Items are `rename`-ed to `recycle_bin/<uuid>/` with a `meta.json`
-- **Daily backup**: Defaults to 23:55. The first snapshot copies all files; later snapshots compare source size, mtime, and ctime, then hard-link unchanged files from the previous snapshot and copy new/changed files. Both copy and hard-link paths recheck source stability.
+- **Daily backup**: Disabled by default. Set `DAILY_BACKUP_ENABLED=1` only when an external backup location has enough capacity. When enabled, the first snapshot copies all files; later snapshots compare source size, mtime, and ctime, then hard-link unchanged files from the previous snapshot and copy new/changed files.
 - **Per-upload backup**: Disabled by default. Set `PER_UPLOAD_BACKUP_ENABLED=1` only for temporary legacy compatibility.
-- **Backup scope**: Each daily snapshot includes both `shared` and `shared_NSFW` and writes `.snapshot.json`.
+- **Backup scope**: When explicitly enabled, each daily snapshot includes both `shared` and `shared_NSFW` and writes `.snapshot.json`; `forum.db` is not included.
 - **Tool iframes**: Audio/Video tools use `crypto.randomUUID()` polyfill (`generateId()`) for iframe compatibility
 - **Thumbnail**: Uses ffmpeg with `-analyzeduration 100M -probesize 50M` to handle moov atom at end of MP4 files
 - **File stream**: No slot limit (removed 48-concurrent limit). Direct streaming via `pipeFileToResponse()`

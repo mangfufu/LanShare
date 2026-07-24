@@ -61,7 +61,7 @@ const MAX_BODY_SIZE = 2 * 1024 * 1024 * 1024;
 const MAX_FILE_SIZE = Number(process.env.MAX_FILE_SIZE || 8 * 1024 * 1024 * 1024);
 
 const PER_UPLOAD_BACKUP_ENABLED = process.env.PER_UPLOAD_BACKUP_ENABLED === "1";
-const DAILY_BACKUP_ENABLED = process.env.DAILY_BACKUP_ENABLED !== "0";
+const DAILY_BACKUP_ENABLED = process.env.DAILY_BACKUP_ENABLED === "1";
 const configuredDailyBackupHour = Number(process.env.DAILY_BACKUP_HOUR);
 const configuredDailyBackupMinute = Number(process.env.DAILY_BACKUP_MINUTE);
 const DAILY_BACKUP_HOUR = Number.isInteger(configuredDailyBackupHour) && configuredDailyBackupHour >= 0 && configuredDailyBackupHour <= 23
@@ -2095,7 +2095,7 @@ async function handleStreamingUpload(req, rootDir) {
           throw error;
         }
 
-        // 兼容旧模式；默认关闭逐次上传备份，改由每日增量快照统一处理。
+        // 兼容旧模式；逐次上传备份默认关闭，仅显式设置环境变量时启用。
         if (backupPath) {
           (async () => {
             try {

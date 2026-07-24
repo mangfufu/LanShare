@@ -155,6 +155,9 @@ const closeLogBtn = document.querySelector("#closeLogBtn");
 const workspaceRail = document.querySelector("#workspaceRail");
 const workspaceModeLabel = document.querySelector("#workspaceModeLabel");
 const workspaceOverviewBody = document.querySelector("#workspaceOverviewBody");
+const onlineRail = document.querySelector("#onlineRail");
+const onlineRailCount = document.querySelector("#onlineRailCount");
+const onlineRailList = document.querySelector("#onlineRailList");
 const forumComposeToggle = document.querySelector("#forumComposeToggle");
 const forumComposeForm = document.querySelector("#forumComposeForm");
 const forumPostTitle = document.querySelector("#forumPostTitle");
@@ -4417,6 +4420,7 @@ if (hideBtn) {
       document.querySelector("#recycleDrawer"),
       document.querySelector("#floatControl"),
       document.querySelector("#workspaceRail"),
+      document.querySelector("#onlineRail"),
       document.querySelector("#tab-audio"),
       document.querySelector("#tab-video"),
     ];
@@ -4709,7 +4713,12 @@ function renderWorkspaceWorkSummary() {
   const downloadedBytesToday = activity ? Number(activity.downloadedBytes) || 0 : null;
   const deletedToday = activity ? Number(activity.deletedItems) || 0 : null;
   const deletedBytesToday = activity ? Number(activity.deletedBytes) || 0 : null;
-  const activeDevices = activity ? Number(activity.activeDevices) || 0 : null;
+  const onlineUsers = Array.isArray(state.workspaceStatus?.onlineUsers)
+    ? state.workspaceStatus.onlineUsers
+    : null;
+  const onlineDeviceCount = onlineUsers
+    ? onlineUsers.reduce((total, user) => total + (Number(user.deviceCount) || 0), 0)
+    : null;
   const projectCount = Math.max(1, projects.length);
   const pendingWidth = notStarted / projectCount * 100;
   const progressWidth = inProgress / projectCount * 100;
@@ -4724,7 +4733,7 @@ function renderWorkspaceWorkSummary() {
         <div class="workspace-stat"><span>项目总数</span><strong>${projects.length} 项</strong></div>
         <div class="workspace-stat workspace-activity-stat" title="文件项数 · 数据量"><span>今日上传</span><strong>${uploadedToday == null ? "读取中" : `${uploadedToday} 项 · ${formatWorkspaceActivitySize(uploadedBytesToday, activity.uploadedBytesComplete)}`}</strong></div>
         <div class="workspace-stat workspace-activity-stat" title="文件项数 · 数据量"><span>今日下载 / 删除</span><strong class="workspace-activity-values">${downloadedToday == null || deletedToday == null ? "读取中" : `<b>下载 ${downloadedToday} 项 · ${formatWorkspaceActivitySize(downloadedBytesToday, activity.downloadedBytesComplete)}</b><b>删除 ${deletedToday} 项 · ${formatWorkspaceActivitySize(deletedBytesToday, activity.deletedBytesComplete)}</b>`}</strong></div>
-        <div class="workspace-stat"><span>在线设备</span><strong>${activeDevices == null ? "读取中" : `${activeDevices} 台`}</strong></div>
+        <div class="workspace-stat"><span>当前在线</span><strong>${onlineUsers == null ? "读取中" : `${onlineUsers.length} 人 · ${onlineDeviceCount} 台`}</strong></div>
       </div>
       <div class="workspace-progress" aria-label="待开始 ${notStarted} 项，进行中 ${inProgress} 项，已完成 ${completed} 项">
         <div class="workspace-progress-track">
@@ -4740,6 +4749,34 @@ function renderWorkspaceWorkSummary() {
       </div>
     </section>
   `;
+}
+
+function renderOnlineRail() {
+  if (!onlineRailCount || !onlineRailList) return;
+  const onlineUsers = Array.isArray(state.workspaceStatus?.onlineUsers)
+    ? state.workspaceStatus.onlineUsers
+    : null;
+  if (!onlineUsers) {
+    onlineRailCount.textContent = "读取中";
+    onlineRailList.innerHTML = '<div class="online-rail-empty">正在读取…</div>';
+    return;
+  }
+  onlineRailCount.textContent = `${onlineUsers.length} 人`;
+  onlineRailList.innerHTML = onlineUsers.length
+    ? onlineUsers.map((user) => {
+      const initial = Array.from(user.name || "账")[0] || "账";
+      const deviceLabel = Number(user.deviceCount) > 1 ? `${user.deviceCount} 台` : "在线";
+      const accountId = user.username ? `@${user.username}` : user.name;
+      const hoverDetail = `${user.name} · ${user.roleLabel || user.role || ""} · ${deviceLabel}${user.isSelf ? " · 当前账号" : ""}`;
+      return `
+        <div class="online-rail-user${user.isSelf ? " is-self" : ""}" title="${escapeHtml(hoverDetail)}">
+          <span class="online-rail-avatar" aria-hidden="true">${escapeHtml(initial)}</span>
+          <small>${escapeHtml(accountId)}</small>
+          <i class="online-rail-presence" aria-label="在线"></i>
+        </div>
+      `;
+    }).join("")
+    : '<div class="online-rail-empty">暂无在线账号</div>';
 }
 
 function renderInProgressProjects() {
@@ -4919,9 +4956,11 @@ async function loadWorkspaceStatus() {
     if (!response.ok) throw new Error(data.error || "读取工作区状态失败");
     state.workspaceStatus = data;
     renderWorkspaceOverview();
+    renderOnlineRail();
   } catch {
     state.workspaceStatus = null;
     renderWorkspaceOverview();
+    renderOnlineRail();
   }
 }
 
@@ -5723,6 +5762,7 @@ if (forumComposeToggle && forumComposeForm) {
 accountReady.then((user) => {
   if (!user) return;
   renderWorkspaceOverview();
+  renderOnlineRail();
   loadWorkspaceStatus();
   loadForumPosts();
 });

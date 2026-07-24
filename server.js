@@ -102,9 +102,20 @@ let dailyBackupRunning = false;
 const CSRF_TOKEN = crypto.randomBytes(32).toString("hex");
 const NSFW_SESSION_COOKIE = "lanshare_nsfw_session";
 const FORUM_OWNER_COOKIE = "lanshare_forum_owner";
-const AUTH_SESSION_COOKIE = "lanshare_auth_session";
+// Cookie 本身不支持按端口隔离。测试版（8082）和正式版（8080）使用不同名称，
+// 避免在同一浏览器里互相覆盖登录状态。
+const AUTH_SESSION_COOKIE = process.env.AUTH_SESSION_COOKIE || `lanshare_auth_session_${PORT}`;
+const LEGACY_AUTH_SESSION_COOKIE = "lanshare_auth_session";
 const AUTH_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 const AUTH_REMEMBER_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const configuredAuthOnlineWindowMs = Number(process.env.AUTH_ONLINE_WINDOW_MS);
+const AUTH_ONLINE_WINDOW_MS = Number.isFinite(configuredAuthOnlineWindowMs) && configuredAuthOnlineWindowMs >= 100
+  ? configuredAuthOnlineWindowMs
+  : 45 * 1000;
+const configuredAuthLastSeenUpdateMs = Number(process.env.AUTH_LAST_SEEN_UPDATE_MS);
+const AUTH_LAST_SEEN_UPDATE_MS = Number.isFinite(configuredAuthLastSeenUpdateMs) && configuredAuthLastSeenUpdateMs >= 50
+  ? configuredAuthLastSeenUpdateMs
+  : 10 * 1000;
 const AUTH_ROLES = new Set(["guest", "editor", "admin"]);
 const AUTH_ROLE_LABELS = {
   guest: "游客",
@@ -418,6 +429,42 @@ function cleanupExpiredAuthSessions(database = initAuthDatabase()) {
   database.prepare("DELETE FROM auth_sessions WHERE expires_at <= ?").run(Date.now());
 }
 
+function readOnlineUsers(currentUserId) {
+  const database = initAuthDatabase();
+  const now = Date.now();
+  cleanupExpiredAuthSessions(database);
+  const rows = database.prepare(`
+    SELECT
+      u.id,
+      u.username,
+      u.name,
+      u.role,
+      COUNT(s.token_hash) AS deviceCount,
+      MAX(s.last_seen_at) AS lastActiveAt
+    FROM auth_sessions s
+    JOIN users u ON u.id = s.user_id
+    WHERE
+      u.enabled = 1
+      AND s.expires_at > ?
+      AND s.last_seen_at >= ?
+    GROUP BY u.id
+    ORDER BY
+      CASE WHEN u.id = ? THEN 0 ELSE 1 END,
+      MAX(s.last_seen_at) DESC,
+      u.name COLLATE NOCASE ASC
+  `).all(now, now - AUTH_ONLINE_WINDOW_MS, currentUserId);
+  return rows.map((row) => ({
+    id: Number(row.id),
+    username: row.username,
+    name: row.name,
+    role: row.role,
+    roleLabel: AUTH_ROLE_LABELS[row.role] || row.role,
+    deviceCount: Number(row.deviceCount || 0),
+    lastActiveAt: Number(row.lastActiveAt),
+    isSelf: Number(row.id) === Number(currentUserId)
+  }));
+}
+
 function createAuthSession(userId, rememberMe) {
   const database = initAuthDatabase();
   cleanupExpiredAuthSessions(database);
@@ -432,12 +479,24 @@ function createAuthSession(userId, rememberMe) {
   return { token, expiresAt: now + ttl, rememberMe: Boolean(rememberMe) };
 }
 
+function getAuthSessionCandidates(req) {
+  const candidates = [];
+  const scopedToken = getRequestCookie(req, AUTH_SESSION_COOKIE);
+  if (/^[a-f0-9]{64}$/.test(scopedToken)) {
+    candidates.push({ token: scopedToken, legacy: false });
+  }
+  if (AUTH_SESSION_COOKIE !== LEGACY_AUTH_SESSION_COOKIE) {
+    const legacyToken = getRequestCookie(req, LEGACY_AUTH_SESSION_COOKIE);
+    if (/^[a-f0-9]{64}$/.test(legacyToken) && legacyToken !== scopedToken) {
+      candidates.push({ token: legacyToken, legacy: true });
+    }
+  }
+  return candidates;
+}
+
 function readAuthenticatedUser(req) {
-  const token = getRequestCookie(req, AUTH_SESSION_COOKIE);
-  if (!/^[a-f0-9]{64}$/.test(token)) return null;
   const database = initAuthDatabase();
-  const tokenHash = hashSessionToken(token);
-  const row = database.prepare(`
+  const statement = database.prepare(`
     SELECT
       u.id,
       u.username,
@@ -445,32 +504,72 @@ function readAuthenticatedUser(req) {
       u.role,
       u.enabled,
       u.is_protected_admin AS protectedAdmin,
+      s.remember_me AS rememberMe,
       s.last_seen_at AS lastSeenAt,
       s.expires_at AS expiresAt
     FROM auth_sessions s
     JOIN users u ON u.id = s.user_id
     WHERE s.token_hash = ?
-  `).get(tokenHash);
-  if (!row || !row.enabled || Number(row.expiresAt) <= Date.now()) {
-    database.prepare("DELETE FROM auth_sessions WHERE token_hash = ?").run(tokenHash);
-    return null;
+  `);
+  for (const candidate of getAuthSessionCandidates(req)) {
+    const tokenHash = hashSessionToken(candidate.token);
+    const row = statement.get(tokenHash);
+    if (!row || !row.enabled || Number(row.expiresAt) <= Date.now()) {
+      database.prepare("DELETE FROM auth_sessions WHERE token_hash = ?").run(tokenHash);
+      continue;
+    }
+    if (Date.now() - Number(row.lastSeenAt || 0) >= AUTH_LAST_SEEN_UPDATE_MS) {
+      database.prepare("UPDATE auth_sessions SET last_seen_at = ? WHERE token_hash = ?")
+        .run(Date.now(), tokenHash);
+    }
+    req.authSession = {
+      token: candidate.token,
+      tokenHash,
+      expiresAt: Number(row.expiresAt),
+      rememberMe: Boolean(row.rememberMe),
+      legacy: candidate.legacy
+    };
+    return publicAuthUser(row);
   }
-  if (Date.now() - Number(row.lastSeenAt || 0) >= 5 * 60 * 1000) {
-    database.prepare("UPDATE auth_sessions SET last_seen_at = ? WHERE token_hash = ?")
-      .run(Date.now(), tokenHash);
-  }
-  return publicAuthUser(row);
+  return null;
 }
 
 function revokeAuthSession(req) {
-  const token = getRequestCookie(req, AUTH_SESSION_COOKIE);
-  if (!token) return;
-  initAuthDatabase().prepare("DELETE FROM auth_sessions WHERE token_hash = ?").run(hashSessionToken(token));
+  const tokenHash = req.authSession && req.authSession.tokenHash;
+  if (!tokenHash) return;
+  initAuthDatabase().prepare("DELETE FROM auth_sessions WHERE token_hash = ?").run(tokenHash);
+}
+
+function revokeLegacyAuthSession(req) {
+  if (AUTH_SESSION_COOKIE === LEGACY_AUTH_SESSION_COOKIE) return;
+  const legacyToken = getRequestCookie(req, LEGACY_AUTH_SESSION_COOKIE);
+  if (!/^[a-f0-9]{64}$/.test(legacyToken)) return;
+  initAuthDatabase()
+    .prepare("DELETE FROM auth_sessions WHERE token_hash = ?")
+    .run(hashSessionToken(legacyToken));
+}
+
+function migrateLegacyAuthSession(req) {
+  if (!req.authUser || !req.authSession || !req.authSession.legacy) return null;
+  const token = crypto.randomBytes(32).toString("hex");
+  const tokenHash = hashSessionToken(token);
+  const result = initAuthDatabase().prepare(`
+    UPDATE auth_sessions
+    SET token_hash = ?, last_seen_at = ?
+    WHERE token_hash = ?
+  `).run(tokenHash, Date.now(), req.authSession.tokenHash);
+  if (Number(result.changes || 0) !== 1) return null;
+  req.authSession = {
+    ...req.authSession,
+    token,
+    tokenHash,
+    legacy: false
+  };
+  return req.authSession;
 }
 
 function revokeOtherAuthSessions(userId, req) {
-  const token = getRequestCookie(req, AUTH_SESSION_COOKIE);
-  const currentHash = token ? hashSessionToken(token) : "";
+  const currentHash = req.authSession ? req.authSession.tokenHash : "";
   if (currentHash) {
     initAuthDatabase()
       .prepare("DELETE FROM auth_sessions WHERE user_id = ? AND token_hash <> ?")
@@ -833,15 +932,17 @@ function isSecureRequest(req) {
     || getHeaderValue(req, "x-forwarded-proto").toLowerCase() === "https";
 }
 
-function makeAuthSessionCookie(req, token, options = {}) {
+function makeAuthSessionCookie(req, token, options = {}, cookieName = AUTH_SESSION_COOKIE) {
   const parts = [
-    `${AUTH_SESSION_COOKIE}=${encodeURIComponent(token)}`,
+    `${cookieName}=${encodeURIComponent(token)}`,
     "Path=/",
     "HttpOnly",
     "SameSite=Strict"
   ];
   if (Number.isFinite(options.maxAgeSeconds)) {
-    parts.push(`Max-Age=${Math.max(0, Math.floor(options.maxAgeSeconds))}`);
+    const maxAgeSeconds = Math.max(0, Math.floor(options.maxAgeSeconds));
+    parts.push(`Max-Age=${maxAgeSeconds}`);
+    if (maxAgeSeconds === 0) parts.push("Expires=Thu, 01 Jan 1970 00:00:00 GMT");
   }
   if (isSecureRequest(req)) parts.push("Secure");
   return parts.join("; ");
@@ -3132,11 +3233,18 @@ function sendAuthRequired(res, message = "请先登录") {
 }
 
 function sendAuthCookieResponse(req, res, statusCode, payload, session) {
-  const cookieOptions = session.rememberMe
-    ? { maxAgeSeconds: Math.max(1, Math.floor((session.expiresAt - Date.now()) / 1000)) }
-    : {};
+  // 普通登录也写入 12 小时持久 Cookie，保证服务更新、重启或浏览器重开后
+  // 仍可恢复数据库中的有效会话；“记住我”则延长为 30 天。
+  const cookieOptions = {
+    maxAgeSeconds: Math.max(1, Math.floor((session.expiresAt - Date.now()) / 1000))
+  };
+  const cookies = [makeAuthSessionCookie(req, session.token, cookieOptions)];
+  if (AUTH_SESSION_COOKIE !== LEGACY_AUTH_SESSION_COOKIE) {
+    revokeLegacyAuthSession(req);
+    cookies.push(makeAuthSessionCookie(req, "", { maxAgeSeconds: 0 }, LEGACY_AUTH_SESSION_COOKIE));
+  }
   sendJson(res, statusCode, payload, {
-    "Set-Cookie": makeAuthSessionCookie(req, session.token, cookieOptions),
+    "Set-Cookie": cookies,
     "Cache-Control": "no-store"
   });
 }
@@ -3205,11 +3313,21 @@ async function handleAuthApi(req, res, url) {
     const adminExists = Boolean(database.prepare(
       "SELECT 1 FROM users WHERE role = 'admin' AND enabled = 1 LIMIT 1"
     ).get());
+    const headers = { "Cache-Control": "no-store" };
+    const migratedSession = migrateLegacyAuthSession(req);
+    if (migratedSession) {
+      headers["Set-Cookie"] = [
+        makeAuthSessionCookie(req, migratedSession.token, {
+          maxAgeSeconds: Math.max(1, Math.floor((migratedSession.expiresAt - Date.now()) / 1000))
+        }),
+        makeAuthSessionCookie(req, "", { maxAgeSeconds: 0 }, LEGACY_AUTH_SESSION_COOKIE)
+      ];
+    }
     sendJson(res, 200, {
       authenticated: Boolean(req.authUser),
       user: req.authUser || null,
       initialAdminAvailable: !adminExists && isLoopbackRequest(req)
-    }, { "Cache-Control": "no-store" });
+    }, headers);
     return true;
   }
 
@@ -3335,8 +3453,11 @@ async function handleAuthApi(req, res, url) {
         logAction(req.authUser.name, getClientIp(req), "退出登录", req.authUser.username);
       }
       revokeAuthSession(req);
+      const activeCookieName = req.authSession && req.authSession.legacy
+        ? LEGACY_AUTH_SESSION_COOKIE
+        : AUTH_SESSION_COOKIE;
       sendJson(res, 200, { ok: true }, {
-        "Set-Cookie": makeAuthSessionCookie(req, "", { maxAgeSeconds: 0 }),
+        "Set-Cookie": makeAuthSessionCookie(req, "", { maxAgeSeconds: 0 }, activeCookieName),
         "Cache-Control": "no-store"
       });
     } catch (error) {
@@ -3801,6 +3922,7 @@ async function handleApi(req, res, url) {
       const latestSnapshot = await findLatestDailySnapshot();
       const latestStat = latestSnapshot ? await fsp.stat(latestSnapshot).catch(() => null) : null;
       const activity = await readTodayWorkspaceActivity();
+      const onlineUsers = readOnlineUsers(req.authUser.id);
       sendJson(res, 200, {
         storage: {
           volume: path.parse(ROOT_DIR).root.replace(/[\\/]+$/, ""),
@@ -3814,7 +3936,9 @@ async function handleApi(req, res, url) {
           nextAt: DAILY_BACKUP_ENABLED ? getNextDailyBackupTime().toISOString() : null,
           latestAt: latestStat ? latestStat.mtime.toISOString() : null
         },
-        activity
+        activity,
+        onlineUsers,
+        onlineWindowMs: AUTH_ONLINE_WINDOW_MS
       }, { "Cache-Control": "no-store" });
     } catch (error) {
       sendJson(res, 500, { error: error.message });

@@ -34,8 +34,8 @@ static/
       index.html
       app.js
       styles.css
-shared/                # Uploaded files live here
-shared_NSFW/           # Password-entry overseas-drama files
+Files/                 # Uploaded files live here
+Files_Global/          # Restricted files live here
 backup/daily/          # Daily incremental snapshots and .snapshot.json manifests
 recycle_bin/           # Deleted files before permanent removal
 logs/                  # Daily log files (YYYY-MM-DD.log)
@@ -50,7 +50,8 @@ Mirror of production with port 8082. Used for testing changes before syncing to 
 | 端口 | 8080 | 8082 |
 | 浏览器标签页标题 | 局域网文件服务器 | 局域网文件服务器（测试版） |
 | 版本号 | 与 dev 保持一致 | 与正式版保持一致 |
-| shared 目录 | `<项目目录>\shared\` | `<项目目录>\dev\shared\` |
+| Files 目录 | `<项目目录>\Files\` | `<项目目录>\dev\Files\` |
+| Files_Global 目录 | `<项目目录>\Files_Global\` | `<项目目录>\dev\Files_Global\` |
 | ROOT_DIR 基准 | 正式版 `__dirname` | dev 版 `__dirname` |
 
 ### Backup copies
@@ -85,7 +86,7 @@ Tools run in iframes, inheriting theme CSS variables from parent via MutationObs
 - **Recycle bin**: Items are `rename`-ed to `recycle_bin/<uuid>/` with a `meta.json`
 - **Daily backup**: Disabled by default. Set `DAILY_BACKUP_ENABLED=1` only when an external backup location has enough capacity. When enabled, the first snapshot copies all files; later snapshots compare source size, mtime, and ctime, then hard-link unchanged files from the previous snapshot and copy new/changed files.
 - **Per-upload backup**: Disabled by default. Set `PER_UPLOAD_BACKUP_ENABLED=1` only for temporary legacy compatibility.
-- **Backup scope**: When explicitly enabled, each daily snapshot includes both `shared` and `shared_NSFW` and writes `.snapshot.json`; `forum.db` is not included.
+- **Backup scope**: When explicitly enabled, each daily snapshot includes both `Files` and `Files_Global` and writes `.snapshot.json`; `forum.db` is not included.
 - **Tool iframes**: Audio/Video tools use `crypto.randomUUID()` polyfill (`generateId()`) for iframe compatibility
 - **Thumbnail**: Uses ffmpeg with `-analyzeduration 100M -probesize 50M` to handle moov atom at end of MP4 files
 - **File stream**: No slot limit (removed 48-concurrent limit). Direct streaming via `pipeFileToResponse()`

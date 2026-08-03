@@ -24,3 +24,5 @@ folder_size_cache.json
 folder_size_cache.json.*.tmp
 nsfw_password.txt
 bootstrap-admin.json
+/CHANGELOG.md
+/交接文档.md

@@ -1,4 +1,4 @@
-# 局域网文件服务器 v4.0.6
+# 局域网文件服务器 v4.0.7
 
 基于 Node.js 的局域网文件共享与管理工具，采用墨绿色调、衬线字体编辑风 UI。
 
@@ -17,7 +17,7 @@
 - 主页面小论坛保留为最近讨论简版，只显示 5 条标题摘要，可从标题栏或左侧“论坛”入口进入完整页面
 - 账号系统：账号、密码、姓名，支持游客 / 可编辑 / 管理员三级角色和“记住我”
 - 自动备份默认关闭，避免在项目所在磁盘重复占用共享文件空间
-- 海外剧目录使用服务端会话认证，未验证请求不能读取、下载或写入
+- `Files_Global` 使用服务端会话认证，未验证请求不能读取、下载或写入
 
 ## 启动
 
@@ -32,9 +32,9 @@ npm start
 - `http://127.0.0.1:8080`
 - `http://你的局域网IP:8080`
 
-默认共享目录：当前目录下的 `shared`
+默认共享目录：当前目录下的 `Files`
 
-网页将普通根目录显示为 `Files`，将受限根目录显示为 `Files_Global`；这两个名称只用于界面展示，Windows 默认物理目录仍为 `shared` 和 `shared_NSFW`，也可用环境变量改到其他位置。
+普通根目录和 Windows 默认物理目录均为 `Files`，受限根目录和默认物理目录均为 `Files_Global`。从旧版本升级时，若新目录尚不存在但检测到旧目录，服务会继续使用旧目录，避免已有文件在重启后消失；完成停服迁移后即可只保留新名称。也可用环境变量将它们改到其他位置。
 
 ## Docker / NAS 部署
 
@@ -44,7 +44,7 @@ npm start
 ghcr.io/mangfufu/lanshare
 ```
 
-镜像同时提供版本标签（例如 `4.0.6`）、`latest` 和提交短哈希标签。NAS 只运行镜像，账号、论坛、共享文件和缓存均保存在宿主机的 `data` 目录，不写进镜像。
+镜像同时提供版本标签（例如 `4.0.7`）、`latest` 和提交短哈希标签。NAS 只运行镜像，账号、论坛、共享文件和缓存均保存在宿主机的 `data` 目录，不写进镜像。
 
 首次部署时，将仓库中的 `docker-compose.yml`、`.env.example` 和 `bootstrap-admin.example.json` 放在 NAS 的同一部署目录。先在终端进入该部署目录，再执行：
 
@@ -98,13 +98,13 @@ sudo docker compose ps
 
 ```powershell
 $env:PORT=9000
-$env:SHARED_DIR='D:\\共享文件'
-$env:NSFW_DIR='D:\\海外剧文件'
-$env:BACKUP_DIR='D:\\文件备份'
-$env:RECYCLE_DIR='D:\\文件回收站'
-$env:AUTH_DB_FILE='D:\\运行数据\\auth.db'
-$env:FORUM_DB_FILE='D:\\运行数据\\forum.db'
-$env:NSFW_SESSION_TTL_MS=43200000  # 海外剧登录有效期，默认 12 小时
+$env:SHARED_DIR='D:\LanShareData\Files'
+$env:NSFW_DIR='D:\LanShareData\Files_Global'
+$env:BACKUP_DIR='D:\LanShareData\backup'
+$env:RECYCLE_DIR='D:\LanShareData\recycle_bin'
+$env:AUTH_DB_FILE='D:\LanShareData\db\auth.db'
+$env:FORUM_DB_FILE='D:\LanShareData\db\forum.db'
+$env:NSFW_SESSION_TTL_MS=43200000  # Files_Global 登录有效期，默认 12 小时
 $env:MEDIA_INFO_TIMEOUT_MS=15000    # ffprobe 单次探测超时，默认 15 秒
 $env:MEDIA_INFO_CACHE_LIMIT=500     # 服务端媒体信息内存缓存项数
 $env:DOCUMENT_PREVIEW_MAX_SIZE=67108864        # DOCX 源文件预览上限，默认 64MB
@@ -128,7 +128,7 @@ npm start
 
 - 正常启动不会创建每日快照，也不会备份小论坛数据库或账号数据库
 - 默认备份位置：`backup/daily/<快照时间>/`
-- 同时备份 `shared` 和 `shared_NSFW`
+- 同时备份 `Files` 和 `Files_Global`
 - 首次快照完整复制；后续快照只复制新增或修改文件
 - 未变化文件在备份快照之间创建 NTFS 硬链接，不重复占用物理空间
 - 复制或创建硬链接期间检测到大小、修改时间或状态时间变化的文件会跳过，并记录到 `.snapshot.json`
@@ -170,7 +170,7 @@ npm start
 - 图片信息使用 Sharp 读取；视频和音频信息使用系统 `ffprobe`，因此需要 FFmpeg 工具可用
 - DOCX 通过 Mammoth 提取语义化内容，再经 HTML 白名单清理并放入无脚本 iframe；正文、列表、表格和内嵌图片可预览，分页、文本框和复杂浮动版式不保证与 Word 逐像素一致
 - DOCX 转换结果按文件路径、大小和修改时间缓存；游客只能读取转换后的隔离页面，`/file`、`/download` 和原文件 `/preview` 仍不可访问
-- 服务只允许文件操作落在 `shared` 或已认证的 `shared_NSFW` 内，并对主、旧版上传入口统一执行路径越界检查
+- 服务只允许文件操作落在 `Files` 或已认证的 `Files_Global` 内，并对主、旧版上传入口统一执行路径越界检查
 - 海外剧登录使用 HttpOnly、SameSite=Strict 会话 Cookie；退出或修改密码后旧会话立即失效
 - 主账号会话同样使用 HttpOnly、SameSite=Strict Cookie；8080 与 8082 使用独立 Cookie，角色调整对现有会话立即生效
 - 局域网其他设备无法访问通常是 Windows 防火墙未放行对应端口

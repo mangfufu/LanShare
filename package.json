@@ -1,6 +1,6 @@
 {
   "name": "lan-file-server",
-  "version": "4.0.6",
+  "version": "4.0.7",
   "private": true,
   "description": "Local LAN file server with upload, download, and folder creation.",
   "scripts": {

@@ -34,8 +34,16 @@ const mammoth = require("mammoth");
 const sanitizeHtml = require("sanitize-html");
 let sharp;
 try { sharp = require("sharp"); } catch { console.error("错误: sharp 未安装"); process.exit(1); }
+function resolveStorageDirectory(configuredPath, preferredName, legacyName) {
+  if (configuredPath) return path.resolve(configuredPath);
+  const preferredPath = path.join(__dirname, preferredName);
+  const legacyPath = path.join(__dirname, legacyName);
+  return !fs.existsSync(preferredPath) && fs.existsSync(legacyPath)
+    ? path.resolve(legacyPath)
+    : path.resolve(preferredPath);
+}
 const TMP_DIR = path.resolve(process.env.THUMB_CACHE_DIR || path.join(__dirname, "thumb_cache"));
-const NSFW_DIR = path.resolve(process.env.NSFW_DIR || path.join(__dirname, "shared_NSFW"));
+const NSFW_DIR = resolveStorageDirectory(process.env.NSFW_DIR, "Files_Global", "shared_NSFW");
 const NSFW_PASSWORD_FILE = path.resolve(process.env.NSFW_PASSWORD_FILE || path.join(__dirname, "nsfw_password.txt"));
 let nsfwPassword = "";
 async function loadNsfwPassword() {
@@ -51,7 +59,7 @@ function _root(req) { return (req && req._nsfwMode) ? NSFW_DIR : ROOT_DIR; }
 
 const HOST = process.env.HOST || "0.0.0.0";
 const PORT = Number(process.env.PORT || 8080);
-const ROOT_DIR = path.resolve(process.env.SHARED_DIR || path.join(__dirname, "shared"));
+const ROOT_DIR = resolveStorageDirectory(process.env.SHARED_DIR, "Files", "shared");
 const BACKUP_DIR = path.resolve(process.env.BACKUP_DIR || path.join(__dirname, "backup"));
 const DAILY_BACKUP_DIR = path.join(BACKUP_DIR, "daily");
 const RECYCLE_DIR = path.resolve(process.env.RECYCLE_DIR || path.join(__dirname, "recycle_bin"));
@@ -3660,7 +3668,7 @@ async function collectMoveConflicts(paths, targetDir, rootOverride) {
 
   for (const sourceRelative of sourceRelatives) {
     if (!sourceRelative) {
-      throw new Error("不能移动 shared 根目录");
+      throw new Error("不能移动 Files 根目录");
     }
     for (const otherRelative of sourceRelatives) {
       if (sourceRelative !== otherRelative && otherRelative.startsWith(`${sourceRelative}/`)) {
@@ -3724,7 +3732,7 @@ async function moveItems(paths, targetDir, options = {}, rootOverride) {
 
   for (const sourceRelative of sourceRelatives) {
     if (!sourceRelative) {
-      throw new Error("不能移动 shared 根目录");
+      throw new Error("不能移动 Files 根目录");
     }
     for (const otherRelative of sourceRelatives) {
       if (sourceRelative !== otherRelative && otherRelative.startsWith(`${sourceRelative}/`)) {
@@ -3812,7 +3820,7 @@ async function copyItems(paths, targetDir, rootOverride) {
   for (const item of paths) {
     const sourceRelative = safeRelative(item);
     if (!sourceRelative) {
-      throw new Error("不能复制 shared 根目录");
+      throw new Error("不能复制 Files 根目录");
     }
 
     const sourcePath = path.resolve(root, sourceRelative);
@@ -6245,7 +6253,7 @@ async function handleApi(req, res, url) {
       const body = parseJson(await readRequestBody(req));
       const sourceRelative = safeRelative(body.path);
       const newName = String(body.newName || "").trim();
-      if (!sourceRelative) throw new Error("不允许重命名 shared 根目录");
+      if (!sourceRelative) throw new Error("不允许重命名 Files 根目录");
       if (!newName) throw new Error("新名称不能为空");
       if (isInvalidFileName(newName)) throw new Error("新名称包含非法字符");
       const sourcePath = resolveInsideRoot(sourceRelative, req);

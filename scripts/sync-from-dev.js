@@ -40,9 +40,7 @@ const githubManagedPaths = [
   "package.json",
   "package-lock.json",
   "README.md",
-  "CLAUDE.md",
-  "CHANGELOG.md",
-  "交接文档.md"
+  "CLAUDE.md"
 ];
 const publicMetadataPaths = [
   ".github",

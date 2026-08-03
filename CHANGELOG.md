@@ -1,5 +1,14 @@
 # Changelog
 
+## v4.0.5 (2026-08-03)
+
+### 优化
+
+- 文件管理主面包屑、移动面包屑、当前目标、新建位置、搜索结果根目录和空目录提示统一使用 `Files` / `Files_Global`，不再向用户显示内部名称 `shared` / `shared_NSFW`
+- Docker/NAS 持久化目录映射改为 `/data/Files` 与 `/data/Files_Global`；运行数据库继续独立保存在 `/data/db`，代码更新不覆盖 `data`
+
+---
+
 ## v4.0.2 (2026-08-03)
 
 ### 新增

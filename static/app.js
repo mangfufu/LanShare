@@ -1064,6 +1064,10 @@ function updateToolbarButtons() {
   renderWorkspaceOverview();
 }
 
+function getRootDisplayName() {
+  return state.nsfwMode ? "Files_Global" : "Files";
+}
+
 function renderBreadcrumb() {
   breadcrumb.innerHTML = "";
   if (state.searchQuery) {
@@ -1076,7 +1080,7 @@ function renderBreadcrumb() {
   const rootButton = document.createElement("button");
   rootButton.type = "button";
   rootButton.className = "crumb";
-  rootButton.textContent = state.nsfwMode ? "shared_NSFW" : "shared";
+  rootButton.textContent = getRootDisplayName();
   rootButton.onclick = () => loadDir("");
   // 面包屑拖拽支持
   rootButton.addEventListener("dragover", (e) => {
@@ -2438,7 +2442,7 @@ function renderMoveBreadcrumb() {
   const rootButton = document.createElement("button");
   rootButton.type = "button";
   rootButton.className = "crumb";
-  rootButton.textContent = state.nsfwMode ? "shared_NSFW" : "shared";
+  rootButton.textContent = getRootDisplayName();
   rootButton.onclick = () => loadMoveDialogDir("");
   moveDialogBreadcrumb.appendChild(rootButton);
 
@@ -2512,7 +2516,7 @@ async function loadMoveDialogDir(dir) {
   state.moveTargetDir = dir;
   state.moveFilter = "";
   moveSearchInput.value = "";
-  moveDialogCurrent.textContent = `当前目标：shared${dir ? `/${dir}` : ""}`;
+  moveDialogCurrent.textContent = `当前目标：${getRootDisplayName()}${dir ? `/${dir}` : ""}`;
   moveDialogList.innerHTML = "";
   renderMoveBreadcrumb();
   showMoveDialogMessage("", "info");
@@ -2580,7 +2584,7 @@ async function moveSelectedItems() {
 async function createMoveTargetFolder() {
   const name = await openInputDialog({
     title: "新建目标文件夹",
-    label: `创建位置：shared${state.moveTargetDir ? `/${state.moveTargetDir}` : ""}`,
+    label: `创建位置：${getRootDisplayName()}${state.moveTargetDir ? `/${state.moveTargetDir}` : ""}`,
     confirmText: "创建",
     validate: function(value) {
       var e = validatePlainName(value, "文件夹名称不能为空")
@@ -2818,7 +2822,7 @@ function createActions(item) {
 
 function parentDir(p) {
   const i = p.lastIndexOf("/");
-  return i > 0 ? p.slice(0, i) : "shared";
+  return i > 0 ? p.slice(0, i) : getRootDisplayName();
 }
 
 function createGridCard(item) {
@@ -2916,7 +2920,7 @@ function renderGrid(items) {
   } else if (!items.length && !state.currentDir) {
     const empty = document.createElement("div");
     empty.className = "grid-empty";
-    empty.textContent = (state.nsfwMode ? "shared_NSFW" : "共享") + "目录为空，先上传文件、上传文件夹，或新建文件夹。";
+    empty.textContent = getRootDisplayName() + " 目录为空，先上传文件、上传文件夹，或新建文件夹。";
     gridView.appendChild(empty);
   } else if (!items.length) {
     const empty = document.createElement("div");
@@ -3004,7 +3008,7 @@ function renderRows(items) {
 
   if (!items.length && !state.currentDir) {
     const tr = document.createElement("tr");
-    tr.innerHTML = '<td colspan="6" class="empty">' + (state.nsfwMode ? "shared_NSFW" : "共享") + '目录为空，先上传文件、上传文件夹，或新建文件夹。</td>';
+    tr.innerHTML = '<td colspan="6" class="empty">' + getRootDisplayName() + ' 目录为空，先上传文件、上传文件夹，或新建文件夹。</td>';
     tableBody.appendChild(tr);
   } else if (!items.length && state.searchQuery) {
     const tr = document.createElement("tr");
@@ -3545,7 +3549,7 @@ async function uploadFiles(files, options = {}) {
 async function createFolder() {
   const name = await openInputDialog({
     title: "新建文件夹",
-    label: `创建位置：shared${state.currentDir ? `/${state.currentDir}` : ""}`,
+    label: `创建位置：${getRootDisplayName()}${state.currentDir ? `/${state.currentDir}` : ""}`,
     value: "",
     confirmText: "创建",
     validate: function(value) {
@@ -3576,7 +3580,7 @@ async function createProject() {
   dialog.innerHTML = `
     <div class="preview-header">
       <div>
-        <div class="label">创建位置：shared${state.currentDir ? `/${state.currentDir}` : ""}</div>
+        <div class="label">创建位置：${getRootDisplayName()}${state.currentDir ? `/${state.currentDir}` : ""}</div>
         <div class="preview-title">新建项目</div>
       </div>
       <button class="button ghost" data-action="cancel" type="button">关闭</button>

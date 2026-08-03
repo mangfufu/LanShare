@@ -44,6 +44,36 @@ const githubManagedPaths = [
   "CHANGELOG.md",
   "交接文档.md"
 ];
+const publicMetadataPaths = [
+  ".github",
+  ".env.example",
+  "bootstrap-admin.example.json",
+  "docker-compose.yml",
+  "README.md",
+  "CLAUDE.md"
+];
+const privateDetailRules = [
+  {
+    label: "内网 IPv4 地址",
+    pattern: /\b(?:10(?:\.\d{1,3}){3}|192\.168(?:\.\d{1,3}){2}|172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2})\b/i
+  },
+  {
+    label: "Windows 用户目录",
+    pattern: /[a-z]:\\Users\\(?!<)[^\\\s'"`]+/i
+  },
+  {
+    label: "NAS 实际卷路径",
+    pattern: /\/vol\d+\/(?:@[^/\s'"`]+\/)?[^\s'"`]+/i
+  },
+  {
+    label: "SSH/SCP 登录目标",
+    pattern: /\b(?:ssh|scp)\b[^\r\n]*(?:admin|root)@/i
+  },
+  {
+    label: "本地项目绝对路径",
+    pattern: /[a-z]:\\(?:[^\r\n'"`]+\\)?share_web(?:\\|\b)/i
+  }
+];
 
 const copied = [];
 
@@ -59,6 +89,42 @@ async function exists(targetPath) {
 async function ensureRequiredPath(targetPath, label) {
   if (!(await exists(targetPath))) {
     throw new Error(`${label} 不存在: ${targetPath}`);
+  }
+}
+
+async function listFiles(targetPath) {
+  const stat = await fs.stat(targetPath);
+  if (stat.isFile()) return [targetPath];
+  if (!stat.isDirectory()) return [];
+  const files = [];
+  const entries = await fs.readdir(targetPath, { withFileTypes: true });
+  for (const entry of entries) {
+    const entryPath = path.join(targetPath, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...await listFiles(entryPath));
+    } else if (entry.isFile()) {
+      files.push(entryPath);
+    }
+  }
+  return files;
+}
+
+async function assertPublicMetadataIsSanitized() {
+  for (const relativePath of publicMetadataPaths) {
+    const targetPath = path.join(prodDir, relativePath);
+    if (!(await exists(targetPath))) continue;
+    const files = await listFiles(targetPath);
+    for (const filePath of files) {
+      const content = await fs.readFile(filePath, "utf8");
+      for (const rule of privateDetailRules) {
+        const match = rule.pattern.exec(content);
+        if (!match) continue;
+        const line = content.slice(0, match.index).split(/\r?\n/).length;
+        throw new Error(
+          `公开文件包含疑似${rule.label}，拒绝同步：${path.relative(workspaceRoot, filePath)}:${line}`
+        );
+      }
+    }
   }
 }
 
@@ -121,6 +187,12 @@ async function copyFile(sourcePath, targetPath) {
   if (dryRun) return;
   await fs.mkdir(path.dirname(targetPath), { recursive: true });
   await fs.copyFile(sourcePath, targetPath);
+}
+
+async function removeFile(targetPath) {
+  copied.push(`移除 ${path.relative(workspaceRoot, targetPath)}`);
+  if (dryRun) return;
+  await fs.rm(targetPath, { force: true });
 }
 
 async function copyDir(sourceDir, targetDir) {
@@ -218,7 +290,7 @@ async function syncStaticFiles() {
   await writeFile(path.join(githubDir, "static", "index.html"), productionIndex, "dev/static/index.html(正式版)");
 }
 
-async function syncProductionExtras(targetDir) {
+async function syncProductionExtras(targetDir, options = {}) {
   await ensureRequiredPath(targetDir, "同步目标目录");
   await copyDir(path.join(prodDir, "scripts"), path.join(targetDir, "scripts"));
   await copyDir(path.join(prodDir, ".github"), path.join(targetDir, ".github"));
@@ -234,11 +306,14 @@ async function syncProductionExtras(targetDir) {
     "package-lock.json",
     "README.md",
     "CLAUDE.md",
-    "CHANGELOG.md",
-    "交接文档.md"
+    ...(options.publicRepo ? [] : ["CHANGELOG.md", "交接文档.md"])
   ];
   for (const fileName of extraFiles) {
     await copyFile(path.join(prodDir, fileName), path.join(targetDir, fileName));
+  }
+  if (options.publicRepo) {
+    await removeFile(path.join(targetDir, "CHANGELOG.md"));
+    await removeFile(path.join(targetDir, "交接文档.md"));
   }
 }
 
@@ -248,6 +323,7 @@ async function main() {
   await ensureRequiredPath(path.join(prodDir, "package.json"), "正式版 package.json");
   await ensureRequiredPath(lanShareDir, "LanShare 目录");
   await ensureRequiredPath(githubDir, "github 目录");
+  await assertPublicMetadataIsSanitized();
 
   if (!dryRun) {
     await ensureGithubPublishReady();
@@ -256,7 +332,7 @@ async function main() {
   await syncServerFiles();
   await syncStaticFiles();
   await syncProductionExtras(lanShareDir);
-  await syncProductionExtras(githubDir);
+  await syncProductionExtras(githubDir, { publicRepo: true });
 
   console.log(dryRun ? "预览同步完成，不写入文件。" : "同步完成。");
   for (const item of copied) {

@@ -1,0 +1,64 @@
+name: lanshare
+
+services:
+  lanshare:
+    image: ghcr.io/mangfufu/lanshare:${LANSHARE_VERSION:-latest}
+    container_name: lanshare-lab
+    restart: unless-stopped
+    ports:
+      - "${LANSHARE_PORT:-18080}:8080"
+    environment:
+      TZ: Asia/Shanghai
+      HOST: 0.0.0.0
+      PORT: "8080"
+      SHARED_DIR: /data/Files
+      NSFW_DIR: /data/Files_Global
+      BACKUP_DIR: /data/backup
+      RECYCLE_DIR: /data/recycle_bin
+      LOG_DIR: /data/logs
+      THUMB_CACHE_DIR: /data/thumb_cache
+      FOLDER_SIZE_CACHE_FILE: /data/cache/folder_size_cache.json
+      AUTH_DB_FILE: /data/db/auth.db
+      FORUM_DB_FILE: /data/db/forum.db
+      NSFW_PASSWORD_FILE: /data/config/nsfw_password.txt
+      DAILY_BACKUP_ENABLED: "0"
+      PER_UPLOAD_BACKUP_ENABLED: "0"
+      MAX_VIDEO_THUMB_JOBS: "1"
+      MAX_FOLDER_SIZE_JOBS: "1"
+    volumes:
+      - type: bind
+        source: ${LANSHARE_DATA:-./data}
+        target: /data
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8080/api/auth/session').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  bootstrap-admin:
+    image: ghcr.io/mangfufu/lanshare:${LANSHARE_VERSION:-latest}
+    profiles:
+      - bootstrap
+    network_mode: service:lanshare
+    depends_on:
+      lanshare:
+        condition: service_healthy
+    volumes:
+      - type: bind
+        source: ./bootstrap-admin.json
+        target: /run/secrets/bootstrap-admin.json
+        read_only: true
+    entrypoint:
+      - node
+      - /app/scripts/bootstrap-admin.js
+    restart: "no"
+    security_opt:
+      - no-new-privileges:true

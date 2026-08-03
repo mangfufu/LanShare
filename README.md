@@ -1,4 +1,4 @@
-# 局域网文件服务器 v4.0.5
+# 局域网文件服务器 v4.0.6
 
 基于 Node.js 的局域网文件共享与管理工具，采用墨绿色调、衬线字体编辑风 UI。
 
@@ -35,6 +35,48 @@ npm start
 默认共享目录：当前目录下的 `shared`
 
 网页将普通根目录显示为 `Files`，将受限根目录显示为 `Files_Global`；这两个名称只用于界面展示，Windows 默认物理目录仍为 `shared` 和 `shared_NSFW`，也可用环境变量改到其他位置。
+
+## Docker / NAS 部署
+
+正式镜像由 GitHub Actions 在每次正式代码推送后自动构建并发布到：
+
+```text
+ghcr.io/mangfufu/lanshare
+```
+
+镜像同时提供版本标签（例如 `4.0.6`）、`latest` 和提交短哈希标签。NAS 只运行镜像，账号、论坛、共享文件和缓存均保存在宿主机的 `data` 目录，不写进镜像。
+
+首次部署时，将仓库中的 `docker-compose.yml`、`.env.example` 和 `bootstrap-admin.example.json` 放在 NAS 的同一部署目录，然后执行：
+
+```bash
+cd '/vol1/@team/修以为常/Lanshare'
+cp .env.example .env
+mkdir -p data
+sudo docker compose pull lanshare
+sudo docker compose up -d lanshare
+```
+
+默认访问地址为 `http://NAS地址:18080`。如 GitHub Container Registry 的 `lanshare` 包仍是私有状态，需要先在 GitHub 的包设置中将其改为 Public，或在 NAS 上执行 `docker login ghcr.io`。
+
+全新数据目录可使用一次性初始化文件创建受保护的初始管理员：
+
+```bash
+cp bootstrap-admin.example.json bootstrap-admin.json
+# 编辑 bootstrap-admin.json，务必替换默认密码
+chmod 600 bootstrap-admin.json
+sudo docker compose --profile bootstrap run --rm bootstrap-admin
+rm bootstrap-admin.json
+```
+
+以后发布新版本时只需修改 `.env` 中的 `LANSHARE_VERSION`，再执行：
+
+```bash
+sudo docker compose pull lanshare
+sudo docker compose up -d --no-deps lanshare
+sudo docker compose ps
+```
+
+更新不会覆盖 `data`。需要回退时，把 `LANSHARE_VERSION` 改回旧版本标签并重复以上两条更新命令。不要删除或覆盖 NAS 上的 `data` 目录。
 
 ## 账号与权限
 

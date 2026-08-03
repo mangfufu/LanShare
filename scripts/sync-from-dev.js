@@ -27,7 +27,13 @@ const prodDir = workspaceRoot;
 const lanShareDir = path.join(workspaceRoot, "LanShare");
 const githubDir = path.join(workspaceRoot, "github");
 const githubManagedPaths = [
+  ".dockerignore",
+  ".env.example",
+  ".github",
   ".gitignore",
+  "Dockerfile",
+  "docker-compose.yml",
+  "bootstrap-admin.example.json",
   "server.js",
   "static",
   "scripts",
@@ -215,9 +221,15 @@ async function syncStaticFiles() {
 async function syncProductionExtras(targetDir) {
   await ensureRequiredPath(targetDir, "同步目标目录");
   await copyDir(path.join(prodDir, "scripts"), path.join(targetDir, "scripts"));
+  await copyDir(path.join(prodDir, ".github"), path.join(targetDir, ".github"));
 
   const extraFiles = [
+    ".dockerignore",
+    ".env.example",
     ".gitignore",
+    "Dockerfile",
+    "docker-compose.yml",
+    "bootstrap-admin.example.json",
     "package.json",
     "package-lock.json",
     "README.md",

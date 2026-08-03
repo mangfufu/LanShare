@@ -1,4 +1,13 @@
 node_modules/
+dev/
+LanShare/
+github/
+docker-lab/
+nas-migration-db-*/
+Update-FNOS.ps1
+data/
+Files/
+Files_Global/
 shared/
 shared_NSFW/
 backup/
@@ -14,3 +23,4 @@ forum.db-shm
 folder_size_cache.json
 folder_size_cache.json.*.tmp
 nsfw_password.txt
+bootstrap-admin.json

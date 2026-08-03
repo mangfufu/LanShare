@@ -6781,6 +6781,10 @@ async function restoreLogBuffer() {
 }
 
 async function start() {
+  await ensureDir(path.dirname(AUTH_DB_FILE));
+  await ensureDir(path.dirname(FORUM_DB_FILE));
+  await ensureDir(path.dirname(FOLDER_SIZE_CACHE_FILE));
+  await ensureDir(path.dirname(NSFW_PASSWORD_FILE));
   await ensureDir(ROOT_DIR);
   await ensureDir(BACKUP_DIR);
   await ensureDir(DAILY_BACKUP_DIR);

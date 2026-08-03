@@ -46,10 +46,9 @@ ghcr.io/mangfufu/lanshare
 
 镜像同时提供版本标签（例如 `4.0.6`）、`latest` 和提交短哈希标签。NAS 只运行镜像，账号、论坛、共享文件和缓存均保存在宿主机的 `data` 目录，不写进镜像。
 
-首次部署时，将仓库中的 `docker-compose.yml`、`.env.example` 和 `bootstrap-admin.example.json` 放在 NAS 的同一部署目录，然后执行：
+首次部署时，将仓库中的 `docker-compose.yml`、`.env.example` 和 `bootstrap-admin.example.json` 放在 NAS 的同一部署目录。先在终端进入该部署目录，再执行：
 
 ```bash
-cd '/vol1/@team/修以为常/Lanshare'
 cp .env.example .env
 mkdir -p data
 sudo docker compose pull lanshare

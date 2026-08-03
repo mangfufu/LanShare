@@ -72,6 +72,7 @@ const FORUM_REACTION_EMOJIS = [
 ];
 
 let forumReadReplyCounts = {};
+let workspaceMediaBatchKey = "";
 
 function getForumReadRepliesStorageKey() {
   return state.currentUser
@@ -5115,21 +5116,25 @@ function loadWorkspaceMediaInfo(item) {
     !item
     || item.type !== "file"
     || !["image", "video", "audio"].includes(item.previewType)
-  ) return;
+  ) return Promise.resolve(null);
   const key = getWorkspaceMediaInfoKey(item);
-  if (state.mediaInfoCache.has(key) || state.mediaInfoRequests.has(key)) return;
+  if (state.mediaInfoCache.has(key)) return Promise.resolve(state.mediaInfoCache.get(key));
+  if (state.mediaInfoRequests.has(key)) return state.mediaInfoRequests.get(key);
   const requestUrl = `/api/media-info?path=${encodeURIComponent(item.path)}${state.nsfwMode ? "&nsfw=1" : ""}`;
   const request = fetch(requestUrl, { cache: "no-store", credentials: "same-origin" })
     .then(async (response) => {
       const data = await parseJsonResponse(response);
       if (!response.ok) throw new Error(data.error || "媒体信息读取失败");
       state.mediaInfoCache.set(key, data);
-      while (state.mediaInfoCache.size > 100) {
+      while (state.mediaInfoCache.size > 500) {
         state.mediaInfoCache.delete(state.mediaInfoCache.keys().next().value);
       }
+      return data;
     })
     .catch((error) => {
-      state.mediaInfoCache.set(key, { error: error.message || "媒体信息读取失败" });
+      const result = { error: error.message || "媒体信息读取失败" };
+      state.mediaInfoCache.set(key, result);
+      return result;
     })
     .finally(() => {
       state.mediaInfoRequests.delete(key);
@@ -5139,6 +5144,95 @@ function loadWorkspaceMediaInfo(item) {
       }
     });
   state.mediaInfoRequests.set(key, request);
+  return request;
+}
+
+function getWorkspaceSelectedVideos(items) {
+  return items.filter((item) => item.type === "file" && item.previewType === "video");
+}
+
+function getWorkspaceVideoBatchKey(items) {
+  return getWorkspaceSelectedVideos(items)
+    .map((item) => getWorkspaceMediaInfoKey(item))
+    .sort()
+    .join("|");
+}
+
+function renderWorkspaceVideoDuration(items) {
+  const videos = getWorkspaceSelectedVideos(items);
+  if (videos.length < 2) return "";
+  let totalSeconds = 0;
+  let loaded = 0;
+  let failed = 0;
+  for (const video of videos) {
+    const info = state.mediaInfoCache.get(getWorkspaceMediaInfoKey(video));
+    if (!info) continue;
+    const rawDuration = info.durationSeconds;
+    const duration = Number(rawDuration);
+    if (info.error || rawDuration == null || rawDuration === "" || !Number.isFinite(duration) || duration < 0) {
+      failed += 1;
+      continue;
+    }
+    loaded += 1;
+    totalSeconds += duration;
+  }
+  const resolved = loaded + failed;
+  const pending = videos.length - resolved;
+  const durationLabel = failed > 0 ? "已知总时长" : "总时长";
+  const durationValue = pending > 0
+    ? "计算中…"
+    : loaded > 0
+      ? formatMediaDuration(totalSeconds)
+      : "—";
+  const progressValue = pending > 0
+    ? `${resolved} / ${videos.length}`
+    : failed > 0
+      ? `${loaded} / ${videos.length} 可用`
+      : "已完成";
+  return `
+    <section class="workspace-media-info workspace-video-duration">
+      <div class="workspace-projects-head"><span>视频时长</span><strong>${videos.length} 个视频</strong></div>
+      <dl class="workspace-media-details">
+        <div class="workspace-detail-pair workspace-media-pair">
+          <div><dt>${durationLabel}</dt><dd>${durationValue}</dd></div>
+          <div><dt>读取进度</dt><dd>${progressValue}</dd></div>
+        </div>
+      </dl>
+    </section>
+  `;
+}
+
+async function loadWorkspaceMultipleVideoDurations(items) {
+  const videos = getWorkspaceSelectedVideos(items);
+  if (videos.length < 2) {
+    workspaceMediaBatchKey = "";
+    return;
+  }
+  const batchKey = getWorkspaceVideoBatchKey(items);
+  const pending = videos.filter((item) => !state.mediaInfoCache.has(getWorkspaceMediaInfoKey(item)));
+  if (!pending.length) {
+    workspaceMediaBatchKey = "";
+    return;
+  }
+  if (workspaceMediaBatchKey === batchKey) return;
+  workspaceMediaBatchKey = batchKey;
+  let nextIndex = 0;
+  const worker = async () => {
+    while (nextIndex < pending.length) {
+      if (getWorkspaceVideoBatchKey(getWorkspaceSelectedItems()) !== batchKey) return;
+      const item = pending[nextIndex];
+      nextIndex += 1;
+      await loadWorkspaceMediaInfo(item);
+      if (workspaceMediaBatchKey === batchKey) {
+        renderWorkspaceOverview();
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(2, pending.length) }, () => worker()));
+  if (getWorkspaceVideoBatchKey(getWorkspaceSelectedItems()) === batchKey) {
+    workspaceMediaBatchKey = "";
+    renderWorkspaceOverview();
+  }
 }
 
 function renderWorkspaceSingleItem(item) {
@@ -5196,6 +5290,7 @@ function renderWorkspaceMultipleItems(items) {
       <div class="workspace-stat"><span>文件夹</span><strong>${folders}</strong></div>
       <div class="workspace-stat"><span>文件</span><strong>${files}</strong></div>
     </div>
+    ${renderWorkspaceVideoDuration(items)}
     ${renderWorkspaceStorage()}
   `;
 }
@@ -5208,13 +5303,16 @@ function renderWorkspaceOverview() {
   if (!workspaceOverviewBody || !workspaceModeLabel) return;
   const selectedItems = getWorkspaceSelectedItems();
   if (selectedItems.length === 1) {
+    workspaceMediaBatchKey = "";
     workspaceModeLabel.textContent = "项目详情";
     workspaceOverviewBody.innerHTML = renderWorkspaceSingleItem(selectedItems[0]);
     loadWorkspaceMediaInfo(selectedItems[0]);
   } else if (selectedItems.length > 1) {
     workspaceModeLabel.textContent = "批量选择";
     workspaceOverviewBody.innerHTML = renderWorkspaceMultipleItems(selectedItems);
+    loadWorkspaceMultipleVideoDurations(selectedItems);
   } else {
+    workspaceMediaBatchKey = "";
     workspaceModeLabel.textContent = "项目概览";
     workspaceOverviewBody.innerHTML = renderWorkspaceDirectory();
   }

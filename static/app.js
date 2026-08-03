@@ -15,7 +15,9 @@ const state = {
   currentDir: "",
   viewMode: localStorage.getItem(VIEW_MODE_KEY) === "grid" ? "grid" : "list",
   theme: localStorage.getItem(THEME_KEY) === "dark" ? "dark" : "light",
-  themePos: Number(localStorage.getItem(THEME_POS_KEY)) || 0,
+  themePos: localStorage.getItem(THEME_POS_KEY) !== null
+    ? (Number(localStorage.getItem(THEME_POS_KEY)) >= 50 ? 100 : 0)
+    : (localStorage.getItem(THEME_KEY) === "dark" ? 100 : 0),
   uiStyle: "editorial",
   currentItems: [],
   previewIndex: -1,
@@ -1744,29 +1746,29 @@ const THEME_COLORS = {
 const STYLE_PALETTES = {
   classic: THEME_COLORS,
   editorial: {
-    "--bg":           ["#c8cfbe", "#16140f"],
-    "--panel":        ["#d0d7c7", "#201d15"],
-    "--panel-strong": ["#d0d7c7", "#252119"],
-    "--panel-hover":  ["#c6cebb", "#2c2820"],
-    "--panel-soft":   ["#c1c9b5", "#1c1a13"],
-    "--line":         ["#b3bba9", "#3b362a"],
-    "--text":         ["#20261d", "#e8e2d2"],
-    "--muted":        ["#4f5949", "#8d8571"],
-    "--accent":       ["#4a7c59", "#d65a3a"],
-    "--accent-2":     ["#315f40", "#b9472c"],
+    "--bg":           ["#f4f1ea", "#16140f"],
+    "--panel":        ["#fcfbf7", "#201d15"],
+    "--panel-strong": ["#ffffff", "#252119"],
+    "--panel-hover":  ["#e9e5dc", "#2c2820"],
+    "--panel-soft":   ["#f0ede5", "#1c1a13"],
+    "--line":         ["#aaa59b", "#3b362a"],
+    "--text":         ["#171815", "#e8e2d2"],
+    "--muted":        ["#55584f", "#8d8571"],
+    "--accent":       ["#2f6644", "#d65a3a"],
+    "--accent-2":     ["#234f34", "#b9472c"],
     "--accent-text":  ["#ffffff", "#16140f"],
-    "--floating-bg":  ["#20261d", "#e8e2d2"],
-    "--floating-text":["#c8cfbe", "#16140f"],
-    "--paper-deep":   ["#bcc4b0", "#1a1712"],
-    "--ink-soft":     ["#434f3a", "#b5ad99"],
-    "--line-soft":    ["#bac2ae", "#2e2a20"],
-    "--s-blue":       ["#2f6db3", "#6aa3e0"],
-    "--s-amber":      ["#a87b24", "#d3a04a"],
-    "--s-green":      ["#3e7c4f", "#6fb585"],
-    "--workspace-tone":["#5f6468", "#aeb4b8"],
-    "--collab-tone":   ["#77736f", "#beb8b2"],
-    "--danger":       ["#b23b3b", "#d96454"],
-    "--success":      ["#3e7c4f", "#6fb585"]
+    "--floating-bg":  ["#1b1d19", "#e8e2d2"],
+    "--floating-text":["#f4f1ea", "#16140f"],
+    "--paper-deep":   ["#e5e1d8", "#1a1712"],
+    "--ink-soft":     ["#343930", "#b5ad99"],
+    "--line-soft":    ["#c6c1b7", "#2e2a20"],
+    "--s-blue":       ["#225f9d", "#6aa3e0"],
+    "--s-amber":      ["#886116", "#d3a04a"],
+    "--s-green":      ["#2f7046", "#6fb585"],
+    "--workspace-tone":["#4f565a", "#aeb4b8"],
+    "--collab-tone":   ["#665f59", "#beb8b2"],
+    "--danger":       ["#a52d2d", "#d96454"],
+    "--success":      ["#2f7046", "#6fb585"]
   }
 };
 
@@ -5147,69 +5149,225 @@ function loadWorkspaceMediaInfo(item) {
   return request;
 }
 
-function getWorkspaceSelectedVideos(items) {
-  return items.filter((item) => item.type === "file" && item.previewType === "video");
+function getWorkspaceSelectedMedia(items, previewType) {
+  return items.filter((item) => (
+    item.type === "file"
+    && (!previewType || item.previewType === previewType)
+    && ["image", "video", "audio"].includes(item.previewType)
+  ));
 }
 
-function getWorkspaceVideoBatchKey(items) {
-  return getWorkspaceSelectedVideos(items)
+function getWorkspaceAggregateMedia(items) {
+  return ["video", "audio", "image"].flatMap((previewType) => {
+    const selected = getWorkspaceSelectedMedia(items, previewType);
+    return selected.length >= 2 ? selected : [];
+  });
+}
+
+function getWorkspaceMediaBatchKey(items) {
+  return getWorkspaceAggregateMedia(items)
     .map((item) => getWorkspaceMediaInfoKey(item))
     .sort()
     .join("|");
 }
 
-function renderWorkspaceVideoDuration(items) {
-  const videos = getWorkspaceSelectedVideos(items);
-  if (videos.length < 2) return "";
-  let totalSeconds = 0;
-  let loaded = 0;
+function addWorkspaceSummaryCount(counts, value) {
+  const label = String(value || "").trim();
+  if (!label || label === "—") return;
+  counts.set(label, (counts.get(label) || 0) + 1);
+}
+
+function formatWorkspaceSummaryCounts(counts, maxVisible = 2) {
+  const entries = [...counts.entries()].sort((a, b) => (
+    b[1] - a[1]
+    || a[0].localeCompare(b[0], "zh-CN", { numeric: true, sensitivity: "base" })
+  ));
+  if (!entries.length) return "—";
+  const visible = entries.slice(0, maxVisible).map(([label, count]) => `${label} × ${count}`);
+  if (entries.length > maxVisible) visible.push(`另 ${entries.length - maxVisible} 种`);
+  return visible.join("，");
+}
+
+function getWorkspaceMediaBatchState(items) {
+  const infos = [];
   let failed = 0;
-  for (const video of videos) {
-    const info = state.mediaInfoCache.get(getWorkspaceMediaInfoKey(video));
-    if (!info) continue;
-    const rawDuration = info.durationSeconds;
-    const duration = Number(rawDuration);
-    if (info.error || rawDuration == null || rawDuration === "" || !Number.isFinite(duration) || duration < 0) {
+  let pending = 0;
+  for (const item of items) {
+    const info = state.mediaInfoCache.get(getWorkspaceMediaInfoKey(item));
+    if (!info) {
+      pending += 1;
+    } else if (info.error) {
       failed += 1;
-      continue;
+    } else {
+      infos.push(info);
     }
-    loaded += 1;
-    totalSeconds += duration;
   }
-  const resolved = loaded + failed;
-  const pending = videos.length - resolved;
-  const durationLabel = failed > 0 ? "已知总时长" : "总时长";
-  const durationValue = pending > 0
-    ? "计算中…"
-    : loaded > 0
-      ? formatMediaDuration(totalSeconds)
-      : "—";
-  const progressValue = pending > 0
-    ? `${resolved} / ${videos.length}`
-    : failed > 0
-      ? `${loaded} / ${videos.length} 可用`
-      : "已完成";
+  return { infos, failed, pending };
+}
+
+function formatWorkspaceMediaProgress(total, available, failed, pending) {
+  if (pending > 0) return `${available + failed} / ${total}`;
+  if (failed > 0) return `${available} / ${total} 可用`;
+  return "已完成";
+}
+
+function formatWorkspaceSpecState(pending, failed, missing, countMaps) {
+  if (pending > 0) return "计算中…";
+  if (failed > 0 || missing > 0) return "部分参数不可用";
+  return countMaps.every((counts) => counts.size <= 1) ? "规格统一" : "存在混合规格";
+}
+
+function renderWorkspaceMediaSummary(title, countLabel, entries) {
   return `
-    <section class="workspace-media-info workspace-video-duration">
-      <div class="workspace-projects-head"><span>视频时长</span><strong>${videos.length} 个视频</strong></div>
-      <dl class="workspace-media-details">
-        <div class="workspace-detail-pair workspace-media-pair">
-          <div><dt>${durationLabel}</dt><dd>${durationValue}</dd></div>
-          <div><dt>读取进度</dt><dd>${progressValue}</dd></div>
-        </div>
-      </dl>
+    <section class="workspace-media-info workspace-media-summary">
+      <div class="workspace-projects-head"><span>${escapeHtml(title)}</span><strong>${escapeHtml(countLabel)}</strong></div>
+      <dl class="workspace-media-details">${renderWorkspaceMediaRows(entries)}</dl>
     </section>
   `;
 }
 
-async function loadWorkspaceMultipleVideoDurations(items) {
-  const videos = getWorkspaceSelectedVideos(items);
-  if (videos.length < 2) {
+function renderWorkspaceVideoSummary(items) {
+  const videos = getWorkspaceSelectedMedia(items, "video");
+  if (videos.length < 2) return "";
+  const { infos, failed, pending } = getWorkspaceMediaBatchState(videos);
+  const resolutions = new Map();
+  const frameRates = new Map();
+  const codecs = new Map();
+  const containers = new Map();
+  let totalSeconds = 0;
+  let durationAvailable = 0;
+  let specMissing = 0;
+  for (const info of infos) {
+    const video = info.video || null;
+    const rawDuration = info.durationSeconds;
+    const duration = Number(rawDuration);
+    if (rawDuration != null && rawDuration !== "" && Number.isFinite(duration) && duration >= 0) {
+      durationAvailable += 1;
+      totalSeconds += duration;
+    }
+    if (!video || !video.width || !video.height || !video.frameRate) specMissing += 1;
+    if (video) {
+      addWorkspaceSummaryCount(resolutions, formatMediaResolution(video.width, video.height));
+      addWorkspaceSummaryCount(frameRates, formatMediaFrameRate(video.frameRate));
+      addWorkspaceSummaryCount(codecs, formatMediaCodec(video.codec));
+    }
+    addWorkspaceSummaryCount(containers, String(info.container || "").toUpperCase());
+  }
+  const durationMissing = videos.length - pending - durationAvailable;
+  return renderWorkspaceMediaSummary("视频汇总", `${videos.length} 个视频`, [
+    {
+      label: durationMissing > 0 ? "已知总时长" : "总时长",
+      value: pending > 0 ? "计算中…" : (durationAvailable > 0 ? formatMediaDuration(totalSeconds) : "—")
+    },
+    { label: "规格状态", value: formatWorkspaceSpecState(pending, failed, specMissing, [resolutions, frameRates]) },
+    { label: "分辨率", value: formatWorkspaceSummaryCounts(resolutions) },
+    { label: "帧率", value: formatWorkspaceSummaryCounts(frameRates) },
+    { label: "视频编码", value: formatWorkspaceSummaryCounts(codecs) },
+    { label: "封装", value: formatWorkspaceSummaryCounts(containers) },
+    { label: "读取进度", value: formatWorkspaceMediaProgress(videos.length, infos.length, failed, pending) }
+  ]);
+}
+
+function renderWorkspaceAudioSummary(items) {
+  const audios = getWorkspaceSelectedMedia(items, "audio");
+  if (audios.length < 2) return "";
+  const { infos, failed, pending } = getWorkspaceMediaBatchState(audios);
+  const sampleRates = new Map();
+  const codecs = new Map();
+  const channels = new Map();
+  const containers = new Map();
+  let totalSeconds = 0;
+  let durationAvailable = 0;
+  let specMissing = 0;
+  for (const info of infos) {
+    const audio = info.audio || null;
+    const rawDuration = info.durationSeconds;
+    const duration = Number(rawDuration);
+    if (rawDuration != null && rawDuration !== "" && Number.isFinite(duration) && duration >= 0) {
+      durationAvailable += 1;
+      totalSeconds += duration;
+    }
+    if (!audio || !audio.sampleRate || !audio.codec) specMissing += 1;
+    if (audio) {
+      addWorkspaceSummaryCount(sampleRates, audio.sampleRate ? `${Math.round(audio.sampleRate / 100) / 10} kHz` : "");
+      addWorkspaceSummaryCount(codecs, formatMediaCodec(audio.codec));
+      addWorkspaceSummaryCount(channels, audio.channelLayout || (audio.channels ? `${audio.channels} 声道` : ""));
+    }
+    addWorkspaceSummaryCount(containers, String(info.container || "").toUpperCase());
+  }
+  const durationMissing = audios.length - pending - durationAvailable;
+  return renderWorkspaceMediaSummary("音频汇总", `${audios.length} 个音频`, [
+    {
+      label: durationMissing > 0 ? "已知总时长" : "总时长",
+      value: pending > 0 ? "计算中…" : (durationAvailable > 0 ? formatMediaDuration(totalSeconds) : "—")
+    },
+    { label: "规格状态", value: formatWorkspaceSpecState(pending, failed, specMissing, [sampleRates, codecs, channels]) },
+    { label: "采样率", value: formatWorkspaceSummaryCounts(sampleRates) },
+    { label: "音频编码", value: formatWorkspaceSummaryCounts(codecs) },
+    { label: "声道", value: formatWorkspaceSummaryCounts(channels) },
+    { label: "封装", value: formatWorkspaceSummaryCounts(containers) },
+    { label: "读取进度", value: formatWorkspaceMediaProgress(audios.length, infos.length, failed, pending) }
+  ]);
+}
+
+function renderWorkspaceImageSummary(items) {
+  const images = getWorkspaceSelectedMedia(items, "image");
+  if (images.length < 2) return "";
+  const { infos, failed, pending } = getWorkspaceMediaBatchState(images);
+  const resolutions = new Map();
+  const formats = new Map();
+  const orientations = new Map();
+  let totalMegapixels = 0;
+  let pixelAvailable = 0;
+  let alphaCount = 0;
+  let specMissing = 0;
+  for (const info of infos) {
+    const width = Number(info.width);
+    const height = Number(info.height);
+    const megapixels = Number(info.megapixels);
+    if (!Number.isFinite(width) || width <= 0 || !Number.isFinite(height) || height <= 0) {
+      specMissing += 1;
+    } else {
+      addWorkspaceSummaryCount(resolutions, formatMediaResolution(width, height));
+      addWorkspaceSummaryCount(orientations, width === height ? "方图" : (width > height ? "横图" : "竖图"));
+    }
+    if (Number.isFinite(megapixels) && megapixels >= 0) {
+      pixelAvailable += 1;
+      totalMegapixels += megapixels;
+    }
+    if (info.hasAlpha) alphaCount += 1;
+    addWorkspaceSummaryCount(formats, String(info.format || "").toUpperCase());
+  }
+  return renderWorkspaceMediaSummary("图片汇总", `${images.length} 张图片`, [
+    {
+      label: pixelAvailable < images.length - pending ? "已知总像素" : "总像素",
+      value: pending > 0 ? "计算中…" : (pixelAvailable > 0 ? `${totalMegapixels.toFixed(2)} MP` : "—")
+    },
+    { label: "规格状态", value: formatWorkspaceSpecState(pending, failed, specMissing, [resolutions]) },
+    { label: "尺寸", value: formatWorkspaceSummaryCounts(resolutions) },
+    { label: "方向", value: formatWorkspaceSummaryCounts(orientations, 3) },
+    { label: "格式", value: formatWorkspaceSummaryCounts(formats) },
+    { label: failed > 0 ? "已知透明图片" : "透明图片", value: pending > 0 ? "计算中…" : `${alphaCount} 张` },
+    { label: "读取进度", value: formatWorkspaceMediaProgress(images.length, infos.length, failed, pending) }
+  ]);
+}
+
+function renderWorkspaceMediaSummaries(items) {
+  return [
+    renderWorkspaceVideoSummary(items),
+    renderWorkspaceAudioSummary(items),
+    renderWorkspaceImageSummary(items)
+  ].join("");
+}
+
+async function loadWorkspaceMultipleMediaInfo(items) {
+  const mediaItems = getWorkspaceAggregateMedia(items);
+  if (!mediaItems.length) {
     workspaceMediaBatchKey = "";
     return;
   }
-  const batchKey = getWorkspaceVideoBatchKey(items);
-  const pending = videos.filter((item) => !state.mediaInfoCache.has(getWorkspaceMediaInfoKey(item)));
+  const batchKey = getWorkspaceMediaBatchKey(items);
+  const pending = mediaItems.filter((item) => !state.mediaInfoCache.has(getWorkspaceMediaInfoKey(item)));
   if (!pending.length) {
     workspaceMediaBatchKey = "";
     return;
@@ -5219,17 +5377,15 @@ async function loadWorkspaceMultipleVideoDurations(items) {
   let nextIndex = 0;
   const worker = async () => {
     while (nextIndex < pending.length) {
-      if (getWorkspaceVideoBatchKey(getWorkspaceSelectedItems()) !== batchKey) return;
+      if (getWorkspaceMediaBatchKey(getWorkspaceSelectedItems()) !== batchKey) return;
       const item = pending[nextIndex];
       nextIndex += 1;
       await loadWorkspaceMediaInfo(item);
-      if (workspaceMediaBatchKey === batchKey) {
-        renderWorkspaceOverview();
-      }
+      if (workspaceMediaBatchKey === batchKey) renderWorkspaceOverview();
     }
   };
   await Promise.all(Array.from({ length: Math.min(2, pending.length) }, () => worker()));
-  if (getWorkspaceVideoBatchKey(getWorkspaceSelectedItems()) === batchKey) {
+  if (getWorkspaceMediaBatchKey(getWorkspaceSelectedItems()) === batchKey) {
     workspaceMediaBatchKey = "";
     renderWorkspaceOverview();
   }
@@ -5290,7 +5446,7 @@ function renderWorkspaceMultipleItems(items) {
       <div class="workspace-stat"><span>文件夹</span><strong>${folders}</strong></div>
       <div class="workspace-stat"><span>文件</span><strong>${files}</strong></div>
     </div>
-    ${renderWorkspaceVideoDuration(items)}
+    ${renderWorkspaceMediaSummaries(items)}
     ${renderWorkspaceStorage()}
   `;
 }
@@ -5310,7 +5466,7 @@ function renderWorkspaceOverview() {
   } else if (selectedItems.length > 1) {
     workspaceModeLabel.textContent = "批量选择";
     workspaceOverviewBody.innerHTML = renderWorkspaceMultipleItems(selectedItems);
-    loadWorkspaceMultipleVideoDurations(selectedItems);
+    loadWorkspaceMultipleMediaInfo(selectedItems);
   } else {
     workspaceMediaBatchKey = "";
     workspaceModeLabel.textContent = "项目概览";

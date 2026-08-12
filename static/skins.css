@@ -429,13 +429,21 @@ body[data-ui-style="editorial"] .status-badge.link-button:hover {
 }
 body[data-ui-style="editorial"] tr.is-in-progress .status-badge { color: var(--s-blue); }
 body[data-ui-style="editorial"] tr.is-completed .status-badge { color: var(--s-green); }
+body[data-ui-style="editorial"] tr.is-reworking .status-badge { color: var(--danger); }
+body[data-ui-style="editorial"] tr.is-released .status-badge { color: var(--s-amber); }
 body[data-ui-style="editorial"] tr.is-in-progress .status-badge:hover { border-bottom-color: var(--s-blue); }
 body[data-ui-style="editorial"] tr.is-completed .status-badge:hover { border-bottom-color: var(--s-green); }
+body[data-ui-style="editorial"] tr.is-reworking .status-badge:hover { border-bottom-color: var(--danger); }
+body[data-ui-style="editorial"] tr.is-released .status-badge:hover { border-bottom-color: var(--s-amber); }
 body[data-ui-style="editorial"] .grid-card.is-in-progress .status-badge { color: var(--s-blue); }
 body[data-ui-style="editorial"] .grid-card.is-completed .status-badge { color: var(--s-green); }
+body[data-ui-style="editorial"] .grid-card.is-reworking .status-badge { color: var(--danger); }
+body[data-ui-style="editorial"] .grid-card.is-released .status-badge { color: var(--s-amber); }
 /* 状态按钮颜色 */
 body[data-ui-style="editorial"] .status-badge.is-in-progress { color: var(--s-blue); }
 body[data-ui-style="editorial"] .status-badge.is-completed { color: var(--s-green); }
+body[data-ui-style="editorial"] .status-badge.is-reworking { color: var(--danger); }
+body[data-ui-style="editorial"] .status-badge.is-released { color: var(--s-amber); }
 
 /* 状态徽标下拉菜单 */
 body[data-ui-style="editorial"] .status-badge-menu {
@@ -526,6 +534,14 @@ body[data-ui-style="editorial"] .grid-card.is-completed {
 body[data-ui-style="editorial"] .interactive-row.is-in-progress,
 body[data-ui-style="editorial"] .grid-card.is-in-progress {
   background: color-mix(in srgb, var(--s-blue) 8%, var(--bg));
+}
+body[data-ui-style="editorial"] .interactive-row.is-reworking,
+body[data-ui-style="editorial"] .grid-card.is-reworking {
+  background: color-mix(in srgb, var(--danger) 8%, var(--bg));
+}
+body[data-ui-style="editorial"] .interactive-row.is-released,
+body[data-ui-style="editorial"] .grid-card.is-released {
+  background: color-mix(in srgb, var(--s-amber) 8%, var(--bg));
 }
 body[data-ui-style="editorial"] .size-cell,
 body[data-ui-style="editorial"] .born-cell,
@@ -1390,6 +1406,16 @@ body[data-ui-style="editorial"] .workspace-progress-legend .is-progress {
 body[data-ui-style="editorial"] .workspace-progress-track .is-completed,
 body[data-ui-style="editorial"] .workspace-progress-legend .is-completed {
   background: var(--s-green);
+}
+
+body[data-ui-style="editorial"] .workspace-progress-track .is-reworking,
+body[data-ui-style="editorial"] .workspace-progress-legend .is-reworking {
+  background: var(--danger);
+}
+
+body[data-ui-style="editorial"] .workspace-progress-track .is-released,
+body[data-ui-style="editorial"] .workspace-progress-legend .is-released {
+  background: var(--s-amber);
 }
 
 body[data-ui-style="editorial"] .workspace-progress-legend {

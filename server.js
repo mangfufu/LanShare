@@ -91,6 +91,7 @@ const MAX_FOLDER_SIZE_DEPTH = Number(process.env.MAX_FOLDER_SIZE_DEPTH || 64);
 const MAX_FOLDER_SIZE_JOBS = Number(process.env.MAX_FOLDER_SIZE_JOBS || 1);
 const FOLDER_SIZE_CACHE_MAX_AGE_MS = Number(process.env.FOLDER_SIZE_CACHE_MAX_AGE_MS || 24 * 60 * 60 * 1000);
 const FOLDER_SIZE_CACHE_SAVE_DELAY_MS = 1000;
+const PROJECT_STATUSES = new Set(["not_started", "in_progress", "reworking", "completed", "released"]);
 const THUMB_CACHE_CLEANUP_INTERVAL_MS = Number(process.env.THUMB_CACHE_CLEANUP_INTERVAL_MS || 6 * 60 * 60 * 1000);
 const THUMB_CACHE_MAX_AGE_DAYS = Number(process.env.THUMB_CACHE_MAX_AGE_DAYS || 30);
 const THUMB_TEMP_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -2229,7 +2230,7 @@ async function buildListItem(item, normalizedDir, rootOverride) {
   if (item.isDirectory()) {
     var sizeKey = rootOverride ? "nsfw:" + childRelative : childRelative;
     Object.assign(result, getFolderSizeInfo(sizeKey, stat));
-    // 读取项目状态：completed / in_progress / not_started
+    // 读取项目状态
     var status = "not_started"
     try {
       status = (await fsp.readFile(path.join(childPath, ".status"), "utf8")).trim()
@@ -2237,6 +2238,7 @@ async function buildListItem(item, normalizedDir, rootOverride) {
       // 兼容旧版 .complete 标记
       try { await fsp.access(path.join(childPath, ".complete")); status = "completed" } catch (_2) {}
     }
+    if (!PROJECT_STATUSES.has(status)) status = "not_started"
     result.status = status
     result.isProject = await fsp.access(path.join(childPath, ".project")).then(function() { return true }).catch(function() { return false })
   }
@@ -6479,7 +6481,7 @@ async function handleApi(req, res, url) {
       const stat = await fsp.stat(fullPath);
       if (!stat.isDirectory()) throw new Error("只能设置目录状态");
       var status = String(body.status || "not_started").trim()
-      if (!["completed", "in_progress", "not_started"].includes(status)) throw new Error("无效的状态");
+      if (!PROJECT_STATUSES.has(status)) throw new Error("无效的状态");
       var marker = path.join(fullPath, ".status")
       // 删除旧版 .complete 标记
       var oldMarker = path.join(fullPath, ".complete")

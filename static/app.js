@@ -50,7 +50,7 @@ const state = {
   loadingMore: false,
   sortKey: "name",
   sortAsc: true,
-  filterStatus: "all", // all | completed | in_progress | not_started
+  filterStatus: "all", // all | not_started | in_progress | reworking | completed | released
   nsfwMode: false,
   clipboard: { items: [], mode: null },
   workspaceStatus: null,
@@ -2056,8 +2056,8 @@ function sortItems(items) {
   }
 
   sorted.sort((a, b) => {
-    // 按状态排序：进行中 > 待开始 > 已完成
-    var so = { in_progress: 0, not_started: 1, completed: 2 }
+    // 活跃项目优先，其余按工作阶段排列。
+    var so = { reworking: 0, in_progress: 1, not_started: 2, completed: 3, released: 4 }
     var sa = so[a.status] !== undefined ? so[a.status] : 0
     var sb = so[b.status] !== undefined ? so[b.status] : 0
     if (sa !== sb) return sa - sb
@@ -2277,7 +2277,9 @@ document.addEventListener("contextmenu", function(e) {
       menuItems.push({ sep: true })
       menuItems.push({ label: "待开始", action: function() { setItemStatus(item, "not_started") } })
       menuItems.push({ label: "进行中", action: function() { setItemStatus(item, "in_progress") } })
+      menuItems.push({ label: "返工中", action: function() { setItemStatus(item, "reworking") } })
       menuItems.push({ label: "已完成", action: function() { setItemStatus(item, "completed") } })
+      menuItems.push({ label: "已上映", action: function() { setItemStatus(item, "released") } })
       menuItems.push({ sep: true })
       menuItems.push({ label: "重命名", action: function() { renameItem(item) } })
       menuItems.push({ label: "复制", action: function() { copyItem(item) } })
@@ -2336,28 +2338,36 @@ async function setItemStatus(item, status) {
   item.status = status
   var row = document.querySelector('[data-item-path="' + item.path.replace(/"/g, '') + '"]')
   if (row) {
-    row.classList.remove("is-completed", "is-in-progress")
-    if (status === "completed") row.classList.add("is-completed")
-    else if (status === "in_progress") row.classList.add("is-in-progress")
+    setItemStatusClass(row, status)
     var selEl = row.querySelector(".status-badge")
     if (selEl) {
       selEl.textContent = statusLabels[status] || "待开始"
-      selEl.classList.remove("is-in-progress", "is-completed")
-      if (status === "in_progress") selEl.classList.add("is-in-progress")
-      if (status === "completed") selEl.classList.add("is-completed")
+      setStatusBadgeColor(selEl, status)
     }
   }
   renderWorkspaceOverview()
   loadInProgressProjects()
 }
 
-var _statusLabels = { completed: "已完成", in_progress: "进行中", not_started: "待开始" }
+var _statusLabels = {
+  not_started: "待开始",
+  in_progress: "进行中",
+  reworking: "返工中",
+  completed: "已完成",
+  released: "已上映"
+}
 var statusLabels = _statusLabels
-var _statusColors = { completed: "#22c55e", in_progress: "#3b82f6", not_started: "" }
-function setStatusBadgeColor(el, status) {
-  el.classList.remove("is-in-progress", "is-completed")
+var _statusColors = { completed: "#22c55e", in_progress: "#3b82f6", reworking: "#ef4444", released: "#f59e0b", not_started: "" }
+var _statusClassNames = ["is-in-progress", "is-reworking", "is-completed", "is-released"]
+function setItemStatusClass(el, status) {
+  el.classList.remove(..._statusClassNames)
   if (status === "in_progress") el.classList.add("is-in-progress")
+  if (status === "reworking") el.classList.add("is-reworking")
   if (status === "completed") el.classList.add("is-completed")
+  if (status === "released") el.classList.add("is-released")
+}
+function setStatusBadgeColor(el, status) {
+  setItemStatusClass(el, status)
 }
 
 async function deleteItem(item) {
@@ -2765,7 +2775,9 @@ function createActions(item) {
     var statusOpts = [
       { value: "not_started", label: "待开始" },
       { value: "in_progress", label: "进行中" },
-      { value: "completed", label: "已完成" }
+      { value: "reworking", label: "返工中" },
+      { value: "completed", label: "已完成" },
+      { value: "released", label: "已上映" }
     ];
     var statusBtn = document.createElement("button");
     statusBtn.type = "button";
@@ -2833,8 +2845,7 @@ function createGridCard(item) {
   card.classList.toggle("is-selected", isSelected(item.path));
   if (state.clipboard.mode === "cut" && state.clipboard.items.includes(item.path)) card.classList.add("cut-clip");
   else if (state.clipboard.mode === "copy" && state.clipboard.items.includes(item.path)) card.classList.add("copy-clip");
-  if (item.status === "completed") card.classList.add("is-completed");
-  else if (item.status === "in_progress") card.classList.add("is-in-progress");
+  setItemStatusClass(card, item.status);
   card.addEventListener("click", (event) => handleItemClick(event, item));
   card.addEventListener("dblclick", (event) => handleItemDoubleClick(event, item));
 
@@ -2953,8 +2964,7 @@ function renderRows(items) {
     tr.querySelector(".born-cell").textContent = item.bornAt ? new Date(item.bornAt).toLocaleString("zh-CN") : "";
     tr.querySelector(".time-cell").textContent = new Date(item.updatedAt).toLocaleString("zh-CN");
     tr.__itemData = item;
-    if (item.status === "completed") tr.classList.add("is-completed");
-    else if (item.status === "in_progress") tr.classList.add("is-in-progress");
+    setItemStatusClass(tr, item.status);
     tr.addEventListener("click", (event) => handleItemClick(event, item));
     tr.addEventListener("dblclick", (event) => handleItemDoubleClick(event, item));
     tr.querySelector(".op-cell").appendChild(createActions(item));
@@ -4819,7 +4829,9 @@ function renderWorkspaceWorkSummary() {
   const projects = state.workspaceProjects;
   const notStarted = projects.filter((project) => project.status === "not_started").length;
   const inProgress = projects.filter((project) => project.status === "in_progress").length;
+  const reworking = projects.filter((project) => project.status === "reworking").length;
   const completed = projects.filter((project) => project.status === "completed").length;
+  const released = projects.filter((project) => project.status === "released").length;
   const activity = state.workspaceStatus && state.workspaceStatus.activity;
   const uploadedToday = activity ? Number(activity.uploadedFiles) || 0 : null;
   const uploadedBytesToday = activity ? Number(activity.uploadedBytes) || 0 : null;
@@ -4836,7 +4848,9 @@ function renderWorkspaceWorkSummary() {
   const projectCount = Math.max(1, projects.length);
   const pendingWidth = notStarted / projectCount * 100;
   const progressWidth = inProgress / projectCount * 100;
+  const reworkingWidth = reworking / projectCount * 100;
   const completedWidth = completed / projectCount * 100;
+  const releasedWidth = released / projectCount * 100;
   return `
     <section class="workspace-work-summary" aria-label="工作概况">
       <div class="workspace-projects-head">
@@ -4849,16 +4863,20 @@ function renderWorkspaceWorkSummary() {
         <div class="workspace-stat workspace-activity-stat" title="文件项数 · 数据量"><span>今日下载 / 删除</span><strong class="workspace-activity-values">${downloadedToday == null || deletedToday == null ? "读取中" : `<b>下载 ${downloadedToday} 项 · ${formatWorkspaceActivitySize(downloadedBytesToday, activity.downloadedBytesComplete)}</b><b>删除 ${deletedToday} 项 · ${formatWorkspaceActivitySize(deletedBytesToday, activity.deletedBytesComplete)}</b>`}</strong></div>
         <div class="workspace-stat"><span>当前在线</span><strong>${onlineUsers == null ? "读取中" : `${onlineUsers.length} 人 · ${onlineDeviceCount} 台`}</strong></div>
       </div>
-      <div class="workspace-progress" aria-label="待开始 ${notStarted} 项，进行中 ${inProgress} 项，已完成 ${completed} 项">
+      <div class="workspace-progress" aria-label="待开始 ${notStarted} 项，进行中 ${inProgress} 项，返工中 ${reworking} 项，已完成 ${completed} 项，已上映 ${released} 项">
         <div class="workspace-progress-track">
           <span class="is-pending" style="width:${pendingWidth.toFixed(2)}%"></span>
           <span class="is-progress" style="width:${progressWidth.toFixed(2)}%"></span>
+          <span class="is-reworking" style="width:${reworkingWidth.toFixed(2)}%"></span>
           <span class="is-completed" style="width:${completedWidth.toFixed(2)}%"></span>
+          <span class="is-released" style="width:${releasedWidth.toFixed(2)}%"></span>
         </div>
         <div class="workspace-progress-legend">
           <span><i class="is-pending"></i>待开始 ${notStarted}</span>
           <span><i class="is-progress"></i>进行中 ${inProgress}</span>
+          <span><i class="is-reworking"></i>返工 ${reworking}</span>
           <span><i class="is-completed"></i>完成 ${completed}</span>
+          <span><i class="is-released"></i>上映 ${released}</span>
         </div>
       </div>
     </section>
@@ -5497,7 +5515,9 @@ if (workspaceOverviewBody) {
       { sep: true },
       { label: "待开始", action: function() { setItemStatus(project, "not_started"); } },
       { label: "进行中", action: function() { setItemStatus(project, "in_progress"); } },
+      { label: "返工中", action: function() { setItemStatus(project, "reworking"); } },
       { label: "已完成", action: function() { setItemStatus(project, "completed"); } },
+      { label: "已上映", action: function() { setItemStatus(project, "released"); } },
       { sep: true },
       { label: "重命名", action: async function() { await renameItem(project); loadInProgressProjects(); } },
       { label: "复制", action: function() { copyItem(project); } },
@@ -5570,7 +5590,9 @@ async function loadInProgressProjects() {
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || "读取进行中项目失败");
     state.workspaceProjects = (data.items || []).filter((item) => item.type === "directory");
-    state.inProgressProjects = state.workspaceProjects.filter((item) => item.status === "in_progress");
+    state.inProgressProjects = state.workspaceProjects.filter(
+      (item) => item.status === "in_progress" || item.status === "reworking"
+    );
     state.workspaceProjectsLoaded = true;
     renderWorkspaceOverview();
     refreshWorkspaceProjectSizes();

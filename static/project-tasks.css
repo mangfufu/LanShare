@@ -1,0 +1,107 @@
+/* 与主界面共享字体和主题；四种颜色仅用于各集交付状态。 */
+.task-board, #episodeTaskDialog, .task-dropdown {
+  --task-gray: #64748b;
+  --task-green: #277344;
+  --task-red: #b33131;
+  --task-gold: #906700;
+  font-family: var(--f-display, inherit);
+}
+body[data-theme="dark"] .task-board, body[data-theme="dark"] #episodeTaskDialog, body[data-theme="dark"] .task-dropdown {
+  --task-gray: #a0a7b1;
+  --task-green: #7bc494;
+  --task-red: #f08787;
+  --task-gold: #e7bc57;
+}
+[data-task-status="not_uploaded"] { --task-color: var(--task-gray); }
+[data-task-status="uploaded"] { --task-color: var(--task-green); }
+[data-task-status="needs_more"] { --task-color: var(--task-red); }
+[data-task-status="supplemented"] { --task-color: var(--task-gold); }
+body .task-float {
+  position: fixed; z-index: 1000; display: flex; flex-direction: column;
+  left: 24px; top: 280px; width: 420px; height: 370px; box-sizing: border-box;
+  max-width: calc(100vw - 16px); max-height: calc(100dvh - 16px);
+  border: 1px solid var(--line); border-radius: 8px; overflow: hidden;
+  background: var(--panel); color: var(--text); box-shadow: 0 10px 36px #0003;
+}
+body .task-float[hidden] { display: none !important; }
+body .task-float[data-collapsed="true"] > :not(.task-float-head) { display: none !important; }
+.task-float[data-collapsed="true"] .task-float-head { border-bottom: 0; }
+.task-float-head { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px; border-bottom: 1px solid var(--line); cursor: grab; touch-action: none; user-select: none; }
+.task-float-heading { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.task-float-heading h2 { margin: 0; color: var(--text); font: inherit; font-size: 17px; font-weight: 600; white-space: nowrap; }
+.task-float-heading .workspace-mode-label { white-space: nowrap; }
+.task-float[data-pinned="true"] .task-float-head { cursor: default; }
+.task-float.is-manipulating, .task-float.is-manipulating * { user-select: none; }
+body .task-board-actions button { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; flex: 0 0 30px; background: transparent; color: var(--muted); border: 0; border-radius: 4px; padding: 5px; font: inherit; font-size: 12px; white-space: nowrap; cursor: pointer; }
+.task-board-actions svg { display: block; pointer-events: none; }
+body #taskPin[aria-pressed="true"] svg { fill: color-mix(in srgb, var(--text) 18%, transparent); }
+body .task-board-actions button:disabled { opacity: .4; cursor: default; }
+body .task-board-actions button:hover, body #taskPin[aria-pressed="true"] { background: color-mix(in srgb, var(--text) 8%, var(--panel)); color: var(--text); }
+body .task-resize { position: absolute; bottom: 0; right: 0; width: 20px; height: 20px; padding: 0; background: var(--panel); color: var(--muted); border: 0; cursor: nwse-resize; touch-action: none; font-size: 12px; }
+.task-float[data-pinned="true"] .task-resize { display: none; }
+.task-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  padding: 12px 14px;
+  flex: 0 0 auto;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.task-legend span { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.task-legend i, .task-dropdown-option i {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  flex: 0 0 10px;
+  border-radius: 50%;
+  background: var(--task-color);
+}
+.task-board-actions { display: flex; align-items: center; gap: 3px; }
+.task-project-list { display: flex; gap: 6px; padding: 0 14px 9px; flex: 0 0 auto; min-width: 0; overflow: hidden; }
+body .task-project-tab, body .task-project-more {
+  flex: 0 0 auto; max-width: 126px; min-width: 40px; padding: 6px 10px;
+  border: 1px solid transparent; border-radius: 4px; background: transparent;
+  color: var(--muted); font: inherit; font-size: 13px; line-height: 1.5;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer;
+}
+body .task-project-tab[aria-selected="true"] { color: var(--text); border-color: var(--line); background: var(--panel); }
+body .task-project-tab:hover, body .task-project-more:hover { color: var(--text); background: var(--panel-hover); }
+.task-inline-panel { flex: 1 1 auto; min-height: 0; overflow-y: auto; scrollbar-width: thin; scrollbar-gutter: stable; padding: 2px 14px 22px; }
+.task-board [hidden], #episodeTaskDialog [hidden] { display: none !important; }
+#episodeTaskDialog { width: min(720px, calc(100vw - 32px)); max-height: calc(100dvh - 48px); }
+#episodeTaskDialog .preview-title { overflow-wrap: anywhere; }
+#episodeTaskDialog .episode-task-body { padding: 4px 20px 20px; overflow: auto; min-height: 0; }
+#episodeTaskDialog .task-legend { padding: 12px 20px; }
+#episodeTaskDialog .task-count-form { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+#episodeTaskDialog .task-count-form input { width: 90px; }
+#episodeTaskDialog .task-summary { color: var(--muted); font-size: 13px; line-height: 1.7; margin: 14px 0; }
+.task-message { color: var(--muted); font-size: 13px; line-height: 1.6; }
+.task-message:not(:empty) { padding: 4px 0 8px; }
+.task-episode-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(48px, 1fr)); gap: 10px; }
+.task-board .task-episode-grid { grid-template-columns: repeat(auto-fill, minmax(36px, 1fr)); gap: 7px; }
+.task-board .task-episode-button { min-height: 34px; padding: 4px; font-size: 14px; }
+body .task-episode-button {
+  min-height: 44px; padding: 8px 4px; border: 1px solid color-mix(in srgb, var(--task-color) 55%, var(--line));
+  border-radius: 4px; background: color-mix(in srgb, var(--task-color) 16%, var(--panel));
+  color: var(--task-color); font: inherit; font-size: 16px; font-weight: 600; cursor: pointer;
+}
+body .task-episode-button:disabled { opacity: 1; cursor: default; }
+body .task-episode-button[aria-expanded="true"] { outline: 2px solid var(--task-color); outline-offset: 2px; }
+.task-board button:focus-visible, #episodeTaskDialog button:focus-visible, .task-dropdown button:focus-visible { outline: 2px solid var(--text); outline-offset: -2px; }
+/* 使用顶层浮层，不占用布局高度，也不会被侧栏和对话框的滚动区域裁切。 */
+body .task-dropdown {
+  position: fixed; inset: auto; margin: 0; padding: 6px; width: max-content;
+  min-width: 150px; max-width: min(300px, calc(100vw - 16px)); max-height: min(380px, calc(100dvh - 16px));
+  overflow-y: auto; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--panel); color: var(--text); box-shadow: 0 8px 30px #0003;
+}
+.task-dropdown-title { padding: 6px 10px; font-size: 12px; color: var(--muted); }
+body .task-dropdown-option {
+  display: flex; align-items: center; gap: 9px; width: 100%; padding: 9px 10px;
+  border: 0; border-radius: 3px; background: transparent; color: var(--text);
+  font: inherit; font-size: 14px; line-height: 1.5; text-align: left; cursor: pointer;
+}
+.task-dropdown-option span { flex: 1; overflow-wrap: anywhere; min-width: 0; }
+body .task-dropdown-option:hover, body .task-dropdown-option[aria-pressed="true"] { background: color-mix(in srgb, var(--text) 9%, var(--panel)); }

@@ -4532,6 +4532,7 @@ if (hideBtn) {
       document.querySelector("#recycleDrawer"),
       document.querySelector("#floatControl"),
       document.querySelector("#workspaceRail"),
+      document.querySelector("#taskFloat"),
       document.querySelector("#onlineRail"),
       document.querySelector("#tab-audio"),
       document.querySelector("#tab-video"),
@@ -5595,12 +5596,14 @@ async function loadInProgressProjects() {
     );
     state.workspaceProjectsLoaded = true;
     renderWorkspaceOverview();
+    window.dispatchEvent(new Event("workspace-projects-updated"));
     refreshWorkspaceProjectSizes();
   } catch {
     state.inProgressProjects = [];
     state.workspaceProjects = [];
     state.workspaceProjectsLoaded = true;
     renderWorkspaceOverview();
+    window.dispatchEvent(new Event("workspace-projects-updated"));
   }
 }
 

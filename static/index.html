@@ -16,7 +16,7 @@
     <div class="version-badge">
       <span id="nicknameDisplay" class="nickname" title="打开账户中心">账户</span>
       <span class="sep">·</span>
-      v4.0.7
+      v4.0.8
     </div>
     <div class="nsfw-entry is-hidden">
       <input id="nsfwInput" type="password" class="nsfw-input" />
@@ -58,6 +58,7 @@
             </div>
             <button id="mkdirBtn" class="button warm is-hidden" type="button">新建文件夹</button>
             <button id="createProjectBtn" class="button warm is-hidden" type="button">新建项目</button>
+            <button id="taskToggle" class="button ghost" type="button" aria-controls="taskFloat" aria-expanded="true">任务表</button>
             <div class="filter-switch" id="filterSwitch">
               <button id="filterSwitchBtn" class="button ghost" type="button">全部</button>
               <div id="filterSwitchMenu" class="filter-switch-menu is-hidden">
@@ -167,6 +168,26 @@
         </div>
       </section>
     </aside>
+
+    <section id="taskFloat" class="task-board task-float" aria-labelledby="taskBoardTitle">
+      <header id="taskFloatHandle" class="task-float-head" title="拖动任务表">
+        <div class="task-float-heading"><h2 id="taskBoardTitle">任务表</h2><span id="taskProjectCount" class="workspace-mode-label">进行中的项目</span></div>
+        <div class="task-board-actions">
+          <button id="taskPin" type="button" title="固定位置和尺寸" aria-label="固定位置和尺寸" aria-pressed="false"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 3h6l-1 6 4 4v2H6v-2l4-4-1-6Z"/><path d="M12 15v6"/></svg></button>
+          <button id="taskExpand" type="button" title="放大任务表" aria-label="放大任务表" disabled><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5"/></svg></button>
+          <button id="taskMinimize" type="button" title="收起任务表" aria-label="收起任务表"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M5 12h14"/></svg></button>
+        </div>
+      </header>
+      <div class="task-legend" aria-label="任务状态说明">
+        <span><i data-task-status="not_uploaded"></i>未上传</span>
+        <span><i data-task-status="uploaded"></i>已上传</span>
+        <span><i data-task-status="needs_more"></i>待补充</span>
+        <span><i data-task-status="supplemented"></i>已补充</span>
+      </div>
+      <div id="taskProjectList" class="task-project-list" role="tablist" aria-label="进行中的项目"></div>
+      <div id="taskInlinePanel" class="task-inline-panel" role="tabpanel"><div class="workspace-empty">正在读取项目…</div></div>
+      <button id="taskResize" class="task-resize" type="button" title="拖动调整大小；方向键微调" aria-label="调整任务表大小">◢</button>
+    </section>
 
     <aside id="onlineRail" class="online-rail" aria-label="在线列表">
       <header class="online-rail-head">
@@ -378,6 +399,8 @@
       </tr>
     </template>
 
+    <link rel="stylesheet" href="/project-tasks.css" />
     <script src="/app.js"></script>
+    <script src="/project-tasks.js"></script>
   </body>
 </html>

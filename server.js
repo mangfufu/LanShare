@@ -92,6 +92,9 @@ const MAX_FOLDER_SIZE_JOBS = Number(process.env.MAX_FOLDER_SIZE_JOBS || 1);
 const FOLDER_SIZE_CACHE_MAX_AGE_MS = Number(process.env.FOLDER_SIZE_CACHE_MAX_AGE_MS || 24 * 60 * 60 * 1000);
 const FOLDER_SIZE_CACHE_SAVE_DELAY_MS = 1000;
 const PROJECT_STATUSES = new Set(["not_started", "in_progress", "reworking", "completed", "released"]);
+const EPISODE_TASK_STATES = new Set(["not_uploaded", "uploaded", "needs_more", "supplemented"]);
+const episodeTaskWrites = new Map();
+const MAX_PROJECT_EPISODES = 1000;
 const THUMB_CACHE_CLEANUP_INTERVAL_MS = Number(process.env.THUMB_CACHE_CLEANUP_INTERVAL_MS || 6 * 60 * 60 * 1000);
 const THUMB_CACHE_MAX_AGE_DAYS = Number(process.env.THUMB_CACHE_MAX_AGE_DAYS || 30);
 const THUMB_TEMP_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -234,6 +237,7 @@ const PROTECTED_POST_PATHS = new Set([
   "/api/recycle/restore",
   "/api/recycle/delete",
   "/api/nickname",
+  "/api/project-tasks",
   "/api/set-status"
 ]);
 const EDITOR_POST_PATHS = new Set([
@@ -260,6 +264,7 @@ const EDITOR_POST_PATHS = new Set([
   "/api/upload",
   "/api/download-batch",
   "/api/recycle/restore",
+  "/api/project-tasks",
   "/api/set-status"
 ]);
 const ADMIN_POST_PATHS = new Set([
@@ -2243,6 +2248,92 @@ async function buildListItem(item, normalizedDir, rootOverride) {
     result.isProject = await fsp.access(path.join(childPath, ".project")).then(function() { return true }).catch(function() { return false })
   }
   return result;
+}
+
+// 任务进度随项目目录保存；同一项目的修改串行落盘，避免多人标记不同集时互相覆盖。
+async function resolveTaskProject(relativePath, req) {
+  const relative = safeRelative(relativePath);
+  if (!relative || relative.split("/").some((part) => part.startsWith("."))) throw new Error("请选择项目目录");
+  const root = await fsp.realpath(nsfwRoot(req));
+  const full = await fsp.realpath(resolveInsideRoot(relative, req));
+  const within = path.relative(root, full);
+  if (!within || within.startsWith("..") || path.isAbsolute(within)) throw new Error("项目路径越界");
+  if (!(await fsp.stat(full)).isDirectory()) throw new Error("请选择项目目录");
+  return full;
+}
+
+async function readTaskJson(full, name) {
+  const target = path.join(full, name);
+  try {
+    const stat = await fsp.lstat(target);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 1024 * 1024) throw new Error("项目进度文件异常");
+    const text = await fsp.readFile(target, "utf8");
+    return text.trim() ? JSON.parse(text) : null;
+  } catch (error) {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+async function readProjectTasks(full) {
+  const saved = await readTaskJson(full, ".episode-tasks.json");
+  if (saved) {
+    if (!Number.isInteger(saved.totalEpisodes) || saved.totalEpisodes < 1 || saved.totalEpisodes > MAX_PROJECT_EPISODES || !saved.episodes || typeof saved.episodes !== "object") {
+      throw new Error("项目进度文件格式错误");
+    }
+    return saved;
+  }
+  const project = await readTaskJson(full, ".project");
+  let totalEpisodes = Number(project && project.episodes) || 0;
+  if (!totalEpisodes) {
+    // 旧项目的 .project 为空，从创建项目时生成的视频/第NN集目录读取总集数。
+    const videoPath = path.join(full, "视频");
+    const videoStat = await fsp.lstat(videoPath).catch((error) => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    });
+    if (videoStat && videoStat.isDirectory() && !videoStat.isSymbolicLink()) {
+      const entries = await fsp.readdir(videoPath, { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isDirectory() || !/^第[零〇一二两三四五六七八九十百千\d]+集$/.test(entry.name)) continue;
+        totalEpisodes = Math.max(totalEpisodes, extractOrdinalValue(entry.name) || 0);
+      }
+    }
+  }
+  if (!Number.isInteger(totalEpisodes) || totalEpisodes < 0 || totalEpisodes > MAX_PROJECT_EPISODES) throw new Error("项目总集数超出范围");
+  return { totalEpisodes, episodes: {}, updatedAt: null };
+}
+
+async function updateProjectTasks(full, body, user) {
+  const previous = episodeTaskWrites.get(full) || Promise.resolve();
+  const write = previous.catch(() => {}).then(async () => {
+    const data = await readProjectTasks(full);
+    if (body.totalEpisodes !== undefined) {
+      const count = body.totalEpisodes;
+      if (!Number.isInteger(count) || count < 1 || count > MAX_PROJECT_EPISODES) throw new Error("总集数必须为 1–1000 的整数");
+      if (Object.entries(data.episodes).some(([number, item]) => Number(number) > count && item.status !== "not_uploaded")) throw new Error("超出新集数的集已有进度，请先重置对应集的状态");
+      data.totalEpisodes = count;
+      for (const number of Object.keys(data.episodes)) if (Number(number) > count) delete data.episodes[number];
+    } else {
+      const episode = body.episode;
+      if (!Number.isInteger(episode) || episode < 1 || episode > data.totalEpisodes) throw new Error("集数超出项目范围");
+      if (!EPISODE_TASK_STATES.has(body.status)) throw new Error("无效的任务状态");
+      data.episodes[episode] = { status: body.status, updatedBy: user.name, updatedAt: new Date().toISOString() };
+    }
+    data.updatedAt = new Date().toISOString();
+    const target = path.join(full, ".episode-tasks.json");
+    const temp = path.join(full, `.episode-tasks.${crypto.randomUUID()}.tmp`);
+    try {
+      await fsp.writeFile(temp, JSON.stringify(data), { encoding: "utf8", flag: "wx" });
+      await fsp.rename(temp, target);
+    } finally {
+      await fsp.unlink(temp).catch(() => {});
+    }
+    return data;
+  });
+  episodeTaskWrites.set(full, write);
+  try { return await write; }
+  finally { if (episodeTaskWrites.get(full) === write) episodeTaskWrites.delete(full); }
 }
 
 function parseChineseNumeral(text) {
@@ -6142,11 +6233,27 @@ async function handleApi(req, res, url) {
     return true;
   }
 
+  if ((req.method === "GET" || req.method === "POST") && url.pathname === "/api/project-tasks") {
+    try {
+      requirePermission(req, req.method === "POST" ? "files.write" : "files.read");
+      const body = req.method === "POST" ? parseJson(await readRequestBody(req)) : {};
+      const full = await resolveTaskProject(req.method === "POST" ? body.path : url.searchParams.get("path"), req);
+      const data = req.method === "POST"
+        ? await updateProjectTasks(full, body, req.authUser)
+        : await readProjectTasks(full);
+      sendJson(res, 200, data, { "Cache-Control": "no-store" });
+    } catch (error) {
+      sendJson(res, error.statusCode || 400, { error: error.message });
+    }
+    return true;
+  }
+
   if (req.method === "POST" && url.pathname === "/api/create-project") {
     try {
       const body = parseJson(await readRequestBody(req));
       const name = String(body.name || "").trim();
       const episodes = Math.max(1, Math.floor(Number(body.episodes) || 1));
+      if (!Number.isFinite(episodes) || episodes > MAX_PROJECT_EPISODES) throw new Error("总集数不能超过 1000");
       const parentDir = safeRelative(body.parentDir);
       if (!name) throw new Error("项目名称不能为空");
       if (isInvalidFileName(name)) throw new Error("项目名称包含非法字符");
@@ -6194,7 +6301,7 @@ async function handleApi(req, res, url) {
         await fsp.writeFile(f, "").catch(() => {});
       }
       // 标记为项目目录
-      await fsp.writeFile(path.join(projectFull, ".project"), "").catch(() => {});
+      await fsp.writeFile(path.join(projectFull, ".project"), JSON.stringify({ episodes }));
       recordFileAttributions(
         [projectPath],
         getDeviceName(req),

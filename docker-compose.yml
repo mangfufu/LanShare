@@ -20,6 +20,9 @@ services:
       FOLDER_SIZE_CACHE_FILE: /data/cache/folder_size_cache.json
       AUTH_DB_FILE: /data/db/auth.db
       FORUM_DB_FILE: /data/db/forum.db
+      ASSET_LIBRARY_DIR: /data/asset_library
+      MCP_ENABLED: "${MCP_ENABLED:-1}"
+      MCP_ALLOWED_HOSTS: "${MCP_ALLOWED_HOSTS:-}"
       NSFW_PASSWORD_FILE: /data/config/nsfw_password.txt
       DAILY_BACKUP_ENABLED: "0"
       PER_UPLOAD_BACKUP_ENABLED: "0"

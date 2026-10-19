@@ -11,6 +11,8 @@ on:
       - package.json
       - package-lock.json
       - server.js
+      - asset-library.js
+      - mcp-*.js
       - scripts/bootstrap-admin.js
       - static/**
   workflow_dispatch:
@@ -25,6 +27,7 @@ env:
 
 jobs:
   publish:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: read

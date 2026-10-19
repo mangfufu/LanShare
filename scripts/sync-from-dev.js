@@ -35,6 +35,12 @@ const githubManagedPaths = [
   "docker-compose.yml",
   "bootstrap-admin.example.json",
   "server.js",
+  "asset-library.js",
+  "mcp-service.js",
+  "mcp-tools.js",
+  "mcp-api.js",
+  "tests",
+  "docs",
   "static",
   "scripts",
   "package.json",
@@ -43,6 +49,7 @@ const githubManagedPaths = [
   "CLAUDE.md"
 ];
 const publicMetadataPaths = [
+  "docs",
   ".github",
   ".env.example",
   "bootstrap-admin.example.json",
@@ -273,6 +280,11 @@ async function syncServerFiles() {
   await writeFile(path.join(prodDir, "server.js"), productionServer, "dev/server.js(8080)");
   await writeFile(path.join(lanShareDir, "server.js"), productionServer, "dev/server.js(8080)");
   await writeFile(path.join(githubDir, "server.js"), productionServer, "dev/server.js(8080)");
+  for (const target of [prodDir, lanShareDir, githubDir]) {
+    for (const file of ["asset-library.js", "mcp-service.js", "mcp-tools.js", "mcp-api.js"])
+      await copyFile(path.join(devDir, file), path.join(target, file));
+    await copyDir(path.join(devDir, "tests"), path.join(target, "tests"));
+  }
 }
 
 async function syncStaticFiles() {
@@ -286,12 +298,19 @@ async function syncStaticFiles() {
   await writeFile(path.join(lanShareDir, "static", "index.html"), productionIndex, "dev/static/index.html(正式版)");
   await mirrorDir(devStaticDir, path.join(githubDir, "static"));
   await writeFile(path.join(githubDir, "static", "index.html"), productionIndex, "dev/static/index.html(正式版)");
+  for (const relative of ["login.html", "assets/index.html"]) {
+    const source = await fs.readFile(path.join(devStaticDir, relative), "utf8");
+    const production = source.replace(/ test_version/g, "").replace(" · 测试版", "");
+    for (const target of [prodDir, lanShareDir, githubDir])
+      await writeFile(path.join(target, "static", relative), production, `dev/static/${relative}(正式版)`);
+  }
 }
 
 async function syncProductionExtras(targetDir, options = {}) {
   await ensureRequiredPath(targetDir, "同步目标目录");
   await copyDir(path.join(prodDir, "scripts"), path.join(targetDir, "scripts"));
   await copyDir(path.join(prodDir, ".github"), path.join(targetDir, ".github"));
+  await copyDir(path.join(prodDir, "docs"), path.join(targetDir, "docs"));
 
   const extraFiles = [
     ".dockerignore",

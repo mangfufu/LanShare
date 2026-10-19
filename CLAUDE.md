@@ -15,7 +15,15 @@ node -c static/app.js      # Syntax check frontend
 
 ## Project Structure
 
-LanShare is a single-file Node.js application (no framework). Both server and frontend logic are in individual files.
+LanShare uses a Node.js HTTP server without a web framework. File/forum logic remains in server.js; assets and MCP are separate modules.
+
+- `asset-library.js`: asset database, media, states and category-specific tags.
+- `mcp-service.js`: Bearer token lifecycle and Streamable HTTP endpoint.
+- `mcp-tools.js`: limited file/asset tools; never expose arbitrary API routes or shell commands.
+- `mcp-api.js`: in-process allowlisted bridge to existing permission/conflict checks.
+- `npm test`: isolated backend integration tests; `ASSET_BROWSER_TEST=1` adds desktop/mobile browser tests.
+- Docker must copy all server modules and persist `ASSET_LIBRARY_DIR` under `/data`.
+- Feature branches must not publish `latest`; the publishing workflow is restricted to main.
 
 ### Production (`server.js` + `static/`)
 

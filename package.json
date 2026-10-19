@@ -1,17 +1,25 @@
 {
   "name": "lan-file-server",
-  "version": "4.0.8",
+  "version": "4.2.0",
   "private": true,
   "description": "Local LAN file server with upload, download, and folder creation.",
   "scripts": {
     "start": "node server.js",
+    "test:assets": "node --test tests/assets.test.js",
+    "test:mcp": "node --test tests/mcp.test.js",
+    "test": "node --test tests/*.test.js",
     "sync": "node scripts/sync-from-dev.js"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "archiver": "^7.0.1",
     "busboy": "^1.6.0",
     "mammoth": "^1.12.0",
     "sanitize-html": "^2.17.6",
-    "sharp": "^0.34.5"
+    "sharp": "^0.35.5",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "playwright": "^1.64.1"
   }
 }

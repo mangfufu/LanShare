@@ -1,0 +1,449 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>资产库</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/forum/styles.css" />
+    <link rel="stylesheet" href="/assets/styles.css?v=4.2.0" />
+    <script src="/assets/app.js?v=4.2.0" defer></script>
+  </head>
+  <body data-ui-style="editorial">
+    <script>
+      try {
+        const position = localStorage.getItem("lan_file_server_theme_pos");
+        const dark =
+          position !== null
+            ? Number(position) >= 50
+            : localStorage.getItem("lan_file_server_theme") === "dark";
+        document.body.dataset.theme = dark ? "dark" : "light";
+        document.body.style.colorScheme = dark ? "dark" : "light";
+      } catch {}
+    </script>
+    <nav class="forum-main-nav" aria-label="主导航">
+      <a href="/">文件管理</a><a href="/forum">论坛</a
+      ><a href="/assets" class="is-active" aria-current="page">资产库</a>
+    </nav>
+    <main>
+      <div class="page-heading">
+        <div class="page-title">
+          <h1>资产库</h1>
+          <small>v4.2.0</small>
+          <span id="scopeLabel" hidden>海外剧素材</span>
+        </div>
+        <div class="page-actions">
+          <span id="account" class="account-badge">读取中</span>
+          <button
+            id="themeButton"
+            class="icon-button"
+            type="button"
+            title="切换主题"
+            aria-label="切换主题"
+          >
+            ◐
+          </button>
+          <button id="addAsset" class="primary" hidden>存入资产</button>
+        </div>
+      </div>
+      <div class="browse-bar">
+        <div id="categories" class="tabs" aria-label="分类"></div>
+        <span id="resultCount" class="muted" aria-live="polite"></span>
+        <div class="tabs lifecycle-tabs">
+          <button id="activeTab" aria-pressed="true">可用</button
+          ><button id="discardedTab" aria-pressed="false" hidden>弃用</button>
+        </div>
+      </div>
+      <div class="library-toolbar">
+        <form id="searchForm" class="search-bar" role="search">
+          <input
+            id="search"
+            type="search"
+            placeholder="搜索名称、标签、来源项目"
+            maxlength="160"
+            aria-label="搜索资产"
+          />
+          <select id="tagFilter" aria-label="按标签筛选">
+            <option value="">全部标签</option>
+          </select>
+          <button type="submit">搜索</button
+          ><button id="resetSearch" type="button">重置</button>
+        </form>
+        <div id="listSelection" class="selection-bar" hidden>
+          <button id="listSelectAll" title="全选筛选结果（Ctrl+A）">
+            全选
+          </button>
+          <button id="listInvert" title="反选筛选结果（Ctrl+Shift+A）">
+            反选
+          </button>
+          <button id="listClear" title="取消选择（Esc）">取消选择</button>
+          <span id="listSelectedCount" role="status">已选 0 条</span>
+          <button id="listDiscard">批量弃用</button>
+          <button id="listRestore" hidden>批量恢复</button>
+          <button id="listDelete" class="danger" hidden>批量删除</button>
+        </div>
+      </div>
+      <div id="assetGrid" class="asset-grid" aria-live="polite"></div>
+      <div id="emptyState" class="empty-state" hidden></div>
+      <div class="pagination">
+        <button id="previousPage">上一页</button><span id="pageNumber"></span
+        ><button id="nextPage">下一页</button>
+      </div>
+    </main>
+    <div id="notifications" aria-live="polite"></div>
+    <div id="tagPicker" popover="auto" role="dialog" aria-label="添加资产标签">
+      <div class="tag-picker-head">
+        <strong id="tagPickerName"></strong>
+        <button id="tagPickerClose" type="button" title="关闭" aria-label="关闭标签面板">×</button>
+      </div>
+      <form id="quickTagForm">
+        <input id="quickTagInput" maxlength="1200" placeholder="输入标签" aria-label="新标签" autocomplete="off" />
+        <button id="quickTagAdd" type="submit">添加</button>
+      </form>
+      <div id="quickTagOptions" aria-label="标签建议"></div>
+      <p id="quickTagError" role="alert" hidden></p>
+    </div>
+
+    <dialog id="detailDialog" class="detail-dialog">
+      <div class="dialog-head">
+        <div>
+          <span id="detailCategory" class="muted"></span>
+          <h2 id="detailName"></h2>
+        </div>
+        <button
+          class="icon-button"
+          data-close="detailDialog"
+          aria-label="关闭详情"
+          title="关闭"
+        >
+          ×
+        </button>
+      </div>
+      <div class="detail-body">
+        <div id="detailMeta" class="meta-line"></div>
+        <div id="detailActions" class="action-bar"></div>
+        <div class="state-bar">
+          <div id="stateTabs" class="tabs"></div>
+          <div id="stateActions" class="action-bar"></div>
+          <label id="discardedSwitch"
+            ><input id="showDiscarded" type="checkbox" />只看弃用</label
+          >
+        </div>
+        <details id="promptBox">
+          <summary>提示词</summary>
+          <pre id="promptText"></pre>
+          <button id="copyPrompt">复制提示词</button>
+        </details>
+        <div id="detailSelection" class="selection-bar" hidden>
+          <button id="detailSelectAll" title="全选当前状态（Ctrl+A）">
+            全选
+          </button>
+          <button id="detailInvert" title="反选当前状态（Ctrl+Shift+A）">
+            反选
+          </button>
+          <button id="detailClear" title="取消选择（Esc）">取消选择</button>
+          <span id="detailSelectedCount" role="status"></span>
+        </div>
+        <div id="fileGallery" class="file-gallery"></div>
+      </div>
+    </dialog>
+
+    <dialog id="intakeDialog" class="form-dialog">
+      <form id="intakeForm">
+        <div class="dialog-head">
+          <h2>存入资产库</h2>
+          <button
+            type="button"
+            class="icon-button"
+            data-close="intakeDialog"
+            aria-label="关闭"
+            title="关闭"
+          >
+            ×
+          </button>
+        </div>
+        <div class="form-body intake-layout">
+          <section class="intake-media" aria-label="待入库素材预览">
+            <div class="intake-source-actions">
+              <button type="button" id="chooseSource" class="source-entry">
+                从文件管理选择
+              </button>
+              <button type="button" id="chooseLocal">上传本地文件</button>
+            </div>
+            <input
+              id="uploadFiles"
+              type="file"
+              multiple
+              hidden
+              accept=".png,.jpg,.jpeg,.webp,.gif,.avif,.tif,.tiff,.mp4,.webm,.mov,.mp3,.wav,.ogg,.m4a,.flac,.aac"
+            />
+            <div class="dropzone" id="dropzone">
+              <div id="stagedPreview"></div>
+            </div>
+            <progress id="uploadProgress" max="100" value="0" hidden></progress>
+            <div id="uploadStatus" role="status"></div>
+            <ul id="stagedList" class="staged-list"></ul>
+          </section>
+          <section class="intake-fields" aria-label="资产信息">
+            <label
+              >存入方式<select id="intakeMode">
+                <option value="new">新建资产</option>
+                <option value="existing">加入已有资产</option>
+              </select></label
+            >
+            <div id="existingFields" hidden>
+              <div class="inline-search">
+                <input
+                  id="existingSearch"
+                  type="search"
+                  placeholder="搜索已有资产"
+                  aria-label="搜索已有资产"
+                /><button type="button" id="findExisting">查找</button>
+              </div>
+              <label>已有资产<select id="existingAsset"></select></label>
+              <label
+                >状态<select id="existingState">
+                  <option value="">新建状态</option>
+                </select></label
+              >
+            </div>
+            <div id="newFields">
+              <label
+                >名称 <span class="required">*</span
+                ><input id="assetName" maxlength="160" required
+              /></label>
+              <label
+                >分类 <span class="required">*</span
+                ><select id="assetCategory" required>
+                  <option value="">请选择分类</option>
+                </select></label
+              >
+              <label id="mergeLabel"
+                ><input
+                  id="mergeFiles"
+                  type="checkbox"
+                />将所选文件合并为一个资产</label
+              >
+              <label
+                >来源项目<select id="assetProjectChoice">
+                  <option value="">不填写</option>
+                  <option value="custom">自定义</option>
+                </select></label
+              >
+              <label id="assetProjectCustom" hidden
+                >自定义项目名称<input id="assetProject" maxlength="160"
+              /></label>
+              <label
+                >标签<input
+                  id="assetTags"
+                  maxlength="1200"
+                  placeholder="输入或选择标签，用逗号分隔"
+              /></label>
+              <div id="assetTagsPicker" class="form-tag-picker"></div>
+            </div>
+            <label id="stateNameLabel"
+              >状态名称<input id="stateName" maxlength="100" placeholder="默认"
+            /></label>
+            <label id="intakePromptLabel"
+              >提示词<textarea
+                id="intakePrompt"
+                rows="3"
+                maxlength="20000"
+              ></textarea>
+            </label>
+            <div id="duplicates" class="duplicate-box" hidden>
+              <strong>发现重复素材</strong>
+              <div id="duplicateLinks"></div>
+              <label
+                ><input
+                  id="allowDuplicates"
+                  type="checkbox"
+                />仍然存入这些素材</label
+              >
+            </div>
+          </section>
+        </div>
+        <div class="dialog-foot">
+          <button type="button" data-close="intakeDialog">取消</button
+          ><button id="commitButton" type="submit" class="primary">
+            存入资产库
+          </button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="sourceDialog" class="source-dialog">
+      <div class="dialog-head">
+        <h2>从文件管理选择</h2>
+        <button
+          class="icon-button"
+          data-close="sourceDialog"
+          aria-label="关闭"
+          title="关闭"
+        >
+          ×
+        </button>
+      </div>
+      <div class="source-body">
+        <nav id="sourcePath" class="source-path" aria-label="文件目录"></nav>
+        <div id="sourceStatus" role="status"></div>
+        <div id="sourceList" class="source-list"></div>
+        <div class="pagination">
+          <button id="sourcePrevious">上一页</button>
+          <span id="sourcePage"></span>
+          <button id="sourceNext">下一页</button>
+        </div>
+      </div>
+      <div class="dialog-foot source-foot">
+        <div class="source-selection-controls">
+          <button id="sourceSelectAll" title="全选当前列表可用素材（Ctrl+A）">
+            全选
+          </button>
+          <button id="sourceInvert" title="反选当前列表（Ctrl+Shift+A）">
+            反选
+          </button>
+          <button id="sourceClear" title="取消选择（Esc）">取消选择</button>
+          <span id="sourceCount" role="status">已选 0 个</span>
+        </div>
+        <div class="source-confirm-controls">
+          <button data-close="sourceDialog">取消</button>
+          <button id="sourceConfirm" class="primary" disabled>
+            使用所选文件
+          </button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="editDialog" class="form-dialog">
+      <form id="editForm">
+        <div class="dialog-head">
+          <h2 id="editTitle">编辑资产</h2>
+          <button
+            type="button"
+            class="icon-button"
+            data-close="editDialog"
+            aria-label="关闭"
+            title="关闭"
+          >
+            ×
+          </button>
+        </div>
+        <div class="form-body">
+          <label
+            >名称 <span class="required">*</span
+            ><input id="editName" required maxlength="160"
+          /></label>
+          <div id="editAssetFields">
+            <label>分类<select id="editCategory"></select></label
+            ><label
+              >来源项目<select id="editProjectChoice">
+                <option value="">不填写</option>
+                <option value="custom">自定义</option>
+              </select></label
+            >
+            <label id="editProjectCustom" hidden
+              >自定义项目名称<input id="editProject" maxlength="160"
+            /></label>
+            <label
+              >标签<input
+                id="editTags"
+                maxlength="1200"
+                placeholder="输入标签，用逗号分隔"
+            /></label>
+            <div id="editTagsPicker" class="form-tag-picker"></div>
+          </div>
+          <label id="editPromptLabel"
+            >提示词<textarea
+              id="editPrompt"
+              rows="6"
+              maxlength="20000"
+            ></textarea>
+          </label>
+        </div>
+        <div class="dialog-foot">
+          <button type="button" data-close="editDialog">取消</button
+          ><button type="submit" class="primary">保存</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="moveStateDialog" class="form-dialog small-dialog">
+      <form id="moveStateForm">
+        <div class="dialog-head">
+          <h2>移动到状态</h2>
+          <button type="button" class="icon-button" data-close="moveStateDialog" aria-label="关闭" title="关闭">×</button>
+        </div>
+        <div class="form-body">
+          <p id="moveStateSummary" class="muted"></p>
+          <label>目标状态<select id="moveStateTarget" required></select></label>
+        </div>
+        <div class="dialog-foot">
+          <button type="button" data-close="moveStateDialog">取消</button>
+          <button type="submit" class="primary">移动</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="copyDialog" class="form-dialog">
+      <div class="dialog-head">
+        <h2>复制到站内目录</h2>
+        <button
+          class="icon-button"
+          data-close="copyDialog"
+          aria-label="关闭"
+          title="关闭"
+        >
+          ×
+        </button>
+      </div>
+      <div class="form-body">
+        <div class="folder-path">
+          <button id="folderUp" title="返回上级">上级</button
+          ><span id="folderPath"></span>
+        </div>
+        <div id="folderList" class="folder-list"></div>
+        <div id="copyConflicts" class="duplicate-box" hidden></div>
+      </div>
+      <div class="dialog-foot">
+        <button data-close="copyDialog">取消</button
+        ><button id="copyConfirm" class="primary">复制到此目录</button>
+      </div>
+    </dialog>
+
+    <dialog id="confirmDialog" class="form-dialog small-dialog">
+      <form method="dialog">
+        <div class="dialog-head"><h2 id="confirmTitle"></h2></div>
+        <p id="confirmText" class="form-body"></p>
+        <div class="dialog-foot">
+          <button value="cancel">取消</button
+          ><button value="yes" class="primary">确认</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="previewDialog" class="preview-dialog">
+      <div class="dialog-head">
+        <span id="previewName"></span
+        ><button
+          class="icon-button"
+          data-close="previewDialog"
+          title="关闭预览"
+          aria-label="关闭预览"
+        >
+          ×
+        </button>
+      </div>
+      <img id="previewImage" alt="" />
+      <p id="previewStatus" role="status"></p>
+      <div class="preview-navigation">
+        <button id="previewPrevious" title="上一张（左方向键）" aria-label="上一张">←</button>
+        <span id="previewPosition"></span>
+        <button id="previewNext" title="下一张（右方向键）" aria-label="下一张">→</button>
+      </div>
+    </dialog>
+  </body>
+</html>

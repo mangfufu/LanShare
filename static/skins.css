@@ -380,6 +380,10 @@ body[data-ui-style="editorial"] .op-cell .grid-actions > *,
 body[data-ui-style="editorial"] .grid-card > .grid-actions > * {
   flex: 0 0 auto;
 }
+body[data-ui-style="editorial"] .op-cell .grid-actions:has(.asset-collect) .link-button {
+  padding-left: 5px;
+  padding-right: 5px;
+}
 body[data-ui-style="editorial"] .status-badge.link-button {
   -webkit-appearance: none;
   appearance: none;

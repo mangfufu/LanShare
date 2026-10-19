@@ -2754,6 +2754,20 @@ function createActions(item) {
       downloadLink.href = `/download?path=${encodeURIComponent(item.path)}${state.nsfwMode ? "&nsfw=1" : ""}`;
       actions.appendChild(downloadLink);
     }
+    if (can("files.write") && ["image", "audio", "video"].includes(item.previewType)) {
+      const collect = document.createElement("button");
+      collect.className = "link-button asset-collect";
+      collect.textContent = "入库";
+      collect.setAttribute("aria-label", "存入资产库");
+      collect.title = "独立保存到资产库";
+      collect.onclick = () => {
+        const url = new URL("/assets", location.origin);
+        url.searchParams.set("source", item.path);
+        if (state.nsfwMode) url.searchParams.set("nsfw", "1");
+        window.open(url.pathname + url.search, "_blank", "noopener");
+      };
+      actions.appendChild(collect);
+    }
   }
 
   if (can("files.write")) {

@@ -1,4 +1,9 @@
 node_modules/
+asset_library/
+.validation/
+.env
+.env.*
+!.env.example
 dev/
 LanShare/
 github/

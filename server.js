@@ -6742,12 +6742,26 @@ async function streamBatchDownload(req, res, url) {
   });
 }
 
+const assetLibrary = require("./asset-library")({
+  hasPermission, requirePermission, assertWrite: assertTrustedWriteRequest, sendJson,
+  sourceRoot: nsfwRoot, maxFileSize: MAX_FILE_SIZE,
+  invalidate: invalidateFolderSizeCacheForPath,
+  audit: (req, action) => logAction(getDeviceName(req), getClientIp(req), action, "资产库操作")
+});
+const mcpService = require("./mcp-service")({
+  database: initAuthDatabase, publicUser: publicAuthUser, hasPermission, verifyPassword,
+  assertWrite: assertTrustedWriteRequest, sendJson, root: ROOT_DIR,
+  api: require("./mcp-api")({ csrf: CSRF_TOKEN, assetLibrary, handleApi }),
+  audit: (req, action) => logAction(getDeviceName(req), getClientIp(req), action, "AI agent"),
+});
+
 const server = http.createServer(async (req, res) => {
   res.on("error", () => {});
   setNsfwMode(req);
   const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
   try {
     req.authUser = readAuthenticatedUser(req);
+    if (await mcpService.handle(req, res, url)) return;
     if (await handleAuthApi(req, res, url)) return;
 
     const isLoginAsset = req.method === "GET" && (
@@ -6787,8 +6801,10 @@ const server = http.createServer(async (req, res) => {
         || url.pathname === "/index.html"
         || url.pathname === "/player"
         || url.pathname === "/player/"
+        || url.pathname === "/assets"
+        || url.pathname === "/assets/"
       ) || isForumPage) {
-        const next = isForumPage ? `?next=${encodeURIComponent(url.pathname + url.search)}` : "";
+        const next = isForumPage || url.pathname.startsWith("/assets") ? `?next=${encodeURIComponent(url.pathname + url.search)}` : "";
         res.writeHead(302, { Location: `/login${next}`, "Cache-Control": "no-store" });
         res.end();
       } else {
@@ -6800,6 +6816,10 @@ const server = http.createServer(async (req, res) => {
     if (requestNeedsNsfwSession(req, url) && !isNsfwAuthorized(req)) {
       sendJson(res, 401, { error: "请先验证海外剧访问密码" }, { "Set-Cookie": makeNsfwSessionCookie("", 0) });
       return;
+    }
+    if (await assetLibrary.handle(req, res, url)) return;
+    if (req.method === "GET" && (url.pathname === "/assets" || url.pathname === "/assets/")) {
+      return void await serveStaticFile(res, path.join(STATIC_DIR, "assets", "index.html"));
     }
     if (await handleApi(req, res, url)) return;
     if (req.method === "GET" && (
@@ -6914,6 +6934,7 @@ async function start() {
   await restoreLogBuffer();
   const accountDatabase = initAuthDatabase();
   initForumDatabase();
+  assetLibrary.initialize();
   await cleanupExpiredRecycleEntries();
   setInterval(() => {
     cleanupExpiredRecycleEntries().catch((error) => {

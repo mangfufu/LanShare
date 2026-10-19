@@ -16,7 +16,7 @@
     <div class="version-badge">
       <span id="nicknameDisplay" class="nickname" title="打开账户中心">账户</span>
       <span class="sep">·</span>
-      v4.0.8
+      v4.2.0
     </div>
     <div class="nsfw-entry is-hidden">
       <input id="nsfwInput" type="password" class="nsfw-input" />
@@ -38,6 +38,7 @@
       <div class="tab-bar">
         <button class="tab active" data-tab="files">文件管理</button>
         <a class="tab forum-tab-link" href="/forum">论坛</a>
+        <a class="tab forum-tab-link" href="/assets">资产库</a>
         <button class="tab" data-tab="audio">音频提取</button>
         <button class="tab" data-tab="video">视频截帧</button>
       </div>
@@ -325,6 +326,7 @@
         <div class="account-footer">
           <div>
             <button id="accountAppearanceBtn" class="button ghost" type="button">显示效果</button>
+            <button id="accountMcpBtn" class="button ghost" type="button">AI 接入</button>
             <button id="accountManageUsersBtn" class="button ghost is-hidden" type="button">账号与权限</button>
           </div>
           <button id="accountLogoutBtn" class="button danger-button" type="button">退出登录</button>
@@ -374,6 +376,33 @@
       </div>
     </dialog>
 
+    <dialog id="mcpDialog" class="preview-dialog account-dialog">
+      <div class="preview-header"><strong class="preview-title">AI 接入 · MCP</strong><button id="mcpClose" class="button ghost" type="button" aria-label="关闭 AI 接入">关闭</button></div>
+      <div class="account-dialog-body">
+        <p>仅限可信局域网。令牌与当前账号绑定，修改密码后失效；HTTP 不加密，跨网络请使用 HTTPS 或 VPN。</p>
+        <form id="mcpTokenForm" class="account-form">
+          <label>连接名称<input id="mcpName" class="field" required maxlength="60" placeholder="例如：工作站 Agent" /></label>
+          <label>有效期<select id="mcpDays" class="field"><option value="7">7 天</option><option value="30" selected>30 天</option><option value="90">90 天</option></select></label>
+          <fieldset class="mcp-scopes"><legend>授权范围</legend>
+            <label><input type="checkbox" name="scope" value="files:read" checked />读取文件</label>
+            <label><input type="checkbox" name="scope" value="assets:read" checked />读取资产库</label>
+            <label><input type="checkbox" name="scope" value="files:write" />修改文件</label>
+            <label><input type="checkbox" name="scope" value="assets:write" />修改资产库</label>
+          </fieldset>
+          <label>确认当前密码<input id="mcpPassword" class="field" type="password" autocomplete="current-password" required maxlength="128" /></label>
+          <button id="mcpCreate" class="button" type="submit">创建令牌</button>
+        </form>
+        <section id="mcpCreated" hidden>
+          <strong>连接配置（令牌仅显示这一次）</strong>
+          <textarea id="mcpConfig" class="field" rows="10" readonly aria-label="MCP 连接配置" spellcheck="false"></textarea>
+          <button id="mcpCopy" type="button" class="button ghost">复制配置</button>
+        </section>
+        <p id="mcpMessage" class="account-message" role="status"></p>
+        <div class="account-section-heading"><strong>我的连接令牌</strong><button id="mcpRefresh" class="button ghost" type="button">刷新</button></div>
+        <div id="mcpTokenList" class="account-users-list"></div>
+      </div>
+    </dialog>
+
     <aside id="chatPanel" class="chat-panel is-hidden">
       <div class="chat-head">
         <span class="chat-title">聊天</span>
@@ -402,5 +431,7 @@
     <link rel="stylesheet" href="/project-tasks.css" />
     <script src="/app.js"></script>
     <script src="/project-tasks.js"></script>
+    <link rel="stylesheet" href="/mcp-access.css?v=4.2.0" />
+    <script src="/mcp-access.js?v=4.2.0"></script>
   </body>
 </html>

@@ -1,6 +1,12 @@
 .git/
 .github/
 node_modules/
+asset_library/
+.validation/
+.env
+.env.*
+tests/
+docs/
 dev/
 LanShare/
 github/

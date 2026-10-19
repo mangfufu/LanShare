@@ -47,7 +47,7 @@
 环境变量：
 
 - `MCP_ENABLED=0`：停用 MCP 端点；账户中心仍可撤销令牌。
-- `MCP_ALLOWED_HOSTS=files.example.internal`：额外允许的 Host 主机名，多个用逗号分隔，不含协议或端口。不会因此放开来源 IP 限制。
+- `MCP_ALLOWED_HOSTS=files.example.internal`：额外允许的 Host 主机名或 IP，多个用逗号分隔，不含协议或端口。不会因此放开来源 IP 限制。Docker 桥接网络不知道宿主机的局域网 IP，必须在 `.env` 中把 NAS 实际局域网 IP 或访问域名加入此项，否则会返回 `Host is not allowed`。
 - `ASSET_LIBRARY_DIR=/data/asset_library`：Docker 部署必须放在持久化挂载中。令牌表位于原 `AUTH_DB_FILE`，同样应持久化。
 
 ## 验证
